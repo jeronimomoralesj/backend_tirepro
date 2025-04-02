@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  companyId String
+  role      String   @default("admin")
+  plates    String[] @default([])
+  puntos    Int      @default(0)
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model Company {
+  id           String   @id @default(uuid())
+  name         String
+  periodicity  Int      @default(1)
+  profileImage String   @default("https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png")
+  userCount    Int      @default(0)
+  tireCount    Int      @default(0)
+  plan         String   @default("basic")
+  vehicleCount Int      @default(0)
+
+  // Optional reverse relations:
+  users    User[]
+  vehicles Vehicle[]
+  tires    Tire[]
+}
+
+model Tire {
+  id                  String   @id @default(uuid())
+  companyId           String
+  vehicleId           String?  // Nullable field: tire might not be assigned to a vehicle
+  placa               String
+  vida                Json     @default("[]") // Array of objects: { valor: string, fecha: string }
+  marca               String
+  diseno              String
+  profundidadInicial  Float    // Adjust to Int if you need integer values
+  dimension           String
+  eje                 String
+  costo               Json     @default("[]") // Array of objects: { valor: number, fecha: string }
+  posicion            Int      @default(0)
+  inspecciones        Json     @default("[]") // Array of objects with multiple fields
+  primeraVida         Json     @default("[]") // Array of objects: { costo: number, diseno: string, cpk: number }
+  kilometrosRecorridos Int      @default(0)
+  eventos             Json     @default("[]") // Array of objects: { valor: string, fecha: string }
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  // Relation to Vehicle using an explicit relation name
+  vehicle Vehicle? @relation("VehicleTires", fields: [vehicleId], references: [id])
+}
+
+model Vehicle {
+  id                String   @id @default(uuid())
+  placa             String
+  kilometrajeActual Int      @default(0)
+  carga             String
+  pesoCarga         Float    // Use Float for decimal values
+  tipovhc           String
+  companyId         String
+  tireCount         Int      @default(0)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tires   Tire[]  @relation("VehicleTires")
+}
