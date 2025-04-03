@@ -14,7 +14,7 @@ async function bootstrap() {
 
   // Enable CORS so Next.js (Frontend) can talk to NestJS (Backend)
   app.enableCors({
-    origin: ["*", "http://localhost:3000"],
+    origin: ["*", "http://localhost:3000", "https://tirepro.vercel.app"],
     credentials: true,
   });
 
