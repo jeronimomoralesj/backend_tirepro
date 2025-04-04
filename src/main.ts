@@ -16,7 +16,8 @@ async function bootstrap() {
   app.enableCors({
     origin: [
       'https://tirepro.vercel.app',
-      'http://localhost:3000'
+      'http://localhost:3000',
+      'https://tirepro.com.co'
     ],
     credentials: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
