@@ -17,7 +17,8 @@ async function bootstrap() {
     origin: [
       'https://tirepro.vercel.app',
       'http://localhost:3000',
-      'https://tirepro.com.co'
+      'https://tirepro.com.co',
+      'https://www.tirepro.com.co'
     ],
     credentials: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
