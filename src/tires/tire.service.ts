@@ -198,26 +198,22 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
     return finalTire;
 }
   
-
 async updateVida(tireId: string, newValor: string) {
   // Allowed order for vida values.
   const allowed = ["nueva", "reencauche1", "reencauche2", "reencauche3", "fin"];
-  
-  // Fetch the tire.
+
+  // Retrieve the tire.
   const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
   if (!tire) {
     throw new BadRequestException('Tire not found');
   }
-  
-  // Parse the existing vida array.
-  const vidaArray: { fecha: string; valor: string }[] = tire.vida as any;
-  
-  // Get the last entry if exists.
+
+  // Parse the existing vida array as an array of objects with fecha and valor.
+  const vidaArray = tire.vida as Array<{ fecha: string; valor: string }>;
   const lastEntry = vidaArray.length > 0 ? vidaArray[vidaArray.length - 1] : null;
   if (lastEntry) {
     const lastIndex = allowed.indexOf(lastEntry.valor.toLowerCase());
     const newIndex = allowed.indexOf(newValor.toLowerCase());
-    // If new value is not found in allowed or is lower or equal than the last, reject.
     if (newIndex === -1) {
       throw new BadRequestException('El valor ingresado no es válido');
     }
@@ -227,22 +223,51 @@ async updateVida(tireId: string, newValor: string) {
       );
     }
   }
-  
-  // Create the new entry.
+
+  // Create the new vida entry.
   const newEntry = {
     fecha: new Date().toISOString(),
     valor: newValor,
   };
-  
-  // Append the new entry.
   const updatedVida = [...vidaArray, newEntry];
-  
-  // Update the tire record.
+
+  // Prepare the update data.
+  const updateData: any = { vida: updatedVida };
+
+  // If updating to "reencauche1", capture additional data.
+  if (newValor.toLowerCase() === "reencauche1") {
+    // Get cpk from the most recent inspection.
+    let cpk = 0;
+    if (tire.inspecciones && Array.isArray(tire.inspecciones) && tire.inspecciones.length > 0) {
+      // Cast inspections to the expected type.
+      const inspections = tire.inspecciones as Array<{ fecha: string; cpk?: number }>;
+      // Filter out null or invalid entries.
+      const validInspections = inspections.filter((i) => i && i.fecha);
+      // Sort descending by date.
+      const sortedInspections = validInspections.sort(
+        (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
+      );
+      cpk = sortedInspections[0]?.cpk || 0;
+    }
+    // Get diseno from the tire.
+    const diseno = tire.diseno;
+    // Get costo from the first entry of the costo array (if exists).
+    let costo = 0;
+    if (tire.costo && Array.isArray(tire.costo) && tire.costo.length > 0) {
+      const costEntry = tire.costo[0] as { valor?: number };
+      costo = costEntry.valor || 0;
+    }
+    // Also grab the current kilometrosRecorridos.
+    const kilometros = tire.kilometrosRecorridos || 0;
+    // Set primeraVida to an array with one object.
+    updateData.primeraVida = [{ costo, diseno, cpk, kilometros }];
+  }
+
   const updatedTire = await this.prisma.tire.update({
     where: { id: tireId },
-    data: { vida: updatedVida },
+    data: updateData,
   });
-  
+
   return updatedTire;
 }
 
