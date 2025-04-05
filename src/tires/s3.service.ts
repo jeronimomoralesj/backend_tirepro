@@ -1,7 +1,15 @@
+// src/tires/s3.service.ts
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { BadRequestException } from '@nestjs/common';
 
 const region = process.env.AWS_REGION;
 const bucketName = process.env.AWS_BUCKET_NAME;
+
+// Check that bucketName is defined
+if (!bucketName) {
+  throw new BadRequestException("AWS_BUCKET_NAME is not configured");
+}
+
 const s3Client = new S3Client({
   region,
   credentials: {
@@ -20,8 +28,6 @@ export async function uploadFileToS3(
     Key: fileName,
     Body: fileBuffer,
     ContentType: contentType,
-    // Remove ACL because the bucket is configured to enforce bucket ownership.
-    // ACL: "public-read" as ObjectCannedACL,
   };
 
   const command = new PutObjectCommand(params);
