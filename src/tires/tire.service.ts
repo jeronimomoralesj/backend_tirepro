@@ -208,7 +208,7 @@ async updateVida(tireId: string, newValor: string) {
     throw new BadRequestException('Tire not found');
   }
 
-  // Parse the existing vida array as an array of objects with fecha and valor.
+  // Parse the existing vida array.
   const vidaArray = tire.vida as Array<{ fecha: string; valor: string }>;
   const lastEntry = vidaArray.length > 0 ? vidaArray[vidaArray.length - 1] : null;
   if (lastEntry) {
@@ -234,33 +234,36 @@ async updateVida(tireId: string, newValor: string) {
   // Prepare the update data.
   const updateData: any = { vida: updatedVida };
 
-  // If updating to "reencauche1", capture additional data.
+  // If updating to "reencauche1", capture extra details.
   if (newValor.toLowerCase() === "reencauche1") {
-    // Get cpk from the most recent inspection.
     let cpk = 0;
     if (tire.inspecciones && Array.isArray(tire.inspecciones) && tire.inspecciones.length > 0) {
-      // Cast inspections to the expected type.
       const inspections = tire.inspecciones as Array<{ fecha: string; cpk?: number }>;
-      // Filter out null or invalid entries.
       const validInspections = inspections.filter((i) => i && i.fecha);
-      // Sort descending by date.
       const sortedInspections = validInspections.sort(
         (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
       );
       cpk = sortedInspections[0]?.cpk || 0;
     }
-    // Get diseno from the tire.
     const diseno = tire.diseno;
-    // Get costo from the first entry of the costo array (if exists).
     let costo = 0;
     if (tire.costo && Array.isArray(tire.costo) && tire.costo.length > 0) {
-      const costEntry = tire.costo[0] as { valor?: number };
-      costo = costEntry.valor || 0;
+      costo = (tire.costo[0] as any).valor || 0;
     }
-    // Also grab the current kilometrosRecorridos.
     const kilometros = tire.kilometrosRecorridos || 0;
-    // Set primeraVida to an array with one object.
     updateData.primeraVida = [{ costo, diseno, cpk, kilometros }];
+  }
+
+  // If updating to "fin", remove the tire from the vehicle.
+  if (newValor.toLowerCase() === "fin") {
+    // Instead of setting companyId to "fin", we disassociate the tire from the vehicle.
+    updateData.vehicleId = null;
+    if (tire.vehicleId) {
+      await this.prisma.vehicle.update({
+        where: { id: tire.vehicleId },
+        data: { tireCount: { decrement: 1 } },
+      });
+    }
   }
 
   const updatedTire = await this.prisma.tire.update({
