@@ -19,7 +19,7 @@ export class TireService {
     return result;
   }
 
-  async createTire(createTireDto: CreateTireDto) {
+async createTire(createTireDto: CreateTireDto) {
     let { placa, marca, diseno, profundidadInicial, dimension, eje, vida, costo, inspecciones, 
       primeraVida, kilometrosRecorridos, eventos, companyId, vehicleId, posicion } = createTireDto;
 
@@ -77,125 +77,126 @@ export class TireService {
     }
 
     return newTire;
-  }
+}
 
-  async findTiresByCompany(companyId: string) {
+async findTiresByCompany(companyId: string) {
     return await this.prisma.tire.findMany({
       where: { companyId },
     });
-  }
+}
 
-  async findTiresByVehicle(vehicleId: string) {
+async findTiresByVehicle(vehicleId: string) {
     if (!vehicleId) {
       throw new BadRequestException('vehicleId is required');
     }
     return await this.prisma.tire.findMany({
       where: { vehicleId },
     });
-  }
+}
 
 async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
-    // Retrieve the tire.
-    const tire = await this.prisma.tire.findUnique({
-      where: { id: tireId },
-    });
-    if (!tire) {
-      throw new BadRequestException('Tire not found');
-    }
+  // Retrieve the tire.
+  const tire = await this.prisma.tire.findUnique({
+    where: { id: tireId },
+  });
+  if (!tire) {
+    throw new BadRequestException('Tire not found');
+  }
+
+  // Retrieve the associated vehicle.
+  if (!tire.vehicleId) {
+    throw new BadRequestException('Tire is not associated with a vehicle');
+  }
+  const vehicle = await this.prisma.vehicle.findUnique({
+    where: { id: tire.vehicleId },
+  });
+  if (!vehicle) {
+    throw new BadRequestException('Vehicle not found for tire');
+  }
+
+  // Step 1: Calculate the delta in vehicle kilometraje.
+  const oldVehicleKm = vehicle.kilometrajeActual;
+  const deltaKm = updateDto.newKilometraje - oldVehicleKm;
+  if (deltaKm < 0) {
+    throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al actual');
+  }
+
+  // Step 2: Atomically increment the tire's kilometrosRecorridos by deltaKm.
+  await this.prisma.tire.update({
+    where: { id: tireId },
+    data: { kilometrosRecorridos: { increment: deltaKm } },
+  });
+
+  // Re-fetch the tire to obtain the updated kilometrosRecorridos.
+  const updatedTire = await this.prisma.tire.findUnique({
+    where: { id: tireId },
+  });
+  if (!updatedTire) {
+    throw new BadRequestException('Tire not found after update');
+  }
+  const newTireKm = updatedTire.kilometrosRecorridos;
+
+  // Step 3: Calculate the total cost by summing the costo array.
+  const totalCost = Array.isArray(updatedTire.costo)
+    ? updatedTire.costo.reduce((sum, entry: any) => sum + (entry?.valor || 0), 0)
+    : 0;
+
+  // Step 4: Calculate cost per kilometer (cpk).
+  const cpk = newTireKm > 0 ? totalCost / newTireKm : 0;
+
+  // Step 5: Determine the smallest provided depth.
+  const minDepth = Math.min(updateDto.profundidadInt, updateDto.profundidadCen, updateDto.profundidadExt);
+
+  // Step 6: Calculate the projected cost per kilometer (cpkProyectado).
+  // The denominator is: (profundidadInicial - minDepth) * profundidadInicial.
+  // Then, newTireKm is divided by the denominator and totalCost is divided by that value.
+  const profundidadInicial = updatedTire.profundidadInicial; // Assuming this field exists on the tire
+  const denominator = (newTireKm / (profundidadInicial - minDepth)) * profundidadInicial;
+  const cpkProyectado = denominator > 0 ? totalCost / denominator : 0;
   
-    // Retrieve the associated vehicle.
-    let vehicle: any = null;
-    if (tire.vehicleId) {
-      vehicle = await this.prisma.vehicle.findUnique({
-        where: { id: tire.vehicleId },
-      });
-      if (!vehicle) {
-        throw new BadRequestException('Vehicle not found for tire');
-      }
-    } else {
-      throw new BadRequestException('Tire is not associated with a vehicle');
-    }
-  
-    // Calculate the delta in vehicle kilometraje.
-    const oldVehicleKm = vehicle.kilometrajeActual;
-    const deltaKm = updateDto.newKilometraje - oldVehicleKm;
-    if (deltaKm < 0) {
-      throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al actual');
-    }
-  
-    // Atomically increment the tire's kilometrosRecorridos by deltaKm.
-    await this.prisma.tire.update({
-      where: { id: tireId },
-      data: { kilometrosRecorridos: { increment: deltaKm } },
-    });
-  
-    // Re-fetch the tire to obtain the updated kilometrosRecorridos.
-    const updatedTire = await this.prisma.tire.findUnique({
-      where: { id: tireId },
-    });
-    if (!updatedTire) {
-      throw new BadRequestException('Tire not found after update');
-    }
-    const newTireKm = updatedTire.kilometrosRecorridos;
-  
-    // Calculate total cost from the tire's costo array.
-    const totalCost = Array.isArray(updatedTire.costo)
-      ? updatedTire.costo.reduce((sum, entry: any) => sum + (entry?.valor || 0), 0)
-      : 0;
-  
-    // Calculate cost per kilometer (cpk) using the updated tire kilometrosRecorridos.
-    const cpk = newTireKm > 0 ? totalCost / newTireKm : 0;
-  
-    // Determine the smallest depth among the provided values.
-    const minDepth = Math.min(updateDto.profundidadInt, updateDto.profundidadCen, updateDto.profundidadExt);
-  
-    // Calculate cpkProyectado using the formula:
-    const denominator = (updatedTire.profundidadInicial - minDepth) * updatedTire.profundidadInicial;
-    const cpkProyectado = denominator > 0 ? totalCost / (newTireKm / denominator) : 0;
-  
-    // S3 Upload Logic:
-    let finalImageUrl = updateDto.imageUrl;
-    if (updateDto.imageUrl && updateDto.imageUrl.startsWith("data:")) {
-      const base64Data = updateDto.imageUrl.split(',')[1];
-      const fileBuffer = Buffer.from(base64Data, 'base64');
-      const fileName = `tire-inspections/${tireId}-${Date.now()}.jpg`;
-      finalImageUrl = await uploadFileToS3(fileBuffer, fileName, 'image/jpeg');
-    }
-  
-    // Create the new inspection object.
-    const newInspection = {
-      profundidadInt: updateDto.profundidadInt,
-      profundidadCen: updateDto.profundidadCen,
-      profundidadExt: updateDto.profundidadExt,
-      imageUrl: finalImageUrl,
-      cpk,
-      cpkProyectado,
-      fecha: new Date().toISOString(),
-    };
-  
-    // Append the new inspection to the tire's existing inspecciones array.
-    const currentInspecciones = Array.isArray(updatedTire.inspecciones)
-      ? updatedTire.inspecciones
-      : [];
-    const updatedInspecciones = [...currentInspecciones, newInspection];
-  
-    // Update the tire record with the new inspections.
-    const finalTire = await this.prisma.tire.update({
-      where: { id: tireId },
-      data: {
-        inspecciones: updatedInspecciones,
-        // Re-confirm the updated kilometrosRecorridos (should equal newTireKm).
-        kilometrosRecorridos: newTireKm,
-      },
-    });
-  
-    // Finally, update the vehicle's kilometrajeActual to the new value.
-    await this.prisma.vehicle.update({
-      where: { id: vehicle.id },
-      data: { kilometrajeActual: updateDto.newKilometraje },
-    });
-  
-    return finalTire;
+
+  // Step 7: Process image upload if an image was provided in the updateDto.
+  let finalImageUrl = updateDto.imageUrl;
+  if (updateDto.imageUrl && updateDto.imageUrl.startsWith("data:")) {
+    const base64Data = updateDto.imageUrl.split(',')[1];
+    const fileBuffer = Buffer.from(base64Data, 'base64');
+    const fileName = `tire-inspections/${tireId}-${Date.now()}.jpg`;
+    finalImageUrl = await uploadFileToS3(fileBuffer, fileName, 'image/jpeg');
+  }
+
+  // Step 8: Create the new inspection object.
+  const newInspection = {
+    profundidadInt: updateDto.profundidadInt,
+    profundidadCen: updateDto.profundidadCen,
+    profundidadExt: updateDto.profundidadExt,
+    imageUrl: finalImageUrl,
+    cpk,
+    cpkProyectado,
+    fecha: new Date().toISOString(),
+  };
+
+  // Step 9: Append the new inspection to the existing inspecciones array.
+  const currentInspecciones = Array.isArray(updatedTire.inspecciones)
+    ? updatedTire.inspecciones
+    : [];
+  const updatedInspecciones = [...currentInspecciones, newInspection];
+
+  // Step 10: Update the tire record with the new inspecciones and confirm kilometrosRecorridos.
+  const finalTire = await this.prisma.tire.update({
+    where: { id: tireId },
+    data: {
+      inspecciones: updatedInspecciones,
+      kilometrosRecorridos: newTireKm,
+    },
+  });
+
+  // Step 11: Update the vehicle's kilometrajeActual to the new value.
+  await this.prisma.vehicle.update({
+    where: { id: vehicle.id },
+    data: { kilometrajeActual: updateDto.newKilometraje },
+  });
+
+  return finalTire;
 }
   
 async updateVida(tireId: string, newValor: string) {
@@ -279,9 +280,6 @@ async updateVida(tireId: string, newValor: string) {
   return updatedTire;
 }
 
-
-// In tire.service.ts
-
 async updateEvento(tireId: string, newValor: string) {
   // Fetch the tire.
   const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
@@ -312,7 +310,6 @@ async updateEvento(tireId: string, newValor: string) {
   return updatedTire;
 }
 
-
 async updatePositions(placa: string, updates: { [position: string]: string }) {
   // Find the vehicle by placa
   const vehicle = await this.prisma.vehicle.findFirst({
@@ -340,9 +337,6 @@ async updatePositions(placa: string, updates: { [position: string]: string }) {
 
   return { message: 'Positions updated successfully' };
 }
-
-
-// Add this to tire.service.ts
 
 async analyzeTires(vehiclePlaca: string) {
   // Fetch the vehicle by placa
