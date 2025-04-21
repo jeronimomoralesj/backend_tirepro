@@ -53,4 +53,38 @@ export class VehicleController {
       throw new BadRequestException(error.message);
     }
   }
+
+  @Patch(':id/union/add')
+  async addUnion(
+    @Param('id') vehicleId: string,
+    @Body('placa') placa: string,
+  ) {
+    if (!placa) {
+      throw new BadRequestException('placa is required');
+    }
+    try {
+      const vehicle = await this.vehicleService.addToUnion(vehicleId, placa);
+      return { message: 'Placa added to union', vehicle };
+    } catch (err) {
+      throw new BadRequestException(err.message);
+    }
+  }
+
+  // Remove a placa from the vehicle's union array
+  @Patch(':id/union/remove')
+  async removeUnion(
+    @Param('id') vehicleId: string,
+    @Body('placa') placa: string,
+  ) {
+    if (!placa) {
+      throw new BadRequestException('placa is required');
+    }
+    try {
+      const vehicle = await this.vehicleService.removeFromUnion(vehicleId, placa);
+      return { message: 'Placa removed from union', vehicle };
+    } catch (err) {
+      throw new BadRequestException(err.message);
+    }
+  }
+  
 }

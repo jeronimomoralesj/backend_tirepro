@@ -100,4 +100,72 @@ export class VehicleService {
       data: { kilometrajeActual: newKilometraje },
     });
   }
+
+  async addToUnion(vehicleId: string, otherPlaca: string) {
+    // 1. Load both vehicles
+    const [v1, v2] = await Promise.all([
+      this.prisma.vehicle.findUnique({ where: { id: vehicleId } }),
+      this.prisma.vehicle.findFirst({ where: { placa: otherPlaca } })
+    ]);
+    if (!v1) throw new NotFoundException(`Vehicle ${vehicleId} not found`);
+    if (!v2) throw new NotFoundException(`Vehicle with placa ${otherPlaca} not found`);
+
+    // 2. Prevent self‐linking or duplicates
+    if (v1.id === v2.id) {
+      throw new BadRequestException(`Cannot union a vehicle with itself`);
+    }
+    const union1 = v1.union as string[];
+    const union2 = v2.union as string[];
+    if (union1.includes(v2.placa) || union2.includes(v1.placa)) {
+      throw new BadRequestException('These vehicles are already united');
+    }
+
+    // 3. Perform both updates in a single transaction
+    const [updated1, updated2] = await this.prisma.$transaction([
+      this.prisma.vehicle.update({
+        where: { id: v1.id },
+        data: { union: [...union1, v2.placa] }
+      }),
+      this.prisma.vehicle.update({
+        where: { id: v2.id },
+        data: { union: [...union2, v1.placa] }
+      })
+    ]);
+
+    return updated1;
+  }
+
+  async removeFromUnion(vehicleId: string, otherPlaca: string) {
+    // 1. Load both vehicles
+    const [v1, v2] = await Promise.all([
+      this.prisma.vehicle.findUnique({ where: { id: vehicleId } }),
+      this.prisma.vehicle.findFirst({ where: { placa: otherPlaca } })
+    ]);
+    if (!v1) throw new NotFoundException(`Vehicle ${vehicleId} not found`);
+    if (!v2) throw new NotFoundException(`Vehicle with placa ${otherPlaca} not found`);
+
+    const union1 = v1.union as string[];
+    const union2 = v2.union as string[];
+    if (!union1.includes(v2.placa) || !union2.includes(v1.placa)) {
+      throw new BadRequestException('These vehicles are not currently united');
+    }
+
+    // 2. Remove each from the other’s union array
+    const newUnion1 = union1.filter((p) => p !== v2.placa);
+    const newUnion2 = union2.filter((p) => p !== v1.placa);
+
+    // 3. Update both in one transaction
+    const [updated1] = await this.prisma.$transaction([
+      this.prisma.vehicle.update({
+        where: { id: v1.id },
+        data: { union: newUnion1 }
+      }),
+      this.prisma.vehicle.update({
+        where: { id: v2.id },
+        data: { union: newUnion2 }
+      })
+    ]);
+
+    return updated1;
+  }
 }

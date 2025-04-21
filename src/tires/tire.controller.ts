@@ -15,6 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { TireService } from './tire.service';
 import { CreateTireDto } from './dto/create-tire.dto';
 import { UpdateInspectionDto } from './dto/update-inspection.dto';
+import * as multer from 'multer';
 
 export class UpdateVidaDto {
   valor: string;
@@ -109,6 +110,25 @@ async analyzeTires(@Query('placa') placa: string) {
     return await this.tireService.analyzeTires(placa);
   } catch (error) {
     throw new BadRequestException(error.message);
+  }
+}
+
+
+@Post('bulk-upload')
+@UseInterceptors(FileInterceptor('file', {
+  storage: multer.memoryStorage()
+}))
+async bulkUpload(
+  @UploadedFile() file: any,          // → accept `any`
+  @Query('companyId') companyId: string
+) {
+  if (!companyId) {
+    throw new BadRequestException('companyId query is required');
+  }
+  try {
+    return await this.tireService.bulkUploadTires(file, companyId);
+  } catch (err) {
+    throw new BadRequestException(err.message);
   }
 }
 

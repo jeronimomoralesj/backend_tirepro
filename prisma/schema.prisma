@@ -38,12 +38,12 @@ model Company {
 model Tire {
   id                  String   @id @default(uuid())
   companyId           String
-  vehicleId           String?  // Nullable field: tire might not be assigned to a vehicle
+  vehicleId           String?  
   placa               String
-  vida                Json     @default("[]") // Array of objects: { valor: string, fecha: string }
+  vida                Json     @default("[]") 
   marca               String
   diseno              String
-  profundidadInicial  Float    // Adjust to Int if you need integer values
+  profundidadInicial  Float    
   dimension           String
   eje                 String
   costo               Json     @default("[]") // Array of objects: { valor: number, fecha: string }
@@ -63,11 +63,11 @@ model Vehicle {
   placa             String
   kilometrajeActual Int      @default(0)
   carga             String
-  pesoCarga         Float    // Use Float for decimal values
+  pesoCarga         Float    
   tipovhc           String
   companyId         String
   tireCount         Int      @default(0)
-
+  union             Json     @default("[]")
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   tires   Tire[]  @relation("VehicleTires")
 }

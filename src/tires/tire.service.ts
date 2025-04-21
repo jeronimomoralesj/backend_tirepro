@@ -3,6 +3,7 @@ import { PrismaService } from '../database/prisma.service';
 import { CreateTireDto } from './dto/create-tire.dto';
 import { UpdateInspectionDto } from './dto/update-inspection.dto';
 import { uploadFileToS3 } from './s3.service';
+import * as XLSX from 'xlsx';
 
 @Injectable()
 export class TireService {
@@ -79,6 +80,188 @@ async createTire(createTireDto: CreateTireDto) {
     return newTire;
 }
 
+async bulkUploadTires(file: any, companyId: string) {
+  // 1. Read workbook & first sheet
+  const wb = XLSX.read(file.buffer, { type: 'buffer' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows: Record<string, string>[] = XLSX.utils.sheet_to_json(sheet, {
+    raw: false,
+    defval: '',
+  });
+
+  for (const row of rows) {
+    // case‐insensitive cell lookup
+    const get = (h: string) => {
+      const key = Object.keys(row).find(k => k.toLowerCase() === h.toLowerCase());
+      return key ? row[key] : '';
+    };
+
+    // 2. Mandatory tire fields
+    const placa = get('placa').trim();
+    if (!placa) continue;
+
+    const marca              = get('marca').toLowerCase();
+    const diseno             = get('diseno').toLowerCase();
+    const profundidadInicial = parseFloat(get('profundidadinicial') || '0');
+    const dimension          = get('dimension').toLowerCase();
+    const eje                = get('eje').toLowerCase();
+    const posicion           = parseInt(get('posicion') || '0', 10);
+    const initialKm          = parseFloat(get('kilometrosrecorridos') || '0');
+
+    // optional single‐life entry
+    const vidaValor = get('vida').trim().toLowerCase();
+
+    // 3. Optional vehicle lookup
+    const vehiclePlaca = get('vehicleplaca').trim();
+    let vehicle: { id: string } | null = null;
+    if (vehiclePlaca) {
+      const found = await this.prisma.vehicle.findFirst({ where: { placa: vehiclePlaca } });
+      if (!found) {
+        throw new BadRequestException(`Vehicle "${vehiclePlaca}" not found`);
+      }
+      vehicle = found;
+    }
+
+    // 4. Create the tire if missing
+    let tire = await this.prisma.tire.findFirst({ where: { placa } });
+    if (!tire) {
+      tire = await this.prisma.tire.create({
+        data: {
+          placa,
+          marca,
+          diseno,
+          profundidadInicial,
+          dimension,
+          eje,
+          companyId,
+          vehicleId: vehicle?.id ?? null,
+          posicion,
+          kilometrosRecorridos: initialKm,
+          vida: vidaValor
+            ? [{ fecha: new Date().toISOString(), valor: vidaValor }]
+            : [],
+          costo: [],
+          inspecciones: [],
+          primeraVida: [],
+          eventos: [],
+        },
+      });
+
+      // bump counts
+      await this.prisma.company.update({
+        where: { id: companyId },
+        data: { tireCount: { increment: 1 } },
+      });
+      if (vehicle) {
+        await this.prisma.vehicle.update({
+          where: { id: vehicle.id },
+          data: { tireCount: { increment: 1 } },
+        });
+      }
+    }
+
+    // 5. Detect new costo or inspection or vida
+    const costoCell     = get('costo').trim();
+    const hasCosto      = costoCell !== '';
+    const hasInspection =
+      !!get('profundidadint').trim() ||
+      !!get('profundidadcen').trim() ||
+      !!get('profundidadext').trim() ||
+      !!get('newkilometraje').trim();
+
+    if (hasCosto || hasInspection || vidaValor) {
+      // re‑fetch only the fields we need
+      const rec = await this.prisma.tire.findUnique({
+        where: { id: tire.id },
+        select: {
+          vida: true,
+          costo: true,
+          inspecciones: true,
+          profundidadInicial: true,
+        },
+      });
+      if (!rec) {
+        throw new BadRequestException('Tire not found on re‑fetch');
+      }
+
+      const updates: any = {};
+
+      // — append vida
+      if (vidaValor) {
+        updates.vida = [
+          ...(Array.isArray(rec.vida) ? rec.vida : []),
+          { fecha: new Date().toISOString(), valor: vidaValor },
+        ];
+      }
+
+      // — append costo
+      let updatedCosto = Array.isArray(rec.costo) ? rec.costo : [];
+      if (hasCosto) {
+        const valor = parseFloat(costoCell) || 0;
+        if (valor > 0) {
+          updatedCosto = [
+            ...updatedCosto,
+            { fecha: new Date().toISOString(), valor },
+          ];
+          updates.costo = updatedCosto;
+        }
+      }
+
+      // — handle inspection + CPK logic
+      if (hasInspection) {
+        const newKm    = parseFloat(get('newkilometraje') || '0');
+        const profInt  = parseFloat(get('profundidadint') || '0');
+        const profCen  = parseFloat(get('profundidadcen') || '0');
+        const profExt  = parseFloat(get('profundidadext') || '0');
+        const minDepth = Math.min(profInt, profCen, profExt);
+
+        // total cost so far
+        const totalCost = (updates.costo ?? updatedCosto).reduce(
+          (sum: number, e: any) => sum + (e.valor || 0),
+          0
+        );
+
+        // CPK = totalCost / kilometers driven
+        const cpk = newKm > 0 ? totalCost / newKm : 0;
+
+        // Projected kms before hitting min depth:
+        // projectedKm = newKm / (initialDepth – minDepth) × initialDepth
+        const initialDepthValue = rec.profundidadInicial;   // **correct spelling**
+        const projectedKm =
+          initialDepthValue > minDepth
+            ? (newKm / (initialDepthValue - minDepth)) * initialDepthValue
+            : 0;
+        const cpkProyectado = projectedKm > 0 ? totalCost / projectedKm : 0;
+
+        updates.inspecciones = [
+          ...(Array.isArray(rec.inspecciones) ? rec.inspecciones : []),
+          {
+            fecha:           new Date().toISOString(),
+            profundidadInt:  profInt,
+            profundidadCen:  profCen,
+            profundidadExt:  profExt,
+            cpk,
+            cpkProyectado,
+            imageUrl: get('imageurl') || '',
+          },
+        ];
+
+        updates.kilometrosRecorridos = newKm;
+      }
+
+      // 6. Persist updates in one go
+      if (Object.keys(updates).length) {
+        await this.prisma.tire.update({
+          where: { id: tire.id },
+          data: updates,
+        });
+      }
+    }
+  }
+
+  return { message: 'Bulk upload complete' };
+}
+
 async findTiresByCompany(companyId: string) {
     return await this.prisma.tire.findMany({
       where: { companyId },
@@ -148,13 +331,10 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
   const minDepth = Math.min(updateDto.profundidadInt, updateDto.profundidadCen, updateDto.profundidadExt);
 
   // Step 6: Calculate the projected cost per kilometer (cpkProyectado).
-  // The denominator is: (profundidadInicial - minDepth) * profundidadInicial.
-  // Then, newTireKm is divided by the denominator and totalCost is divided by that value.
   const profundidadInicial = updatedTire.profundidadInicial; // Assuming this field exists on the tire
   const denominator = (newTireKm / (profundidadInicial - minDepth)) * profundidadInicial;
   const cpkProyectado = denominator > 0 ? totalCost / denominator : 0;
   
-
   // Step 7: Process image upload if an image was provided in the updateDto.
   let finalImageUrl = updateDto.imageUrl;
   if (updateDto.imageUrl && updateDto.imageUrl.startsWith("data:")) {
