@@ -9,8 +9,8 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   // 1) Body size limits
-  app.use(bodyParser.json({ limit: '150mb' }));
-  app.use(bodyParser.urlencoded({ limit: '150mb', extended: true }));
+  app.use(bodyParser.json({ limit: '600mb' }));
+  app.use(bodyParser.urlencoded({ limit: '600mb', extended: true }));
 
   // 2) Global validation (optional, but recommended)
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidUnknownValues: true }));
