@@ -9,7 +9,8 @@ import {
   Patch, 
   Param, 
   UseInterceptors, 
-  UploadedFile 
+  UploadedFile,
+  Delete
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { TireService } from './tire.service';
@@ -131,5 +132,13 @@ async bulkUpload(
     throw new BadRequestException(err.message);
   }
 }
+
+@Delete(':tireId/inspection')
+  deleteInspection(
+    @Param('tireId') tireId: string,
+    @Query('fecha') fecha: string,
+  ) {
+    return this.tireService.removeInspection(tireId, fecha);
+  }
 
 }

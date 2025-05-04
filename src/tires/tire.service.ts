@@ -591,5 +591,26 @@ private analyzeTire(tire: any) {
     recomendaciones
   };
 }
+
+async removeInspection(tireId: string, fecha: string) {
+  const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
+  if (!tire) throw new BadRequestException('Tire not found');
+
+  // 1️⃣ Narrow the JSON field into an array
+  const inspeccionesArray = Array.isArray(tire.inspecciones)
+    ? tire.inspecciones as Array<{ fecha: string }>
+    : [];
+
+  // 2️⃣ Filter out the one with the matching fecha
+  const updated = inspeccionesArray.filter(i => i.fecha !== fecha);
+
+  // 3️⃣ Persist back as JSON
+  await this.prisma.tire.update({
+    where: { id: tireId },
+    data: { inspecciones: updated },
+  });
+
+  return { message: 'Inspección eliminada' };
+}
   
 }
