@@ -1,4 +1,3 @@
-"use client";
 import { 
   Controller, 
   Post, 
@@ -17,10 +16,8 @@ import { TireService } from './tire.service';
 import { CreateTireDto } from './dto/create-tire.dto';
 import { UpdateInspectionDto } from './dto/update-inspection.dto';
 import * as multer from 'multer';
+import { UpdateVidaDto } from './dto/update-vida.dto';
 
-export class UpdateVidaDto {
-  valor: string;
-}
 @Controller('tires')
 export class TireController {
   constructor(private readonly tireService: TireService) {}
@@ -64,18 +61,23 @@ export class TireController {
     }
   }
 
-  @Patch(':id/vida')
-  async updateVida(
-    @Param('id') tireId: string,
-    @Body() updateVidaDto: UpdateVidaDto
-  ) {
-    try {
-      const updatedTire = await this.tireService.updateVida(tireId, updateVidaDto.valor);
-      return { message: 'Vida updated successfully', tire: updatedTire };
-    } catch (error) {
-      throw new BadRequestException(error.message);
-    }
+@Patch(':id/vida')
+async updateVida(
+  @Param('id') tireId: string,
+  @Body() updateVidaDto: UpdateVidaDto
+) {
+  try {
+    const updatedTire = await this.tireService.updateVida(
+      tireId, 
+      updateVidaDto.valor,
+      updateVidaDto.banda,
+      updateVidaDto.costo
+    );
+    return { message: 'Vida updated successfully', tire: updatedTire };
+  } catch (error) {
+    throw new BadRequestException(error.message);
   }
+}
 
   @Patch(':id/eventos')
 async updateEvento(

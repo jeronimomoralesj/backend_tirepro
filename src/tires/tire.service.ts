@@ -379,86 +379,141 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
   return finalTire;
 }
   
-async updateVida(tireId: string, newValor: string) {
-  // Allowed order for vida values.
-  const allowed = ["nueva", "reencauche1", "reencauche2", "reencauche3", "fin"];
-
-  // Retrieve the tire.
-  const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
-  if (!tire) {
-    throw new BadRequestException("Tire not found");
-  }
-
-  // Ensure the vida array is always initialized properly.
-  const vidaArray = Array.isArray(tire.vida)
-    ? tire.vida as Array<{ fecha: string; valor: string }>
-    : [];
-
-  const lastEntry = vidaArray.length > 0 ? vidaArray[vidaArray.length - 1] : null;
-  if (lastEntry) {
-    const lastIndex = allowed.indexOf(lastEntry.valor.toLowerCase());
-    const newIndex = allowed.indexOf(newValor.toLowerCase());
-    if (newIndex === -1) {
-      throw new BadRequestException("El valor ingresado no es válido");
+async updateVida(
+    tireId: string,
+    newValor: string | undefined,
+    banda?: string,
+    costo?: number,
+  ) {
+    // 1️⃣ valor is required
+    if (!newValor) {
+      throw new BadRequestException(`El campo 'valor' es obligatorio`);
     }
-    if (newIndex <= lastIndex) {
-      throw new BadRequestException(
-        `El nuevo valor debe seguir la secuencia. Último valor: "${lastEntry.valor}". Puedes elegir: "${allowed[lastIndex + 1] || "ninguno"}".`
-      );
+    const normalizedValor = newValor.toLowerCase();
+
+    // 2️⃣ Must be one of our allowed steps
+    const allowed = ['nueva','reencauche1','reencauche2','reencauche3','fin'];
+    const newIndex = allowed.indexOf(normalizedValor);
+    if (newIndex < 0) {
+      throw new BadRequestException(`"${newValor}" no es un valor válido`);
     }
-  }
 
-  // Create the new vida entry.
-  const newEntry = {
-    fecha: new Date().toISOString(),
-    valor: newValor,
-  };
-  const updatedVida = [...vidaArray, newEntry];
-
-  // Prepare the update data (using a plain object type).
-  const updateData: { [key: string]: any } = { vida: updatedVida };
-
-  // If updating to "reencauche1", capture extra details.
-  if (newValor.toLowerCase() === "reencauche1") {
-    let cpk = 0;
-    if (Array.isArray(tire.inspecciones) && tire.inspecciones.length > 0) {
-      const inspections = tire.inspecciones as Array<{ fecha: string; cpk?: number }>;
-      const validInspections = inspections.filter((i) => i && i.fecha);
-      const sortedInspections = validInspections.sort(
-        (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
-      );
-      cpk = sortedInspections[0]?.cpk ?? 0;
+    // 3️⃣ Load the tire record
+    const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
+    if (!tire) {
+      throw new BadRequestException('Tire not found');
     }
-    const diseno = tire.diseno;
-    let costo = 0;
-    if (Array.isArray(tire.costo) && tire.costo.length > 0) {
-      const lastCosto = tire.costo[tire.costo.length - 1] as { valor?: number } | null;
-      if (lastCosto) {
-        costo = typeof lastCosto.valor === "number" ? lastCosto.valor : 0;
+
+    // 4️⃣ Cast life array into known shape
+    const vidaArray = (Array.isArray(tire.vida) ? tire.vida : []) as Array<{
+      fecha: string;
+      valor: string;
+    }>;
+
+    // 5️⃣ Enforce the sequence order
+    const lastEntry = vidaArray.length ? vidaArray[vidaArray.length - 1] : null;
+    if (lastEntry) {
+      if (typeof lastEntry.valor !== 'string') {
+        throw new BadRequestException('Último valor de vida inválido');
+      }
+      const lastIndex = allowed.indexOf(lastEntry.valor.toLowerCase());
+      if (lastIndex < 0) {
+        throw new BadRequestException('Último valor de vida inválido');
+      }
+      if (newIndex <= lastIndex) {
+        throw new BadRequestException(
+          `Debe avanzar en la secuencia. Último valor: "${lastEntry.valor}".`
+        );
       }
     }
-    const kilometros = tire.kilometrosRecorridos ?? 0;
-    updateData.primeraVida = [{ diseno, cpk, costo, kilometros }];
-  }
 
-  // If updating to "fin", disassociate the tire from its vehicle and decrement the vehicle's tireCount.
-  if (newValor.toLowerCase() === "fin") {
-    updateData.vehicleId = null;
-    if (tire.vehicleId) {
-      await this.prisma.vehicle.update({
-        where: { id: tire.vehicleId },
-        data: { tireCount: { decrement: 1 } },
-      });
+    // 6️⃣ Build up the new vida array
+    const updateData: any = {
+      vida: [
+        ...vidaArray,
+        { fecha: new Date().toISOString(), valor: normalizedValor },
+      ],
+    };
+
+    // 7️⃣ If banda provided, update diseno
+    if (banda?.trim()) {
+      updateData.diseno = banda.trim();
     }
+
+    // 8️⃣ For any reencauche*, append a costo entry
+    if (normalizedValor.startsWith('reencauche')) {
+      const existingCosto = Array.isArray(tire.costo) ? tire.costo : [];
+      let costoValue = 0;
+
+      if (typeof costo === 'number' && costo > 0) {
+        costoValue = costo;
+      } else if (
+        normalizedValor === 'reencauche1' &&
+        existingCosto.length
+      ) {
+        const lastC = existingCosto[existingCosto.length - 1] as any;
+        costoValue = typeof lastC.valor === 'number' ? lastC.valor : 0;
+      }
+
+      if (costoValue > 0) {
+        updateData.costo = [
+          ...existingCosto,
+          { fecha: new Date().toISOString(), valor: costoValue },
+        ];
+      }
+    }
+
+    // 9️⃣ On the *first* reencauche, populate primeraVida
+    if (normalizedValor === 'reencauche1') {
+      // compute last CPK from inspecciones
+      let cpk = 0;
+      if (Array.isArray(tire.inspecciones) && tire.inspecciones.length) {
+        const insps = [...tire.inspecciones] as Array<{
+          fecha: string;
+          cpk?: number;
+        }>;
+        insps.sort(
+          (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
+        );
+        cpk = insps[0]?.cpk ?? 0;
+      }
+
+      const designValue = banda?.trim() || tire.diseno;
+      const costoForPrimera =
+        typeof costo === 'number' && costo > 0
+          ? costo
+          : Array.isArray(tire.costo) && tire.costo.length
+          ? ((tire.costo[tire.costo.length - 1] as any).valor as number) || 0
+          : 0;
+      const kms = tire.kilometrosRecorridos || 0;
+
+      updateData.primeraVida = [
+        {
+          diseno: designValue,
+          cpk,
+          costo: costoForPrimera,
+          kilometros: kms,
+        },
+      ];
+    }
+
+    // 🔟 If marking 'fin', disassociate and decrement vehicle count
+    if (normalizedValor === 'fin') {
+      updateData.vehicleId = null;
+      if (tire.vehicleId) {
+        await this.prisma.vehicle.update({
+          where: { id: tire.vehicleId },
+          data: { tireCount: { decrement: 1 } },
+        });
+      }
+    }
+
+    // 1️⃣1️⃣ Finally, persist everything
+    return this.prisma.tire.update({
+      where: { id: tireId },
+      data: updateData,
+    });
   }
-
-  const updatedTire = await this.prisma.tire.update({
-    where: { id: tireId },
-    data: updateData,
-  });
-
-  return updatedTire;
-}
 
 async updateEvento(tireId: string, newValor: string) {
   // Fetch the tire.
