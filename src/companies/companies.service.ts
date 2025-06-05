@@ -12,7 +12,7 @@ export class CompaniesService {
     const newCompany = await this.prisma.company.create({
       data: {
         name,
-        plan: "basic",
+        plan,
         profileImage: 'https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png',
         vehicleCount: 0,
         userCount: 0,

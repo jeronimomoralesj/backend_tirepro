@@ -8,6 +8,7 @@ import { DatabaseModule } from './database/database.module';
 import { CompaniesModule } from './companies/companies.module'; // Import here
 import { VehicleModule } from './vehicles/vehicle.module';
 import { TireModule } from './tires/tire.module';
+import { BlogModule } from './blogs/blogs.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { TireModule } from './tires/tire.module';
     CompaniesModule, 
     VehicleModule,
     TireModule,
+    BlogModule
   ],
   controllers: [AppController],
   providers: [AppService],

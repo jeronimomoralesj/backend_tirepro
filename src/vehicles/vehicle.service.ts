@@ -7,50 +7,115 @@ import { CreateVehicleDto } from './dto/create-vehicle.dto';
 export class VehicleService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async createVehicle(createVehicleDto: CreateVehicleDto) {
-    const { placa, kilometrajeActual, carga, pesoCarga, tipovhc, companyId } = createVehicleDto;
+async createVehicle(createVehicleDto: CreateVehicleDto) {
+  const {
+    placa,
+    kilometrajeActual,
+    carga,
+    pesoCarga,
+    tipovhc,
+    companyId,
+    cliente,
+  } = createVehicleDto;
 
-    // Check if company exists
-    const company = await this.prisma.company.findUnique({ where: { id: companyId } });
-    if (!company) {
-      throw new BadRequestException('Invalid companyId provided');
-    }
+  console.log("Creating vehicle with data:", { 
+    placa, kilometrajeActual, carga, pesoCarga, 
+    tipovhc, companyId, cliente 
+  });
 
-    // Check for an existing vehicle with the same placa.
-    const existingVehicle = await this.prisma.vehicle.findFirst({
-      where: { placa },
+  // Check company
+  const company = await this.prisma.company.findUnique({ where: { id: companyId } });
+  if (!company) {
+    throw new BadRequestException('Invalid companyId provided');
+  }
+
+  // Check for duplicate placa
+  const existingVehicle = await this.prisma.vehicle.findFirst({
+    where: { placa },
+  });
+  if (existingVehicle) {
+    throw new BadRequestException('A vehicle with this placa already exists');
+  }
+
+  try {
+    // IMPORTANT: Use Prisma directly to force field inclusion
+    const newVehicle = await this.prisma.$transaction(async (prisma) => {
+      // Create the vehicle with explicit cliente handling
+      const vehicle = await prisma.vehicle.create({
+        data: {
+          placa,
+          kilometrajeActual,
+          carga,
+          pesoCarga,
+          tipovhc,
+          companyId,
+          cliente: cliente || null,
+          tireCount: 0,
+          union: [], 
+        },
+        // Explicitly select all fields to ensure nothing is missed
+        select: {
+          id: true,
+          placa: true,
+          kilometrajeActual: true,
+          carga: true,
+          pesoCarga: true,
+          tipovhc: true,
+          companyId: true,
+          tireCount: true,
+          union: true,
+          cliente: true,
+        }
+      });
+      
+      // Update company count
+      await prisma.company.update({
+        where: { id: companyId },
+        data: { vehicleCount: { increment: 1 } },
+      });
+      
+      return vehicle;
     });
-    if (existingVehicle) {
-      throw new BadRequestException('A vehicle with this placa already exists');
-    }
 
-    // Create the new vehicle.
-    const newVehicle = await this.prisma.vehicle.create({
-      data: {
-        placa,
-        kilometrajeActual,
-        carga,
-        pesoCarga,
-        tipovhc,
-        companyId,
-        tireCount: 0,
-      },
-    });
-
-    // Increment the company's vehicleCount by 1.
-    await this.prisma.company.update({
-      where: { id: companyId },
-      data: { vehicleCount: { increment: 1 } },
-    });
-
+    console.log("Created vehicle:", newVehicle);
     return newVehicle;
+  } catch (error) {
+    console.error("Error creating vehicle:", error);
+    throw error;
   }
+}
 
-  async findVehiclesByCompany(companyId: string) {
-    return await this.prisma.vehicle.findMany({
+async findVehiclesByCompany(companyId: string) {
+  try {
+    const vehicles = await this.prisma.vehicle.findMany({
       where: { companyId },
+      // IMPORTANT: Explicitly select all fields including cliente
+      select: {
+        id: true,
+        placa: true,
+        kilometrajeActual: true,
+        carga: true,
+        pesoCarga: true,
+        tipovhc: true,
+        companyId: true,
+        tireCount: true,
+        union: true,
+        cliente: true,
+      }
     });
+    
+    console.log(`Found ${vehicles.length} vehicles for company ${companyId}`);
+    if (vehicles.length > 0) {
+      console.log('Sample vehicle:', vehicles[0]);
+      console.log('Cliente value:', vehicles[0].cliente);
+    }
+    
+    return vehicles;
+  } catch (error) {
+    console.error('Error fetching vehicles:', error);
+    throw error;
   }
+}
 
   async deleteVehicle(vehicleId: string) {
     // Find the vehicle first

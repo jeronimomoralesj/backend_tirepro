@@ -545,7 +545,7 @@ async updateEvento(tireId: string, newValor: string) {
   return updatedTire;
 }
 
-async updatePositions(placa: string, updates: { [position: string]: string }) {
+async updatePositions(placa: string, updates: { [position: string]: string | string[] }) {
   // Find the vehicle by placa
   const vehicle = await this.prisma.vehicle.findFirst({
     where: { placa }
@@ -554,20 +554,37 @@ async updatePositions(placa: string, updates: { [position: string]: string }) {
     throw new BadRequestException('Vehicle not found for the given placa');
   }
 
-  // For each update, verify that the tire belongs to this vehicle and update its position.
+  // First, reset all tires for this vehicle to unassigned (posicion = null)
+  // This ensures we have a clean slate before applying new positions
+  await this.prisma.tire.updateMany({
+    where: { 
+      vehicleId: vehicle.id,
+      placa: placa 
+    },
+data: { posicion: 0 }
+  });
+
+  // Process all updates
   for (const pos in updates) {
-    const tireId = updates[pos];
-    const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
-    if (!tire) {
-      throw new BadRequestException(`Tire with id ${tireId} not found`);
+    const tireIds = Array.isArray(updates[pos]) ? updates[pos] : [updates[pos]];
+    
+    for (const tireId of tireIds) {
+      const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
+      
+      if (!tire) {
+        throw new BadRequestException(`Tire with id ${tireId} not found`);
+      }
+      if (tire.vehicleId !== vehicle.id) {
+        throw new BadRequestException(`Tire with id ${tireId} does not belong to vehicle with plate ${placa}`);
+      }
+      
+      // Set the tire position
+      const posicion = pos === '0' ? 0 : parseInt(pos, 10);
+      await this.prisma.tire.update({
+        where: { id: tireId },
+        data: { posicion }
+      });
     }
-    if (tire.vehicleId !== vehicle.id) {
-      throw new BadRequestException(`Tire with id ${tireId} does not belong to vehicle with plate ${placa}`);
-    }
-    await this.prisma.tire.update({
-      where: { id: tireId },
-      data: { posicion: parseInt(pos, 10) }
-    });
   }
 
   return { message: 'Positions updated successfully' };

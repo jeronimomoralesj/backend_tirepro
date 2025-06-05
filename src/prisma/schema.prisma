@@ -69,5 +69,41 @@ model Vehicle {
   tireCount         Int      @default(0)
   union             Json     @default("[]")
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  cliente           String?
   tires   Tire[]  @relation("VehicleTires")
+}
+
+model Article {
+  id          Int      @id @default(autoincrement())
+  title       String
+  subtitle    String
+  content     String   @db.Text
+  coverImage  String
+  category    String
+  hashtags    String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("articles")
+}
+
+model AdminPassword {
+  id        Int      @id @default(autoincrement())
+  password  String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  used      Boolean  @default(false)
+
+  @@map("admin_passwords")
+}
+
+model BlogPassword {
+  id        Int      @id @default(autoincrement())
+  password  String
+  expiresAt DateTime
+  isUsed    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("blog_passwords")
 }
