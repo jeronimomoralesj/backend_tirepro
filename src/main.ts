@@ -13,7 +13,7 @@ async function bootstrap() {
   app.use(bodyParser.urlencoded({ limit: '600mb', extended: true }));
 
   // 2) Global validation (optional, but recommended)
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidUnknownValues: false, transform: true }));
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidUnknownValues: true, transform: true }));
 
   // 3) Global API prefix
   app.setGlobalPrefix('api');

@@ -17,6 +17,7 @@ model User {
   plates    String[] @default([])
   puntos    Int      @default(0)
   company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messages  Message[]
 }
 
 model Company {
@@ -71,6 +72,7 @@ model Vehicle {
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   cliente           String?
   tires   Tire[]  @relation("VehicleTires")
+  extras            Extra[]
 }
 
 model Article {
@@ -106,4 +108,42 @@ model BlogPassword {
   updatedAt DateTime @updatedAt
 
   @@map("blog_passwords")
+}
+
+model Extra {
+  id           String   @id
+  vehicleId    String
+  type         String
+  brand        String
+  purchaseDate DateTime
+  cost         Float
+  notes        String?
+
+  vehicle      Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@map("extras")
+}
+
+model Chat {
+  id           String    @id @default(uuid())
+  title        String
+  category     String
+  content      String    // a description of the chat
+  emoji        String    // e.g. an emoji / icon for this room
+  messageCount Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  messages    Message[]
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  chatId    String
+  authorId  String?      // optional relation to your User
+  author    User?     @relation(fields: [authorId], references: [id])
+  content   String
+  createdAt DateTime  @default(now())
+  authorName  String
+  
+  chat      Chat      @relation(fields: [chatId], references: [id], onDelete: Cascade)
 }

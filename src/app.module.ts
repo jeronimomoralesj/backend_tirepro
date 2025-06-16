@@ -9,17 +9,21 @@ import { CompaniesModule } from './companies/companies.module'; // Import here
 import { VehicleModule } from './vehicles/vehicle.module';
 import { TireModule } from './tires/tire.module';
 import { BlogModule } from './blogs/blogs.module';
+import { ExtrasModule } from './extras/extras.module';
+import { ComunidadModule } from './comunidad/comunidad.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
     DatabaseModule,
     AuthModule,
     UsersModule,
     CompaniesModule, 
     VehicleModule,
     TireModule,
-    BlogModule
+    BlogModule,
+    ExtrasModule,
+    ComunidadModule,
   ],
   controllers: [AppController],
   providers: [AppService],
