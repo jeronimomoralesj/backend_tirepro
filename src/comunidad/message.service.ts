@@ -1,6 +1,6 @@
 // src/message/message.service.ts
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService } from '../database/prisma.service';
 import { CreateMessageDto } from './dto/create-message.dto';
 
 // src/comunidad/message.service.ts

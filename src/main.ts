@@ -5,34 +5,41 @@ import * as bodyParser from 'body-parser';
 import { ValidationPipe, HttpStatus } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
 
-async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+const ALLOWED_PROD_ORIGINS = [
+  'https://tirepro.vercel.app',
+  'https://tirepro.com.co',
+  'https://www.tirepro.com.co',
+  'https://api.tirepro.com.co',
+  'http://api.tirepro.com.co',
+];
 
-  // 1) Body size limits
+async function bootstrap() {
+  console.log('⏳  Starting Nest bootstrap…');
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  console.log('✅  NestFactory.create() completed');
+
   app.use(bodyParser.json({ limit: '600mb' }));
   app.use(bodyParser.urlencoded({ limit: '600mb', extended: true }));
-
-  // 2) Global validation (optional, but recommended)
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidUnknownValues: true, transform: true }));
-
-  // 3) Global API prefix
   app.setGlobalPrefix('api');
 
-  // 4) Enable CORS for all your front-ends, *and* reply to OPTIONS
+  // dynamic CORS:
   app.enableCors({
-    origin: [
-      'http://localhost:3000',
-      'https://tirepro.vercel.app',
-      'https://tirepro.com.co',
-      'https://www.tirepro.com.co',
-      'https://api.tirepro.com.co',
-      'http://api.tirepro.com.co',
-      'https://api.tirepro.com', 
-    ],
+    origin: (incomingOrigin, callback) => {
+      // always allow localhost during dev
+      if (!incomingOrigin || incomingOrigin.startsWith('http://localhost:3000')) {
+        return callback(null, true);
+      }
+      // only allow your prod domains in prod
+      if (ALLOWED_PROD_ORIGINS.includes(incomingOrigin)) {
+        return callback(null, true);
+      }
+      callback(new Error('Not allowed by CORS'), false);
+    },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     allowedHeaders: 'Content-Type,Authorization',
     credentials: true,
-    optionsSuccessStatus: HttpStatus.NO_CONTENT, // 204
+    optionsSuccessStatus: HttpStatus.NO_CONTENT,
   });
 
   await app.listen(6001, '0.0.0.0');
