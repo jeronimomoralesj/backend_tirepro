@@ -1,49 +1,59 @@
+// src/auth/auth.module.ts
 import { Module, forwardRef } from '@nestjs/common';
-import { AuthService } from './auth.service';
-import { AuthController } from './auth.controller';
-import { UsersModule } from '../users/users.module';
-import { DatabaseModule } from '../database/database.module';
-import { JwtModule } from '@nestjs/jwt';
-import { BlogService } from '../blogs/blogs.service';
-import { PrismaService } from '../prisma/prisma.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { MailerModule } from '@nestjs-modules/mailer';
+import { JwtModule }                 from '@nestjs/jwt';
+import { PassportModule }            from '@nestjs/passport';
+import { MailerModule }              from '@nestjs-modules/mailer';
+
+import { AuthService }               from './auth.service';
+import { AuthController }            from './auth.controller';
+import { JwtStrategy }               from './strategies/jwt.strategy';
+import { UsersModule }               from '../users/users.module';
+import { DatabaseModule }            from '../database/database.module';
+import { BlogService }               from '../blogs/blogs.service';
+import { PrismaService }             from '../prisma/prisma.service';
 
 @Module({
   imports: [
     forwardRef(() => UsersModule),
     DatabaseModule,
     ConfigModule,
-    JwtModule.register({
-      secret: process.env.JWT_SECRET || 'supersecret',
-      signOptions: { expiresIn: '1h' },
+    // Passport registration for "jwt" strategy
+    PassportModule.register({ defaultStrategy: 'jwt' }),
+    // Async JWT config so we pick up JWT_SECRET from ConfigService
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (cs: ConfigService) => ({
+        secret: cs.get<string>('JWT_SECRET', 'supersecret'),
+        signOptions: { expiresIn: '1h' },
+      }),
     }),
-    // Add MailerModule for email functionality
+    // Mailer for blog-password emails
     MailerModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: async (configService: ConfigService) => ({
+      inject: [ConfigService],
+      useFactory: (cs: ConfigService) => ({
         transport: {
-          host: configService.get('SMTP_HOST'),
-          port: configService.get('SMTP_PORT'),
+          host: cs.get('SMTP_HOST'),
+          port: cs.get<number>('SMTP_PORT'),
           secure: false,
           auth: {
-            user: configService.get('SMTP_USER'),
-            pass: configService.get('SMTP_PASS'),
+            user: cs.get('SMTP_USER'),
+            pass: cs.get('SMTP_PASS'),
           },
         },
-        defaults: {
-          from: configService.get('SMTP_FROM'),
-        },
+        defaults: { from: cs.get('SMTP_FROM') },
       }),
-      inject: [ConfigService],
     }),
   ],
   providers: [
     AuthService,
     BlogService,
-    PrismaService
+    PrismaService,
+    JwtStrategy,    // ← register your strategy here
   ],
   controllers: [AuthController],
-  exports: [AuthService],
+  exports: [AuthService, PassportModule],
 })
 export class AuthModule {}

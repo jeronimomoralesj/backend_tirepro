@@ -11,6 +11,8 @@ import { TireModule } from './tires/tire.module';
 import { BlogModule } from './blogs/blogs.module';
 import { ExtrasModule } from './extras/extras.module';
 import { ComunidadModule } from './comunidad/comunidad.module';
+import { CuponesModule } from './cupones/cupones.module';
+import { IncomeModule } from './income/income.module';
 
 @Module({
   imports: [
@@ -24,6 +26,8 @@ import { ComunidadModule } from './comunidad/comunidad.module';
     BlogModule,
     ExtrasModule,
     ComunidadModule,
+    CuponesModule,
+    IncomeModule,
   ],
   controllers: [AppController],
   providers: [AppService],
