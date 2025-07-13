@@ -68,10 +68,12 @@ async updateVida(
 ) {
   try {
     const updatedTire = await this.tireService.updateVida(
-      tireId, 
+      tireId,
       updateVidaDto.valor,
       updateVidaDto.banda,
-      updateVidaDto.costo
+      updateVidaDto.costo,
+      updateVidaDto.profundidadInicial,
+      updateVidaDto.desechos,
     );
     return { message: 'Vida updated successfully', tire: updatedTire };
   } catch (error) {
@@ -135,6 +137,11 @@ async bulkUpload(
   }
 }
 
+@Get('all')
+  async getAllTires() {
+    return this.tireService.findAllTires();
+  }
+
 @Delete(':tireId/inspection')
   deleteInspection(
     @Param('tireId') tireId: string,
@@ -142,5 +149,4 @@ async bulkUpload(
   ) {
     return this.tireService.removeInspection(tireId, fecha);
   }
-
 }

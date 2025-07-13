@@ -2,64 +2,72 @@ import { Injectable, BadRequestException, NotFoundException, UnauthorizedExcepti
 import { PrismaService } from '../database/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcryptjs';
-
+import { EmailService } from 'src/email/email.service';
+import { randomBytes } from 'crypto';
 @Injectable()
 export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly emailService: EmailService,
   ) {}
 
-  async createUser(createUserDto: CreateUserDto) {
-    const { email, name, password, companyId, role } = createUserDto;
+async createUser(createUserDto: CreateUserDto) {
+  const { email, name, password, companyId, role, preferredLanguage } = createUserDto;
 
-    // Check if user already exists
-    const existingUser = await this.prisma.user.findUnique({ 
-      where: { email } 
-    });
-    if (existingUser) {
-      throw new BadRequestException('User with this email already exists');
-    }
-
-    // Hash the password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Create new user with the provided companyId and role (if any)
-    const newUser = await this.prisma.user.create({
-      data: { 
-        email, 
-        name, 
-        password: hashedPassword, 
-        companyId: companyId || "", // Use provided companyId or empty string if not provided
-        role: role || "regular", 
-        puntos: 0, 
-        plates: [] 
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        companyId: true,
-        puntos: true,
-        plates: true
-      }
-    });
-
-    // If a companyId is provided, update the company's userCount by incrementing it by 1
-    if (companyId) {
-      try {
-        await this.prisma.company.update({
-          where: { id: companyId },
-          data: { userCount: { increment: 1 } },
-        });
-      } catch (error) {
-        // Optionally, you could rollback the user creation if company update fails.
-        throw new BadRequestException('Failed to update company user count');
-      }
-    }
-
-    return { message: "User created successfully", user: newUser };
+  const existingUser = await this.prisma.user.findUnique({ where: { email } });
+  if (existingUser) {
+    throw new BadRequestException('User with this email already exists');
   }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const verificationToken = randomBytes(32).toString('hex');
+
+  const newUser = await this.prisma.user.create({
+    data: { 
+      email, 
+      name, 
+      password: hashedPassword, 
+      companyId: companyId || "", 
+      role: role || "regular", 
+      puntos: 0, 
+      plates: [], 
+      isVerified: false,
+      verificationToken,
+      preferredLanguage: preferredLanguage || "es"
+    },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      companyId: true,
+      puntos: true,
+      plates: true
+    }
+  });
+
+  if (companyId) {
+    try {
+      await this.prisma.company.update({
+        where: { id: companyId },
+        data: { userCount: { increment: 1 } },
+      });
+    } catch (error) {
+      throw new BadRequestException('Failed to update company user count');
+    }
+  }
+
+  // 🌐 Send email based on preferred language
+  const verifyLink = `https://tirepro.com.co/verify?token=${verificationToken}`;
+  preferredLanguage === 'en'
+    ? await this.emailService.sendWelcomeEmailWithVerification(email, name, verifyLink)
+    : await this.emailService.sendWelcomeEmailWithVerificationEs(email, name, verifyLink);
+
+  return {
+    message: "User created successfully. Please check your email to verify your account.",
+    user: newUser
+  };
+}
 
   async getUserById(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -217,7 +225,18 @@ export class UsersService {
     return users;
   }
 
-
+async getAllUsers() {
+  return await this.prisma.user.findMany({
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      companyId: true,
+      plates: true,
+    },
+  });
+}
 
   async changePassword(
     userId: string,

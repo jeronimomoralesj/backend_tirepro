@@ -29,28 +29,39 @@ export class AuthService {
     return { message: "User registered successfully", userId: newUser.id };
   }
 
-  async login(email: string, password: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { email },
-    });
+async login(email: string, password: string) {
+  const user = await this.prisma.user.findUnique({
+    where: { email },
+  });
 
-    if (!user) {
-      throw new BadRequestException('Invalid credentials');
-    }
-
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      throw new BadRequestException('Invalid credentials');
-    }
-
-    const payload = { sub: user.id, email: user.email };
-    const access_token = this.jwtService.sign(payload);
-
-    return {
-      access_token,
-      user: { id: user.id, email: user.email, role: user.role, companyId: user.companyId, name: user.name }
-    };
+  if (!user) {
+    throw new BadRequestException('Invalid credentials');
   }
+
+  // ❌ Block unverified users
+  if (!user.isVerified) {
+    throw new BadRequestException('Please verify your email before logging in.');
+  }
+
+  const isPasswordValid = await bcrypt.compare(password, user.password);
+  if (!isPasswordValid) {
+    throw new BadRequestException('Invalid credentials');
+  }
+
+  const payload = { sub: user.id, email: user.email };
+  const access_token = this.jwtService.sign(payload);
+
+  return {
+    access_token,
+    user: {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      companyId: user.companyId,
+      name: user.name
+    }
+  };
+}
 
   async validateUser(email: string, password: string) {
     const user = await this.prisma.user.findUnique({ where: { email } });

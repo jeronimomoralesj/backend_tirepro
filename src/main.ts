@@ -11,6 +11,7 @@ const ALLOWED_PROD_ORIGINS = [
   'https://www.tirepro.com.co',
   'https://api.tirepro.com.co',
   'http://api.tirepro.com.co',
+  'http://www.localhost:3000',
 ];
 
 async function bootstrap() {

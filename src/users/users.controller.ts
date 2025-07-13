@@ -14,10 +14,17 @@ import {
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
+import { setTimeout } from 'timers/promises';
+import { PrismaService } from 'src/prisma/prisma.service';
+import { EmailService } from 'src/email/email.service';
 
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly prisma: PrismaService,
+    private readonly emailService: EmailService
+  ) {}
 
   @Post('register')
   async createUser(@Body() createUserDto: CreateUserDto) {
@@ -27,6 +34,44 @@ export class UsersController {
       throw new BadRequestException(err.message);
     }
   }
+
+  @Get('verify')
+async verifyEmail(@Query('token') token: string) {
+  if (!token) throw new BadRequestException('Invalid verification link');
+
+  const user = await this.prisma.user.findFirst({
+    where: { verificationToken: token },
+  });
+
+  if (!user) throw new BadRequestException('Verification token is invalid or expired');
+
+  await this.prisma.user.update({
+    where: { id: user.id },
+    data: { isVerified: true, verificationToken: null },
+  });
+
+  // 🕒 Delay sending the welcome email by 10 minutes (600_000 ms)
+  setTimeout(600_000).then(async () => {
+    try {
+      if (user.preferredLanguage === 'en') {
+        await this.emailService.sendWelcomeEmail(user.email, user.name);
+      } else {
+        await this.emailService.sendWelcomeEmailEs(user.email, user.name);
+      }
+
+      console.log(`✅ Welcome email (${user.preferredLanguage}) sent to ${user.email}`);
+    } catch (err) {
+      console.error(`❌ Failed to send welcome email to ${user.email}`, err);
+    }
+  });
+
+  return {
+    message:
+      user.preferredLanguage === 'en'
+        ? 'Email verified successfully. You can now log in.'
+        : 'Correo verificado con éxito. Ya puedes iniciar sesión.',
+  };
+}
 
   @Get()
   async getUsers(@Query('companyId') companyId: string) {
@@ -70,7 +115,6 @@ export class UsersController {
     }
   }
 
-
   @Patch(':id/change-password')
   async changePassword(
     @Param('id') userId: string,
@@ -98,5 +142,10 @@ export class UsersController {
       throw new BadRequestException(err.message);
     }
   }
+
+  @Get('all')
+async getAllUsers() {
+  return this.usersService.getAllUsers();
+}
 
 }

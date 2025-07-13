@@ -58,20 +58,26 @@ export class IncomeService {
   }
 
   // Update an existing income
-  update(id: string, dto: UpdateIncomeDto, userId: string) {
-    return this.prisma.income.updateMany({
-      where: { 
-        id,
-        userId // Ensure user can only update their own incomes
-      },
-      data: {
-        ...(dto.title && { title: dto.title }),
-        ...(dto.date && { date: dto.date }),
-        ...(dto.amount !== undefined && { amount: dto.amount }),
-        ...(dto.note !== undefined && { note: dto.note }),
-      },
-    });
+async update(id: string, dto: UpdateIncomeDto, userId: string) {
+  // First, verify that the income belongs to the user
+  const existing = await this.prisma.income.findFirst({
+    where: { id, userId },
+  });
+
+  if (!existing) {
+    throw new Error('Income not found or access denied');
   }
+
+  return this.prisma.income.update({
+    where: { id },
+    data: {
+      ...(dto.title && { title: dto.title }),
+      ...(dto.date && { date: new Date(dto.date) }),
+      ...(dto.amount !== undefined && { amount: dto.amount }),
+      ...(dto.note !== undefined && { note: dto.note }),
+    },
+  });
+}
 
   // Delete an income
   remove(id: string, userId: string) {
@@ -121,4 +127,5 @@ export class IncomeService {
       },
     });
   }
+  
 }

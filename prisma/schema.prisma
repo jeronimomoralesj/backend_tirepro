@@ -8,85 +8,114 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  name      String
-  email     String   @unique
-  password  String
-  companyId String
-  role      String   @default("admin")
-  plates    String[] @default([])
-  puntos    Int      @default(0)
-  company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  messages  Message[]
-
-  incomes   Income[] 
+  id               String    @id @default(uuid())
+  name             String
+  email            String    @unique
+  password         String
+  companyId        String
+  role             String    @default("admin")
+  plates           String[]  @default([])
+  puntos           Int       @default(0)
+  isVerified       Boolean   @default(false)
+  verificationToken String?  
+  preferredLanguage String? @default("es")
+  company          Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messages         Message[]
+  incomes          Income[]
 }
 
 model Company {
-  id           String   @id @default(uuid())
+  id           String @id @default(uuid())
   name         String
-  periodicity  Int      @default(1)
-  profileImage String   @default("https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png")
-  userCount    Int      @default(0)
-  tireCount    Int      @default(0)
-  plan         String   @default("basic")
-  vehicleCount Int      @default(0)
+  periodicity  Int    @default(1)
+  profileImage String @default("https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png")
+  userCount    Int    @default(0)
+  tireCount    Int    @default(0)
+  plan         String @default("basic")
+  vehicleCount Int    @default(0)
 
   // Optional reverse relations:
-  users    User[]
-  vehicles Vehicle[]
-  tires    Tire[]
+  users         User[]
+  vehicles      Vehicle[]
+  tires         Tire[]
+  notifications Notification[]
 }
 
 model Tire {
-  id                  String   @id @default(uuid())
-  companyId           String
-  vehicleId           String?  
-  placa               String
-  vida                Json     @default("[]") 
-  marca               String
-  diseno              String
-  profundidadInicial  Float    
-  dimension           String
-  eje                 String
-  costo               Json     @default("[]") // Array of objects: { valor: number, fecha: string }
-  posicion            Int      @default(0)
-  inspecciones        Json     @default("[]") // Array of objects with multiple fields
-  primeraVida         Json     @default("[]") // Array of objects: { costo: number, diseno: string, cpk: number }
-  kilometrosRecorridos Int      @default(0)
-  eventos             Json     @default("[]") // Array of objects: { valor: string, fecha: string }
-
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                   String  @id @default(uuid())
+  companyId            String
+  vehicleId            String?
+  placa                String
+  vida                 Json    @default("[]")
+  marca                String
+  diseno               String
+  profundidadInicial   Float
+  dimension            String
+  eje                  String
+  costo                Json    @default("[]") // Array of objects: { valor: number, fecha: string }
+  posicion             Int     @default(0)
+  inspecciones         Json    @default("[]") // Array of objects with multiple fields
+  primeraVida          Json    @default("[]") // Array of objects: { costo: number, diseno: string, cpk: number }
+  kilometrosRecorridos Int     @default(0)
+  eventos              Json    @default("[]") // Array of objects: { valor: string, fecha: string }
+  desechos             Json?
+  
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
   // Relation to Vehicle using an explicit relation name
-  vehicle Vehicle? @relation("VehicleTires", fields: [vehicleId], references: [id])
+  vehicle       Vehicle?       @relation("VehicleTires", fields: [vehicleId], references: [id])
+  notifications Notification[]
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  title     String
+  message   String
+  type      String // "info" | "warning" | "critical"
+  seen      Boolean  @default(false)
+  timestamp DateTime @default(now())
+  date      DateTime @default(now())
+  // Relations
+  tire   Tire?   @relation(fields: [tireId], references: [id])
+  tireId String?
+
+  vehicle   Vehicle? @relation(fields: [vehicleId], references: [id])
+  vehicleId String?
+
+  company   Company? @relation(fields: [companyId], references: [id])
+  companyId String?
+
+  @@index([companyId])
+  @@index([vehicleId])
+  @@index([tireId])
 }
 
 model Vehicle {
-  id                String   @id @default(uuid())
+  id                String         @id @default(uuid())
   placa             String
-  kilometrajeActual Int      @default(0)
+  kilometrajeActual Int            @default(0)
   carga             String
-  pesoCarga         Float    
+  pesoCarga         Float
   tipovhc           String
   companyId         String
-  tireCount         Int      @default(0)
-  union             Json     @default("[]")
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tireCount         Int            @default(0)
+  union             Json           @default("[]")
+  company           Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
   cliente           String?
-  tires   Tire[]  @relation("VehicleTires")
+  tires             Tire[]         @relation("VehicleTires")
   extras            Extra[]
+  notifications     Notification[]
 }
 
 model Article {
-  id          Int      @id @default(autoincrement())
-  title       String
-  subtitle    String
-  content     String   @db.Text
-  coverImage  String
-  category    String
-  hashtags    String[] @default([])
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         Int      @id @default(autoincrement())
+  title      String
+  subtitle   String
+  content    String   @db.Text
+  coverImage String
+  category   String
+  hashtags   String[] @default([])
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@map("articles")
 }
@@ -121,7 +150,7 @@ model Extra {
   cost         Float
   notes        String?
 
-  vehicle      Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
 
   @@map("extras")
 }
@@ -130,24 +159,24 @@ model Chat {
   id           String    @id @default(uuid())
   title        String
   category     String
-  content      String    // a description of the chat
-  emoji        String    // e.g. an emoji / icon for this room
+  content      String // a description of the chat
+  emoji        String // e.g. an emoji / icon for this room
   messageCount Int       @default(0)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  messages    Message[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  messages     Message[]
 }
 
 model Message {
-  id        String   @id @default(uuid())
-  chatId    String
-  authorId  String?      // optional relation to your User
-  author    User?     @relation(fields: [authorId], references: [id])
-  content   String
-  createdAt DateTime  @default(now())
-  authorName  String
-  
-  chat      Chat      @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  id         String   @id @default(uuid())
+  chatId     String
+  authorId   String? // optional relation to your User
+  author     User?    @relation(fields: [authorId], references: [id])
+  content    String
+  createdAt  DateTime @default(now())
+  authorName String
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 }
 
 enum CouponCategory {
@@ -160,32 +189,32 @@ enum CouponCategory {
 
 model Coupon {
   /// UUID primary key
-  id            String          @id @default(uuid())
+  id String @id @default(uuid())
 
   /// key into your front-end localization tables
-  titleKey      String
+  titleKey String
 
   /// key into your front-end localization tables
   descriptionKey String
 
   /// e.g. "20%", "FREE", "2x1"
-  discount      String
+  discount String
 
   /// must match one of the enum values
-  category      CouponCategory
+  category CouponCategory
 
   /// ISO date (YYYY-MM-DD), e.g. "2025-07-31"
-  validUntil    DateTime
+  validUntil DateTime
 
   /// the redemption code string
-  code          String
+  code String
 
   /// a Tailwind-style color class, e.g. "from-red-500 to-pink-500"
-  color         String
+  color String
 
   /// timestamps
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("coupons")
 }

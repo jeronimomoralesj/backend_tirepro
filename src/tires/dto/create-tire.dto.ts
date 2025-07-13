@@ -54,4 +54,8 @@ export class CreateTireDto {
   // Required field for posicion.
   @IsNumber()
   posicion: number;
+
+  @IsOptional()
+  desechos?: any;
+
 }
