@@ -26,7 +26,7 @@ export class TireService {
   }
 
 async createTire(createTireDto: CreateTireDto) {
-  let {
+  const {
     placa,
     marca,
     diseno,
@@ -43,13 +43,11 @@ async createTire(createTireDto: CreateTireDto) {
     vehicleId,
     posicion,
     desechos,
-
-    // 🆕 NUEVO (opcional)
-    fechaInstalacion,
+    fechaInstalacion, // 🆕 opcional
   } = createTireDto;
 
   // =========================
-  // VALIDACIONES BÁSICAS
+  // VALIDAR EMPRESA
   // =========================
   const company = await this.prisma.company.findUnique({
     where: { id: companyId },
@@ -58,7 +56,10 @@ async createTire(createTireDto: CreateTireDto) {
     throw new BadRequestException('Invalid companyId provided');
   }
 
-  let vehicle;
+  // =========================
+  // VALIDAR VEHÍCULO (SI APLICA)
+  // =========================
+  let vehicle = null;
   if (vehicleId) {
     vehicle = await this.prisma.vehicle.findUnique({
       where: { id: vehicleId },
@@ -79,12 +80,11 @@ async createTire(createTireDto: CreateTireDto) {
   // =========================
   // FECHA DE INSTALACIÓN
   // =========================
-  const fechaInstalacionFinal = fechaInstalacion
-    ? new Date(fechaInstalacion)
-    : new Date();
+  const fechaInstalacionFinal =
+    fechaInstalacion ? new Date(fechaInstalacion) : new Date();
 
   // =========================
-  // CREACIÓN DE LA LLANTA
+  // CREAR LLANTA
   // =========================
   const newTire = await this.prisma.tire.create({
     data: {
@@ -94,20 +94,20 @@ async createTire(createTireDto: CreateTireDto) {
       profundidadInicial,
       dimension,
       eje,
-
-      vida: vida ?? [],
-      costo: costo ?? [],
-      inspecciones: inspecciones ?? [],
-      primeraVida: primeraVida ?? [],
-
-      kilometrosRecorridos: kilometrosRecorridos ?? 0,
-      eventos: eventos ?? [],
-
-      companyId,
-      vehicleId: vehicleId || null,
       posicion,
 
-      // 🆕 NUEVOS CAMPOS
+      vida: Array.isArray(vida) ? vida : [],
+      costo: Array.isArray(costo) ? costo : [],
+      inspecciones: Array.isArray(inspecciones) ? inspecciones : [],
+      primeraVida: Array.isArray(primeraVida) ? primeraVida : [],
+
+      kilometrosRecorridos: kilometrosRecorridos ?? 0,
+      eventos: Array.isArray(eventos) ? eventos : [],
+
+      companyId,
+      vehicleId: vehicleId ?? null,
+
+      // 🆕 CAMPOS DE TIEMPO
       fechaInstalacion: fechaInstalacionFinal,
       diasAcumulados: 0,
 
@@ -144,7 +144,6 @@ async bulkUploadTires(file: any, companyId: string) {
   const KM_POR_MES = 6000;
   const MS_POR_DIA = 1000 * 60 * 60 * 24;
 
-  // 👉 SOLO ESPAÑOL
   const headerMap: Record<string, string> = {
     'llanta': 'llanta',
     'numero de llanta': 'llanta',
@@ -186,16 +185,9 @@ async bulkUploadTires(file: any, companyId: string) {
     return key ? row[key] : '';
   };
 
-  // Para evitar duplicados dentro del mismo Excel
-  const tireDataMap = new Map<
-    string,
-    { lastVida: string; lastCosto: number }
-  >();
+  const tireDataMap = new Map<string, { lastVida: string; lastCosto: number }>();
 
   for (const row of rows) {
-    // =========================
-    // IDENTIDAD DE LA LLANTA
-    // =========================
     const tirePlaca = get(row, 'llanta')?.trim().toLowerCase();
     if (!tirePlaca) continue;
 
@@ -210,13 +202,7 @@ async bulkUploadTires(file: any, companyId: string) {
       get(row, 'profundidad_inicial') || '0',
     );
 
-    // =========================
-    // VEHÍCULO
-    // =========================
-    const placaVehiculo = get(row, 'placa_vehiculo')
-      ?.trim()
-      .toLowerCase();
-
+    const placaVehiculo = get(row, 'placa_vehiculo')?.trim().toLowerCase();
     const kilometrosVehiculo = parseFloat(
       get(row, 'kilometros_vehiculo') || '0',
     );
@@ -238,9 +224,7 @@ async bulkUploadTires(file: any, companyId: string) {
           companyId,
           cliente: '',
         });
-      } else if (
-        kilometrosVehiculo > (vehicle.kilometrajeActual || 0)
-      ) {
+      } else if (kilometrosVehiculo > (vehicle.kilometrajeActual || 0)) {
         await this.vehicleService.updateKilometraje(
           vehicle.id,
           kilometrosVehiculo,
@@ -249,9 +233,6 @@ async bulkUploadTires(file: any, companyId: string) {
       }
     }
 
-    // =========================
-    // CREAR / OBTENER LLANTA
-    // =========================
     let tire = await this.prisma.tire.findFirst({
       where: { placa: tirePlaca },
     });
@@ -299,13 +280,10 @@ async bulkUploadTires(file: any, companyId: string) {
     const rec = await this.prisma.tire.findUnique({
       where: { id: tire.id },
     });
-
     if (!rec) continue;
 
-    // =========================
-    // TIEMPO EN USO
-    // =========================
     const now = new Date();
+
     const diasEnUso = Math.max(
       Math.floor(
         (now.getTime() -
@@ -317,9 +295,6 @@ async bulkUploadTires(file: any, companyId: string) {
 
     const mesesEnUso = diasEnUso / 30;
 
-    // =========================
-    // KILOMETROS (REAL O ESTIMADO)
-    // =========================
     const kmLlantaExcel = parseFloat(
       get(row, 'kilometros_llanta') || '0',
     );
@@ -329,35 +304,27 @@ async bulkUploadTires(file: any, companyId: string) {
         ? kmLlantaExcel
         : Math.round(mesesEnUso * KM_POR_MES);
 
-    // =========================
-    // COSTO (CON DEDUP)
-    // =========================
     const costoCell = parseFloat(get(row, 'costo') || '0');
 
     const lastData =
-      tireDataMap.get(tirePlaca) || {
-        lastVida: '',
-        lastCosto: -1,
-      };
+      tireDataMap.get(tirePlaca) || { lastVida: '', lastCosto: -1 };
 
-    const costos = Array.isArray(rec.costo) ? rec.costo : [];
+    const costosActuales = Array.isArray(rec.costo)
+      ? (rec.costo as Array<{ valor?: number }>)
+      : [];
 
     if (costoCell > 0 && costoCell !== lastData.lastCosto) {
-      costos.push({
+      costosActuales.push({
         fecha: now.toISOString(),
         valor: costoCell,
       });
       lastData.lastCosto = costoCell;
     }
 
-    const totalCost = costos.reduce(
-      (sum, c) => sum + (c.valor || 0),
-      0,
-    );
+    const totalCost = costosActuales.reduce((sum, c) => {
+      return sum + (typeof c?.valor === 'number' ? c.valor : 0);
+    }, 0);
 
-    // =========================
-    // VIDA (CON DEDUP)
-    // =========================
     let vidaArray = Array.isArray(rec.vida) ? rec.vida : [];
 
     if (vidaValor && vidaValor !== lastData.lastVida) {
@@ -368,32 +335,19 @@ async bulkUploadTires(file: any, companyId: string) {
       lastData.lastVida = vidaValor;
     }
 
-    // =========================
-    // INSPECCIÓN
-    // =========================
-    const profInt = parseFloat(
-      get(row, 'profundidad_int') || '0',
-    );
-    const profCen = parseFloat(
-      get(row, 'profundidad_cen') || '0',
-    );
-    const profExt = parseFloat(
-      get(row, 'profundidad_ext') || '0',
-    );
+    const profInt = parseFloat(get(row, 'profundidad_int') || '0');
+    const profCen = parseFloat(get(row, 'profundidad_cen') || '0');
+    const profExt = parseFloat(get(row, 'profundidad_ext') || '0');
 
-    const hasInspection =
-      profInt > 0 || profCen > 0 || profExt > 0;
+    const hasInspection = profInt > 0 || profCen > 0 || profExt > 0;
 
     if (hasInspection) {
       const minDepth = Math.min(profInt, profCen, profExt);
 
       const cpk =
-        kilometrosEstimados > 0
-          ? totalCost / kilometrosEstimados
-          : 0;
+        kilometrosEstimados > 0 ? totalCost / kilometrosEstimados : 0;
 
-      const cpt =
-        mesesEnUso > 0 ? totalCost / mesesEnUso : 0;
+      const cpt = mesesEnUso > 0 ? totalCost / mesesEnUso : 0;
 
       const projectedKm =
         rec.profundidadInicial > minDepth
@@ -418,14 +372,10 @@ async bulkUploadTires(file: any, companyId: string) {
           kilometrosEstimados,
           cpk,
           cpkProyectado:
-            projectedKm > 0
-              ? totalCost / projectedKm
-              : 0,
+            projectedKm > 0 ? totalCost / projectedKm : 0,
           cpt,
           cptProyectado:
-            projectedMonths > 0
-              ? totalCost / projectedMonths
-              : 0,
+            projectedMonths > 0 ? totalCost / projectedMonths : 0,
           imageUrl: get(row, 'imageurl') || '',
         },
       ];
@@ -433,10 +383,13 @@ async bulkUploadTires(file: any, companyId: string) {
       await this.prisma.tire.update({
         where: { id: tire.id },
         data: {
-          costo: costos,
+          costo: costosActuales,
           vida: vidaArray,
           inspecciones,
-          kilometrosRecorridos: kilometrosEstimados,
+          kilometrosRecorridos: Math.max(
+            rec.kilometrosRecorridos || 0,
+            kilometrosEstimados,
+          ),
           diasAcumulados: diasEnUso,
         },
       });
