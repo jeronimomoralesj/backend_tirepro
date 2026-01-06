@@ -24,8 +24,8 @@ export class CompaniesService {
 
   async getCompanyById(companyId: string) {
     const company = await this.prisma.company.findUniqueOrThrow({
-        where: { id: companyId },
-      });      
+  where: { id: companyId },
+});      
 
     if (!company) {
       throw new NotFoundException(`Company with ID ${companyId} not found`);
@@ -35,3 +35,4 @@ export class CompaniesService {
   }
 
 }
+

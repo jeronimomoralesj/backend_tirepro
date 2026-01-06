@@ -46,22 +46,47 @@ model Tire {
   companyId            String
   vehicleId            String?
   placa                String
-  vida                 Json    @default("[]")
+
+  vida                 Json    @default("[]") // [{ valor, fecha }]
   marca                String
   diseno               String
   profundidadInicial   Float
   dimension            String
   eje                  String
-  costo                Json    @default("[]") // Array of objects: { valor: number, fecha: string }
+
+  costo                Json    @default("[]") // [{ valor, fecha }]
   posicion             Int     @default(0)
-  inspecciones         Json    @default("[]") // Array of objects with multiple fields
-  primeraVida          Json    @default("[]") // Array of objects: { costo: number, diseno: string, cpk: number }
+
+  inspecciones         Json    @default("[]")
+  /*
+    Each inspection object now includes:
+    {
+      fecha,
+      profundidadInt,
+      profundidadCen,
+      profundidadExt,
+      cpk,
+      cpkProyectado,
+      cpt,
+      cptProyectado,
+      diasEnUso,
+      mesesEnUso,
+      kilometrosEstimados,
+      imageUrl
+    }
+  */
+
+  primeraVida          Json    @default("[]")
+
   kilometrosRecorridos Int     @default(0)
-  eventos              Json    @default("[]") // Array of objects: { valor: string, fecha: string }
+
+  fechaInstalacion     DateTime? // NEW: when tire was mounted
+  diasAcumulados       Int       @default(0) // NEW: accumulated usage days
+
+  eventos              Json    @default("[]")
   desechos             Json?
-  
+
   company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  // Relation to Vehicle using an explicit relation name
   vehicle       Vehicle?       @relation("VehicleTires", fields: [vehicleId], references: [id])
   notifications Notification[]
 }
@@ -188,31 +213,15 @@ enum CouponCategory {
 }
 
 model Coupon {
-  /// UUID primary key
   id String @id @default(uuid())
-
-  /// key into your front-end localization tables
   titleKey String
-
-  /// key into your front-end localization tables
   descriptionKey String
-
-  /// e.g. "20%", "FREE", "2x1"
   discount String
-
-  /// must match one of the enum values
   category CouponCategory
-
-  /// ISO date (YYYY-MM-DD), e.g. "2025-07-31"
   validUntil DateTime
-
-  /// the redemption code string
   code String
-
-  /// a Tailwind-style color class, e.g. "from-red-500 to-pink-500"
   color String
 
-  /// timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

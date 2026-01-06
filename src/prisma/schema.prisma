@@ -46,22 +46,47 @@ model Tire {
   companyId            String
   vehicleId            String?
   placa                String
-  vida                 Json    @default("[]")
+
+  vida                 Json    @default("[]") // [{ valor, fecha }]
   marca                String
   diseno               String
   profundidadInicial   Float
   dimension            String
   eje                  String
-  costo                Json    @default("[]") // Array of objects: { valor: number, fecha: string }
+
+  costo                Json    @default("[]") // [{ valor, fecha }]
   posicion             Int     @default(0)
-  inspecciones         Json    @default("[]") // Array of objects with multiple fields
-  primeraVida          Json    @default("[]") // Array of objects: { costo: number, diseno: string, cpk: number }
+
+  inspecciones         Json    @default("[]")
+  /*
+    Each inspection object now includes:
+    {
+      fecha,
+      profundidadInt,
+      profundidadCen,
+      profundidadExt,
+      cpk,
+      cpkProyectado,
+      cpt,
+      cptProyectado,
+      diasEnUso,
+      mesesEnUso,
+      kilometrosEstimados,
+      imageUrl
+    }
+  */
+
+  primeraVida          Json    @default("[]")
+
   kilometrosRecorridos Int     @default(0)
-  eventos              Json    @default("[]") // Array of objects: { valor: string, fecha: string }
+
+  fechaInstalacion     DateTime? // NEW: when tire was mounted
+  diasAcumulados       Int       @default(0) // NEW: accumulated usage days
+
+  eventos              Json    @default("[]")
   desechos             Json?
-  
+
   company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  // Relation to Vehicle using an explicit relation name
   vehicle       Vehicle?       @relation("VehicleTires", fields: [vehicleId], references: [id])
   notifications Notification[]
 }

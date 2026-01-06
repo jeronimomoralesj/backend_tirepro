@@ -1,4 +1,10 @@
-import { IsString, IsNotEmpty, IsOptional, IsNumber } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  IsNumber,
+  IsDateString,
+} from 'class-validator';
 
 export class CreateTireDto {
   @IsOptional()
@@ -24,6 +30,9 @@ export class CreateTireDto {
   @IsNotEmpty()
   eje: string;
 
+  // =========================
+  // HISTÓRICOS
+  // =========================
   @IsOptional()
   vida?: any;
 
@@ -36,13 +45,22 @@ export class CreateTireDto {
   @IsOptional()
   primeraVida?: any;
 
+  // =========================
+  // MÉTRICAS
+  // =========================
   @IsOptional()
   @IsNumber()
   kilometrosRecorridos?: number;
 
+  // =========================
+  // EVENTOS
+  // =========================
   @IsOptional()
   eventos?: any;
 
+  // =========================
+  // RELACIONES
+  // =========================
   @IsString()
   @IsNotEmpty()
   companyId: string;
@@ -51,11 +69,22 @@ export class CreateTireDto {
   @IsString()
   vehicleId?: string;
 
-  // Required field for posicion.
+  // =========================
+  // POSICIÓN
+  // =========================
   @IsNumber()
   posicion: number;
 
+  // =========================
+  // TIEMPO (NUEVO)
+  // =========================
+  @IsOptional()
+  @IsDateString()
+  fechaInstalacion?: string;
+
+  // =========================
+  // DESECHOS
+  // =========================
   @IsOptional()
   desechos?: any;
-
 }
