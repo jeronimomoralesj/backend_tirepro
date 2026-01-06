@@ -59,7 +59,7 @@ async createTire(createTireDto: CreateTireDto) {
   // =========================
   // VALIDAR VEHÍCULO (SI APLICA)
   // =========================
-  let vehicle = null;
+  let vehicle: any = null;
   if (vehicleId) {
     vehicle = await this.prisma.vehicle.findUnique({
       where: { id: vehicleId },
@@ -310,8 +310,8 @@ async bulkUploadTires(file: any, companyId: string) {
       tireDataMap.get(tirePlaca) || { lastVida: '', lastCosto: -1 };
 
     const costosActuales = Array.isArray(rec.costo)
-      ? (rec.costo as Array<{ valor?: number }>)
-      : [];
+  ? (rec.costo as any[])
+  : [];
 
     if (costoCell > 0 && costoCell !== lastData.lastCosto) {
       costosActuales.push({
