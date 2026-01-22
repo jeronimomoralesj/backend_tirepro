@@ -147,6 +147,7 @@ async bulkUploadTires(file: any, companyId: string) {
   const headerMap: Record<string, string> = {
     'llanta': 'llanta',
     'numero de llanta': 'llanta',
+    'id': 'llanta',
 
     'placa vehiculo': 'placa_vehiculo',
     'placa': 'placa_vehiculo',
@@ -169,35 +170,93 @@ async bulkUploadTires(file: any, companyId: string) {
     'profundidad inicial': 'profundidad_inicial',
 
     'costo': 'costo',
+    'cost': 'costo',
+    'precio': 'costo',
+    'costo furgon': 'costo',
 
     'fecha instalacion': 'fecha_instalacion',
 
     'imageurl': 'imageurl',
+
+    'tipovhc': 'tipovhc',
+    'tipo de vehiculo': 'tipovhc',
+    'tipo vhc': 'tipovhc',
   };
 
+  const normalize = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
   const get = (row: any, header: string) => {
-    const normalized = headerMap[header.toLowerCase()] || header.toLowerCase();
+    const normalized = headerMap[normalize(header)] || normalize(header);
     const key = Object.keys(row).find(
       k =>
-        headerMap[k.toLowerCase()] === normalized ||
-        k.toLowerCase() === normalized,
+        headerMap[normalize(k)] === normalized ||
+        normalize(k) === normalized,
     );
     return key ? row[key] : '';
   };
 
-  const tireDataMap = new Map<string, { lastVida: string; lastCosto: number }>();
+  const parseCurrency = (value: string): number => {
+    if (!value) return 0;
+    const cleaned = value
+      .replace(/[$,\s]/g, '')
+      .replace(/[^\d.]/g, '');
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) ? 0 : parsed;
+  };
 
-  for (const row of rows) {
-    const tirePlaca = get(row, 'llanta')?.trim().toLowerCase();
-    if (!tirePlaca) continue;
+  const generateTireId = (): string => {
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+  };
+
+  const tireDataMap = new Map<string, { lastVida: string; lastCosto: number }>();
+  const processedIds = new Set<string>();
+  const errors: string[] = [];
+
+  if (rows.length > 0) {
+    console.log('📋 First row raw keys:', Object.keys(rows[0]));
+    console.log('📋 First row costo value:', rows[0]['costo furgon']);
+    console.log('📋 Testing get() for costo:', get(rows[0], 'costo'));
+  }
+
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex];
+    
+    let tirePlaca = get(row, 'llanta')?.trim().toLowerCase();
+    
+    if (!tirePlaca) {
+      tirePlaca = generateTireId().toLowerCase();
+      console.log(`🔢 Generated ID for row ${rowIndex + 2}: ${tirePlaca}`);
+    }
+
+    if (processedIds.has(tirePlaca)) {
+      const errorMsg = `Error: Duplicate tire ID "${tirePlaca}" found in row ${rowIndex + 2}. Skipping this row.`;
+      console.error(`❌ ${errorMsg}`);
+      errors.push(errorMsg);
+      continue;
+    }
+
+    processedIds.add(tirePlaca);
 
     const marca = get(row, 'marca').toLowerCase();
     const diseno = get(row, 'diseno').toLowerCase();
     const dimension = get(row, 'dimension').toLowerCase();
     const eje = get(row, 'eje').toLowerCase();
     const posicion = parseInt(get(row, 'posicion') || '0', 10);
-    const vidaValor = get(row, 'vida').trim().toLowerCase();
-
+    
+    // Normalize vida value - if it's "rencauche" or "reencauche", convert to "reencauche1"
+    let vidaValor = get(row, 'vida').trim().toLowerCase();
+    if (vidaValor === 'rencauche' || vidaValor === 'reencauche') {
+      vidaValor = 'reencauche1';
+      console.log(`🔄 Normalized vida from "${get(row, 'vida')}" to "reencauche1" for row ${rowIndex + 2}`);
+    }
+    
+    const tipovhc = get(row, 'tipovhc')?.trim().toLowerCase() || '';
     const profundidadInicial = parseFloat(
       get(row, 'profundidad_inicial') || '0',
     );
@@ -220,7 +279,7 @@ async bulkUploadTires(file: any, companyId: string) {
           kilometrajeActual: kilometrosVehiculo,
           carga: '',
           pesoCarga: 0,
-          tipovhc: '',
+          tipovhc,
           companyId,
           cliente: '',
         });
@@ -233,48 +292,61 @@ async bulkUploadTires(file: any, companyId: string) {
       }
     }
 
+    if (vehicle && tipovhc && !vehicle.tipovhc) {
+      await this.prisma.vehicle.update({
+        where: { id: vehicle.id },
+        data: { tipovhc },
+      });
+      vehicle.tipovhc = tipovhc;
+    }
+
     let tire = await this.prisma.tire.findFirst({
       where: { placa: tirePlaca },
     });
+
+    if (tire) {
+      const errorMsg = `Error: Tire ID "${tirePlaca}" already exists in database (row ${rowIndex + 2}). Skipping this row.`;
+      console.error(`❌ ${errorMsg}`);
+      errors.push(errorMsg);
+      continue;
+    }
 
     const fechaInstalacionRaw = get(row, 'fecha_instalacion');
     const fechaInstalacion = fechaInstalacionRaw
       ? new Date(fechaInstalacionRaw)
       : new Date();
 
-    if (!tire) {
-      tire = await this.prisma.tire.create({
-        data: {
-          placa: tirePlaca,
-          marca,
-          diseno,
-          dimension,
-          eje,
-          posicion,
-          profundidadInicial,
-          companyId,
-          vehicleId: vehicle?.id ?? null,
-          fechaInstalacion,
-          vida: vidaValor
-            ? [{ fecha: new Date().toISOString(), valor: vidaValor }]
-            : [],
-          costo: [],
-          inspecciones: [],
-          eventos: [],
-        },
-      });
+    tire = await this.prisma.tire.create({
+      data: {
+        placa: tirePlaca,
+        marca,
+        diseno,
+        dimension,
+        eje,
+        posicion,
+        profundidadInicial,
+        companyId,
+        vehicleId: vehicle?.id ?? null,
+        fechaInstalacion,
+        vida: vidaValor
+          ? [{ fecha: new Date().toISOString(), valor: vidaValor }]
+          : [],
+        costo: [],
+        inspecciones: [],
+        eventos: [],
+      },
+    });
 
-      await this.prisma.company.update({
-        where: { id: companyId },
+    await this.prisma.company.update({
+      where: { id: companyId },
+      data: { tireCount: { increment: 1 } },
+    });
+
+    if (vehicle) {
+      await this.prisma.vehicle.update({
+        where: { id: vehicle.id },
         data: { tireCount: { increment: 1 } },
       });
-
-      if (vehicle) {
-        await this.prisma.vehicle.update({
-          where: { id: vehicle.id },
-          data: { tireCount: { increment: 1 } },
-        });
-      }
     }
 
     const rec = await this.prisma.tire.findUnique({
@@ -284,56 +356,56 @@ async bulkUploadTires(file: any, companyId: string) {
 
     const now = new Date();
 
+    const instalacionDate = rec.fechaInstalacion 
+      ? new Date(rec.fechaInstalacion) 
+      : now;
+
     const diasEnUso = Math.max(
-      Math.floor(
-        (now.getTime() -
-          new Date(rec.fechaInstalacion ?? now).getTime()) /
-          MS_POR_DIA,
-      ),
+      Math.floor((now.getTime() - instalacionDate.getTime()) / MS_POR_DIA),
       1,
     );
 
     const mesesEnUso = diasEnUso / 30;
 
-    const kmLlantaExcel = parseFloat(
-      get(row, 'kilometros_llanta') || '0',
-    );
+    const kmLlantaExcel = parseFloat(get(row, 'kilometros_llanta') || '0');
 
-    const kilometrosEstimados =
-      kmLlantaExcel > 0
-        ? kmLlantaExcel
-        : Math.round(mesesEnUso * KM_POR_MES);
+    const kilometrosEstimados = kmLlantaExcel > 0
+      ? kmLlantaExcel
+      : Math.round(mesesEnUso * KM_POR_MES);
 
-    const costoCell = parseFloat(get(row, 'costo') || '0');
+    const costoRaw = get(row, 'costo');
+    const costoCell = parseCurrency(costoRaw);
 
-    const lastData =
-      tireDataMap.get(tirePlaca) || { lastVida: '', lastCosto: -1 };
+    console.log(`💰 Row ${rowIndex + 2} - Raw costo: "${costoRaw}" → Parsed: ${costoCell}`);
 
-    const costosActuales = Array.isArray(rec.costo)
-  ? (rec.costo as any[])
-  : [];
+    const lastData = tireDataMap.get(tirePlaca) || { 
+      lastVida: '', 
+      lastCosto: -1 
+    };
 
-    if (costoCell > 0 && costoCell !== lastData.lastCosto) {
+    const costosActuales: any[] = [];
+
+    if (costoCell > 0) {
       costosActuales.push({
         fecha: now.toISOString(),
         valor: costoCell,
       });
       lastData.lastCosto = costoCell;
+      
+      console.log(`✅ Added cost for tire ${tirePlaca}: ${costoCell}`);
+    } else {
+      console.log(`⚠️ No valid cost for tire ${tirePlaca} (value: ${costoCell})`);
     }
 
     const totalCost = costosActuales.reduce((sum, c) => {
       return sum + (typeof c?.valor === 'number' ? c.valor : 0);
     }, 0);
 
-    let vidaArray = Array.isArray(rec.vida) ? rec.vida : [];
+    let vidaArray = vidaValor
+      ? [{ fecha: now.toISOString(), valor: vidaValor }]
+      : [];
 
-    if (vidaValor && vidaValor !== lastData.lastVida) {
-      vidaArray = [
-        ...vidaArray,
-        { fecha: now.toISOString(), valor: vidaValor },
-      ];
-      lastData.lastVida = vidaValor;
-    }
+    lastData.lastVida = vidaValor;
 
     const profInt = parseFloat(get(row, 'profundidad_int') || '0');
     const profCen = parseFloat(get(row, 'profundidad_cen') || '0');
@@ -344,41 +416,45 @@ async bulkUploadTires(file: any, companyId: string) {
     if (hasInspection) {
       const minDepth = Math.min(profInt, profCen, profExt);
 
-      const cpk =
-        kilometrosEstimados > 0 ? totalCost / kilometrosEstimados : 0;
+      const cpk = kilometrosEstimados > 0 
+        ? totalCost / kilometrosEstimados 
+        : 0;
 
-      const cpt = mesesEnUso > 0 ? totalCost / mesesEnUso : 0;
+      const cpt = mesesEnUso > 0 
+        ? totalCost / mesesEnUso 
+        : 0;
 
-      const projectedKm =
-        rec.profundidadInicial > minDepth
-          ? (kilometrosEstimados /
-              (rec.profundidadInicial - minDepth)) *
-            rec.profundidadInicial
-          : 0;
+      const profundidadInicial = rec.profundidadInicial;
+      const desgaste = profundidadInicial - minDepth;
+
+      const projectedKm = desgaste > 0
+        ? (kilometrosEstimados / desgaste) * profundidadInicial
+        : 0;
 
       const projectedMonths = projectedKm / KM_POR_MES;
 
-      const inspecciones = [
-        ...(Array.isArray(rec.inspecciones)
-          ? rec.inspecciones
-          : []),
-        {
-          fecha: now.toISOString(),
-          profundidadInt: profInt,
-          profundidadCen: profCen,
-          profundidadExt: profExt,
-          diasEnUso,
-          mesesEnUso,
-          kilometrosEstimados,
-          cpk,
-          cpkProyectado:
-            projectedKm > 0 ? totalCost / projectedKm : 0,
-          cpt,
-          cptProyectado:
-            projectedMonths > 0 ? totalCost / projectedMonths : 0,
-          imageUrl: get(row, 'imageurl') || '',
-        },
-      ];
+      const cpkProyectado = projectedKm > 0 
+        ? totalCost / projectedKm 
+        : 0;
+
+      const cptProyectado = projectedMonths > 0 
+        ? totalCost / projectedMonths 
+        : 0;
+
+      const inspecciones = [{
+        fecha: now.toISOString(),
+        profundidadInt: profInt,
+        profundidadCen: profCen,
+        profundidadExt: profExt,
+        diasEnUso,
+        mesesEnUso,
+        kilometrosEstimados,
+        cpk,
+        cpkProyectado,
+        cpt,
+        cptProyectado,
+        imageUrl: get(row, 'imageurl') || '',
+      }];
 
       await this.prisma.tire.update({
         where: { id: tire.id },
@@ -386,10 +462,17 @@ async bulkUploadTires(file: any, companyId: string) {
           costo: costosActuales,
           vida: vidaArray,
           inspecciones,
-          kilometrosRecorridos: Math.max(
-            rec.kilometrosRecorridos || 0,
-            kilometrosEstimados,
-          ),
+          kilometrosRecorridos: kilometrosEstimados,
+          diasAcumulados: diasEnUso,
+        },
+      });
+    } else {
+      await this.prisma.tire.update({
+        where: { id: tire.id },
+        data: {
+          costo: costosActuales,
+          vida: vidaArray,
+          kilometrosRecorridos: kilometrosEstimados,
           diasAcumulados: diasEnUso,
         },
       });
@@ -398,7 +481,21 @@ async bulkUploadTires(file: any, companyId: string) {
     tireDataMap.set(tirePlaca, lastData);
   }
 
-  return { message: 'Carga masiva completada correctamente' };
+  const successCount = processedIds.size;
+  const errorCount = errors.length;
+
+  let message = `Carga masiva completada. ${successCount} llantas procesadas exitosamente.`;
+  
+  if (errorCount > 0) {
+    message += ` ${errorCount} errores encontrados: ${errors.join('; ')}`;
+  }
+
+  return { 
+    message,
+    success: successCount,
+    errors: errorCount,
+    details: errors
+  };
 }
 
 async findTiresByCompany(companyId: string) {

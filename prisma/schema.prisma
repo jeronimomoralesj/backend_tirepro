@@ -8,20 +8,20 @@ datasource db {
 }
 
 model User {
-  id               String    @id @default(uuid())
-  name             String
-  email            String    @unique
-  password         String
-  companyId        String
-  role             String    @default("admin")
-  plates           String[]  @default([])
-  puntos           Int       @default(0)
-  isVerified       Boolean   @default(false)
-  verificationToken String?  
-  preferredLanguage String? @default("es")
-  company          Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  messages         Message[]
-  incomes          Income[]
+  id                String    @id @default(uuid())
+  name              String
+  email             String    @unique
+  password          String
+  companyId         String
+  role              String    @default("admin")
+  plates            String[]  @default([])
+  puntos            Int       @default(0)
+  isVerified        Boolean   @default(false)
+  verificationToken String?
+  preferredLanguage String?   @default("es")
+  company           Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messages          Message[]
+  incomes           Income[]
 }
 
 model Company {
@@ -34,57 +34,72 @@ model Company {
   plan         String @default("basic")
   vehicleCount Int    @default(0)
 
-  // Optional reverse relations:
+  // Distributor access relations
+  distributors DistributorAccess[] @relation("CompanyDistributors")
+  clients      DistributorAccess[] @relation("DistributorClients")
+
   users         User[]
   vehicles      Vehicle[]
   tires         Tire[]
   notifications Notification[]
 }
 
+model DistributorAccess {
+  companyId     String
+  distributorId String
+
+  company     Company @relation("CompanyDistributors", fields: [companyId], references: [id])
+  distributor Company @relation("DistributorClients", fields: [distributorId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@id([companyId, distributorId])
+}
+
 model Tire {
-  id                   String  @id @default(uuid())
-  companyId            String
-  vehicleId            String?
-  placa                String
+  id        String  @id @default(uuid())
+  companyId String
+  vehicleId String?
+  placa     String
 
-  vida                 Json    @default("[]") // [{ valor, fecha }]
-  marca                String
-  diseno               String
-  profundidadInicial   Float
-  dimension            String
-  eje                  String
+  vida               Json   @default("[]") // [{ valor, fecha }]
+  marca              String
+  diseno             String
+  profundidadInicial Float
+  dimension          String
+  eje                String
 
-  costo                Json    @default("[]") // [{ valor, fecha }]
-  posicion             Int     @default(0)
+  costo    Json @default("[]") // [{ valor, fecha }]
+  posicion Int  @default(0)
 
-  inspecciones         Json    @default("[]")
-  /*
-    Each inspection object now includes:
-    {
-      fecha,
-      profundidadInt,
-      profundidadCen,
-      profundidadExt,
-      cpk,
-      cpkProyectado,
-      cpt,
-      cptProyectado,
-      diasEnUso,
-      mesesEnUso,
-      kilometrosEstimados,
-      imageUrl
-    }
-  */
+  inspecciones Json @default("[]")
+  /**
+   * Each inspection object now includes:
+   * {
+   * fecha,
+   * profundidadInt,
+   * profundidadCen,
+   * profundidadExt,
+   * cpk,
+   * cpkProyectado,
+   * cpt,
+   * cptProyectado,
+   * diasEnUso,
+   * mesesEnUso,
+   * kilometrosEstimados,
+   * imageUrl
+   * }
+   */
 
-  primeraVida          Json    @default("[]")
+  primeraVida Json @default("[]")
 
-  kilometrosRecorridos Int     @default(0)
+  kilometrosRecorridos Int @default(0)
 
-  fechaInstalacion     DateTime? // NEW: when tire was mounted
-  diasAcumulados       Int       @default(0) // NEW: accumulated usage days
+  fechaInstalacion DateTime? // NEW: when tire was mounted
+  diasAcumulados   Int       @default(0) // NEW: accumulated usage days
 
-  eventos              Json    @default("[]")
-  desechos             Json?
+  eventos  Json  @default("[]")
+  desechos Json?
 
   company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
   vehicle       Vehicle?       @relation("VehicleTires", fields: [vehicleId], references: [id])
@@ -100,8 +115,8 @@ model Notification {
   timestamp DateTime @default(now())
   date      DateTime @default(now())
   // Relations
-  tire   Tire?   @relation(fields: [tireId], references: [id])
-  tireId String?
+  tire      Tire?    @relation(fields: [tireId], references: [id])
+  tireId    String?
 
   vehicle   Vehicle? @relation(fields: [vehicleId], references: [id])
   vehicleId String?
@@ -213,14 +228,14 @@ enum CouponCategory {
 }
 
 model Coupon {
-  id String @id @default(uuid())
-  titleKey String
+  id             String         @id @default(uuid())
+  titleKey       String
   descriptionKey String
-  discount String
-  category CouponCategory
-  validUntil DateTime
-  code String
-  color String
+  discount       String
+  category       CouponCategory
+  validUntil     DateTime
+  code           String
+  color          String
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
