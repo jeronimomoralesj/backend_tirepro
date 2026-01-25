@@ -33,21 +33,20 @@ async login(email: string, password: string) {
   const user = await this.prisma.user.findUnique({
     where: { email },
     select: {
-    id: true,
-    email: true,
-    name: true,
-    password: true,
-    role: true,
-    companyId: true,
-    isVerified: true,
-  },
+      id: true,
+      email: true,
+      name: true,
+      password: true,
+      role: true,
+      companyId: true,
+      isVerified: true,
+    },
   });
 
   if (!user) {
     throw new BadRequestException('Invalid credentials');
   }
 
-  // ❌ Block unverified users
   if (!user.isVerified) {
     throw new BadRequestException('Please verify your email before logging in.');
   }
@@ -57,7 +56,14 @@ async login(email: string, password: string) {
     throw new BadRequestException('Invalid credentials');
   }
 
-  const payload = { sub: user.id, email: user.email };
+  // 🔴 INCLUDE EVERYTHING YOU NEED AT REQUEST TIME
+  const payload = {
+    sub: user.id,
+    email: user.email,
+    companyId: user.companyId,
+    role: user.role,
+  };
+
   const access_token = this.jwtService.sign(payload);
 
   return {
@@ -67,8 +73,8 @@ async login(email: string, password: string) {
       email: user.email,
       role: user.role,
       companyId: user.companyId,
-      name: user.name
-    }
+      name: user.name,
+    },
   };
 }
 
