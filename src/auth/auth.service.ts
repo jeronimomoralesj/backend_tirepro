@@ -40,6 +40,17 @@ async login(email: string, password: string) {
       role: true,
       companyId: true,
       isVerified: true,
+      company: {
+        select: {
+          id: true,
+          name: true,
+          plan: true,
+          profileImage: true,
+          userCount: true,
+          tireCount: true,
+          vehicleCount: true,
+        }
+      }
     },
   });
 
@@ -74,6 +85,7 @@ async login(email: string, password: string) {
       role: user.role,
       companyId: user.companyId,
       name: user.name,
+      company: user.company,  // ✅ Now includes company with plan
     },
   };
 }
