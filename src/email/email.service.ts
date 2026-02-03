@@ -1,157 +1,173 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+// src/email/email.service.ts
+import { Injectable, InternalServerErrorException, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 
 @Injectable()
-export class EmailService {
+export class EmailService implements OnModuleInit {
   private transporter: nodemailer.Transporter;
+  private emailUser: string;
+  private emailPassword: string;
 
-  constructor() {
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS || !process.env.EMAIL_SERVICE) {
-      throw new InternalServerErrorException('Missing email credentials or service in environment variables');
+  constructor(private configService: ConfigService) {}
+
+  onModuleInit() {
+    this.emailUser = this.configService.get<string>('EMAIL_USER') || '';
+    this.emailPassword = this.configService.get<string>('EMAIL_PASSWORD') || '';
+
+    console.log('📧 Initializing email service...');
+    console.log('EMAIL_USER:', this.emailUser || '❌ MISSING');
+    console.log('EMAIL_PASSWORD:', this.emailPassword ? `✅ SET (${this.emailPassword.length} characters)` : '❌ MISSING');
+
+    if (!this.emailUser || !this.emailPassword) {
+      console.error('❌ EMAIL CREDENTIALS ARE MISSING!');
+      console.error('Make sure EMAIL_USER and EMAIL_PASSWORD are set in your .env file');
+      throw new Error('Email credentials not configured');
     }
 
     this.transporter = nodemailer.createTransport({
-      service: process.env.EMAIL_SERVICE, // "gmail"
+      service: 'gmail',
       auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
+        user: this.emailUser,
+        pass: this.emailPassword,
       },
+    });
+
+    // Verify transporter configuration
+    this.transporter.verify((error, success) => {
+      if (error) {
+        console.error('❌ Email transporter verification failed:', error);
+      } else {
+        console.log('✅ Email transporter is ready to send emails');
+      }
     });
   }
 
   async sendEmail(to: string, subject: string, htmlContent: string) {
+    if (!this.transporter) {
+      throw new InternalServerErrorException('Email service not initialized');
+    }
+
     const mailOptions = {
-      from: `"TirePro Support" <${process.env.EMAIL_USER}>`,
+      from: `"TirePro Support" <${this.emailUser}>`,
       to,
       subject,
       html: htmlContent,
     };
 
     try {
-      await this.transporter.sendMail(mailOptions);
-      console.log(`✅ Email sent to ${to}`);
+      const info = await this.transporter.sendMail(mailOptions);
+      console.log(`✅ Email sent to ${to}. MessageId: ${info.messageId}`);
       return { message: 'Email sent successfully' };
     } catch (error) {
       console.error('❌ Error sending email:', error.message);
+      console.error('Full error:', error);
       throw new InternalServerErrorException('Failed to send email');
     }
   }
 
-async sendWelcomeEmailWithVerification(email: string, name: string, verifyLink: string) {
-  const subject = "Verify your TirePro account";
-  const html = `
-    <div style="font-family: 'Inter', sans-serif; line-height: 1.6; color: #0A183A; max-width: 600px; margin: 0 auto; background-color: #f8f8f8; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
-      <!-- Header Section -->
-      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #0A183A; border-top-left-radius: 12px; border-top-right-radius: 12px;">
-        <tr>
-          <td style="padding: 30px; text-align: center;">
-            <h1 style="color: #ffffff; font-size: 28px; margin: 0; padding: 0;">Welcome to TirePro!</h1>
-          </td>
-        </tr>
-      </table>
+  async sendWelcomeEmailWithVerification(email: string, name: string, verifyLink: string) {
+    const subject = "Verify your TirePro account";
+    const html = `
+      <div style="font-family: 'Inter', sans-serif; line-height: 1.6; color: #0A183A; max-width: 600px; margin: 0 auto; background-color: #f8f8f8; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #0A183A; border-top-left-radius: 12px; border-top-right-radius: 12px;">
+          <tr>
+            <td style="padding: 30px; text-align: center;">
+              <h1 style="color: #ffffff; font-size: 28px; margin: 0; padding: 0;">Welcome to TirePro!</h1>
+            </td>
+          </tr>
+        </table>
 
-      <!-- Body Section -->
-      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; padding: 30px;">
-        <tr>
-          <td style="padding: 0 20px;">
-            <p style="font-size: 16px; margin-bottom: 20px;">Hello ${name},</p>
-            <p style="font-size: 16px; margin-bottom: 30px;">Thank you for joining the TirePro community! To activate your account and get started, please verify your email by clicking the button below:</p>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; padding: 30px;">
+          <tr>
+            <td style="padding: 0 20px;">
+              <p style="font-size: 16px; margin-bottom: 20px;">Hello ${name},</p>
+              <p style="font-size: 16px; margin-bottom: 30px;">Thank you for joining the TirePro community! To activate your account and get started, please verify your email by clicking the button below:</p>
 
-            <!-- Call to Action Button -->
-            <table width="100%" cellpadding="0" cellspacing="0" border="0">
-              <tr>
-                <td align="center" style="padding-bottom: 30px;">
-                  <table border="0" cellspacing="0" cellpadding="0">
-                    <tr>
-                      <td align="center" style="border-radius: 8px;" bgcolor="#348CCB">
-                        <a href="${verifyLink}" target="_blank" style="font-size: 18px; font-family: 'Inter', sans-serif; color: #ffffff; text-decoration: none; border-radius: 8px; background-color: #348CCB; padding: 15px 25px; border: 1px solid #1E76B6; display: inline-block; font-weight: bold;">
-                          Verify My Account
-                        </a>
-                      </td>
-                    </tr>
-                  </table>
-                </td>
-              </tr>
-            </table>
+              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center" style="padding-bottom: 30px;">
+                    <table border="0" cellspacing="0" cellpadding="0">
+                      <tr>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
 
-            <p style="font-size: 14px; color: #173D68; margin-top: 20px;">If you didn’t create an account, or if you received this email by mistake, please disregard it.</p>
-          </td>
-        </tr>
-      </table>
+              <p style="font-size: 14px; color: #173D68; margin-top: 20px;">If you didn't create an account, or if you received this email by mistake, please disregard it.</p>
+            </td>
+          </tr>
+        </table>
 
-      <!-- Footer Section -->
-      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #173D68; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
-        <tr>
-          <td style="padding: 20px; text-align: center;">
-            <p style="font-size: 12px; color: #ffffff; margin: 0;">
-              &copy; ${new Date().getFullYear()} TirePro. All rights reserved.
-            </p>
-          </td>
-        </tr>
-      </table>
-    </div>
-  `;
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #173D68; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
+          <tr>
+            <td style="padding: 20px; text-align: center;">
+              <p style="font-size: 12px; color: #ffffff; margin: 0;">
+                &copy; ${new Date().getFullYear()} TirePro. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </div>
+    `;
 
-  await this.sendEmail(email, subject, html); // Assume you have sendEmail method
-}
+    await this.sendEmail(email, subject, html);
+  }
 
-async sendWelcomeEmailWithVerificationEs(email: string, name: string, verifyLink: string) {
-  const subject = "Verifica tu cuenta de TirePro";
-  const html = `
-    <div style="font-family: 'Inter', sans-serif; line-height: 1.6; color: #0A183A; max-width: 600px; margin: 0 auto; background-color: #f8f8f8; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
-      <!-- Header Section -->
-      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #0A183A; border-top-left-radius: 12px; border-top-right-radius: 12px;">
-        <tr>
-          <td style="padding: 30px; text-align: center;">
-            <h1 style="color: #ffffff; font-size: 28px; margin: 0; padding: 0;">Bienvenido a TirePro!</h1>
-          </td>
-        </tr>
-      </table>
+  async sendWelcomeEmailWithVerificationEs(email: string, name: string, verifyLink: string) {
+    const subject = "Verifica tu cuenta de TirePro";
+    const html = `
+      <div style="font-family: 'Inter', sans-serif; line-height: 1.6; color: #0A183A; max-width: 600px; margin: 0 auto; background-color: #f8f8f8; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #0A183A; border-top-left-radius: 12px; border-top-right-radius: 12px;">
+          <tr>
+            <td style="padding: 30px; text-align: center;">
+              <h1 style="color: #ffffff; font-size: 28px; margin: 0; padding: 0;">¡Bienvenido a TirePro!</h1>
+            </td>
+          </tr>
+        </table>
 
-      <!-- Body Section -->
-      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; padding: 30px;">
-        <tr>
-          <td style="padding: 0 20px;">
-            <p style="font-size: 16px; margin-bottom: 20px;">Hola ${name},</p>
-            <p style="font-size: 16px; margin-bottom: 30px;">Gracias por crear tu cuenta en TirePro! Para activar tu cuenta por favor verifica tu correo dandole click al botón de abjo:</p>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; padding: 30px;">
+          <tr>
+            <td style="padding: 0 20px;">
+              <p style="font-size: 16px; margin-bottom: 20px;">Hola ${name},</p>
+              <p style="font-size: 16px; margin-bottom: 30px;">Gracias por crear tu cuenta en TirePro! Para activar tu cuenta por favor verifica tu correo dándole click al botón de abajo:</p>
 
-            <!-- Call to Action Button -->
-            <table width="100%" cellpadding="0" cellspacing="0" border="0">
-              <tr>
-                <td align="center" style="padding-bottom: 30px;">
-                  <table border="0" cellspacing="0" cellpadding="0">
-                    <tr>
-                      <td align="center" style="border-radius: 8px;" bgcolor="#348CCB">
-                        <a href="${verifyLink}" target="_blank" style="font-size: 18px; font-family: 'Inter', sans-serif; color: #ffffff; text-decoration: none; border-radius: 8px; background-color: #348CCB; padding: 15px 25px; border: 1px solid #1E76B6; display: inline-block; font-weight: bold;">
-                          Activar mi cuenta
-                        </a>
-                      </td>
-                    </tr>
-                  </table>
-                </td>
-              </tr>
-            </table>
+              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center" style="padding-bottom: 30px;">
+                    <table border="0" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td align="center" style="border-radius: 8px;" bgcolor="#348CCB">
+                          <a href="${verifyLink}" target="_blank" style="font-size: 18px; font-family: 'Inter', sans-serif; color: #ffffff; text-decoration: none; border-radius: 8px; background-color: #348CCB; padding: 15px 25px; border: 1px solid #1E76B6; display: inline-block; font-weight: bold;">
+                            Activar mi cuenta
+                          </a>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
 
-            <p style="font-size: 14px; color: #173D68; margin-top: 20px;">Si tu no solicitaste crear una cuenta o si recibiste este correo por equivocación puedes ignorarlo.</p>
-          </td>
-        </tr>
-      </table>
+              <p style="font-size: 14px; color: #173D68; margin-top: 20px;">Si tú no solicitaste crear una cuenta o si recibiste este correo por equivocación puedes ignorarlo.</p>
+            </td>
+          </tr>
+        </table>
 
-      <!-- Footer Section -->
-      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #173D68; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
-        <tr>
-          <td style="padding: 20px; text-align: center;">
-            <p style="font-size: 12px; color: #ffffff; margin: 0;">
-              &copy; ${new Date().getFullYear()} TirePro. All rights reserved.
-            </p>
-          </td>
-        </tr>
-      </table>
-    </div>
-  `;
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #173D68; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
+          <tr>
+            <td style="padding: 20px; text-align: center;">
+              <p style="font-size: 12px; color: #ffffff; margin: 0;">
+                &copy; ${new Date().getFullYear()} TirePro. Todos los derechos reservados.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </div>
+    `;
 
-  await this.sendEmail(email, subject, html); // Assume you have sendEmail method
-}
+    await this.sendEmail(email, subject, html);
+  }
 
 async sendWelcomeEmail(to: string, name: string) {
   const htmlContent = `

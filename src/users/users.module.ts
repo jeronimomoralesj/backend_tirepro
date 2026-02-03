@@ -6,6 +6,7 @@ import { DatabaseModule } from '../database/database.module';
 import { PrismaService } from '../database/prisma.service';  
 import { EmailModule } from '../email/email.module';
 import { PrismaModule } from 'src/prisma/prisma.module';
+import { EmailService } from '../email/email.service';
 
 @Module({
   imports: [
@@ -14,7 +15,7 @@ import { PrismaModule } from 'src/prisma/prisma.module';
     EmailModule,
     PrismaModule,
   ],
-  providers: [UsersService, PrismaService], 
+  providers: [UsersService, PrismaService, EmailService], 
   controllers: [UsersController],
   exports: [UsersService],
 })

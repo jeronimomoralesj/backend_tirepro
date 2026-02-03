@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
-import { setTimeout } from 'timers/promises';
+import { setTimeout as setTimeoutPromise } from 'timers/promises';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EmailService } from 'src/email/email.service';
 
@@ -35,7 +35,7 @@ export class UsersController {
     }
   }
 
-  @Get('verify')
+ @Get('verify')
 async verifyEmail(@Query('token') token: string) {
   if (!token) throw new BadRequestException('Invalid verification link');
 
@@ -51,7 +51,7 @@ async verifyEmail(@Query('token') token: string) {
   });
 
   // 🕒 Delay sending the welcome email by 10 minutes (600_000 ms)
-  setTimeout(600_000).then(async () => {
+  setTimeoutPromise(600).then(async () => {
     try {
       if (user.preferredLanguage === 'en') {
         await this.emailService.sendWelcomeEmail(user.email, user.name);

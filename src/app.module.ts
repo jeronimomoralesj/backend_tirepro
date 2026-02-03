@@ -5,7 +5,7 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { DatabaseModule } from './database/database.module';
-import { CompaniesModule } from './companies/companies.module'; // Import here
+import { CompaniesModule } from './companies/companies.module';
 import { VehicleModule } from './vehicles/vehicle.module';
 import { TireModule } from './tires/tire.module';
 import { BlogModule } from './blogs/blogs.module';
@@ -13,6 +13,7 @@ import { ExtrasModule } from './extras/extras.module';
 import { ComunidadModule } from './comunidad/comunidad.module';
 import { CuponesModule } from './cupones/cupones.module';
 import { IncomeModule } from './income/income.module';
+import { EmailModule } from './email/email.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { IncomeModule } from './income/income.module';
     ComunidadModule,
     CuponesModule,
     IncomeModule,
+    EmailModule,
   ],
   controllers: [AppController],
   providers: [AppService],

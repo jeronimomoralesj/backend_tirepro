@@ -59,7 +59,7 @@ async createUser(createUserDto: CreateUserDto) {
 
   // 🌐 Send email based on preferred language
   const verifyLink = `https://tirepro.com.co/verify?token=${verificationToken}`;
-  preferredLanguage === 'en'
+  preferredLanguage === 'es'
     ? await this.emailService.sendWelcomeEmailWithVerification(email, name, verifyLink)
     : await this.emailService.sendWelcomeEmailWithVerificationEs(email, name, verifyLink);
 
