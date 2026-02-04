@@ -1,7 +1,7 @@
 // src/cupones/cupones.service.ts
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CouponCategory } from '@prisma/client';
+import { $Enums } from '@prisma/client';
 
 export type Coupon = {
   id: string;
@@ -24,7 +24,7 @@ export class CuponesService {
   async findAll(category?: string): Promise<Coupon[]> {
     const whereClause =
       category && category !== 'all'
-        ? { category: category as CouponCategory }
+        ? { category: category as $Enums.CouponCategory }
         : undefined;
 
     const rows = await this.prisma.coupon.findMany({
