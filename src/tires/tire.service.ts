@@ -514,6 +514,15 @@ async findTiresByVehicle(vehicleId: string) {
 }
 
 async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
+  if (
+    updateDto.profundidadInt === 0 &&
+    updateDto.profundidadCen === 0 &&
+    updateDto.profundidadExt === 0
+  ) {
+    return this.prisma.tire.findUnique({
+      where: { id: tireId },
+    });
+  }
   const KM_POR_MES = 6000;
   const MS_POR_DIA = 1000 * 60 * 60 * 24;
 
@@ -612,6 +621,7 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
 
   const cpt = mesesEnUso > 0 ? totalCost / mesesEnUso : 0;
 
+  const LIMITE_LEGAL_MM = 2;
   // =========================
   // PROFUNDIDADES
   // =========================
@@ -623,12 +633,22 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
 
   const profundidadInicial = updatedTire.profundidadInicial;
 
-  const projectedKm =
-    profundidadInicial > minDepth
-      ? (kilometrosEstimados /
-          (profundidadInicial - minDepth)) *
-        profundidadInicial
-      : 0;
+  const mmWorn = profundidadInicial - minDepth;
+
+let projectedKm = 0;
+
+if (mmWorn > 0 && kilometrosEstimados > 0) {
+  const kmPerMm = kilometrosEstimados / mmWorn;
+
+  const mmLeft = Math.max(
+    minDepth - LIMITE_LEGAL_MM,
+    0,
+  );
+
+  const remainingKm = kmPerMm * mmLeft;
+
+  projectedKm = kilometrosEstimados + remainingKm;
+}
 
   const projectedMonths = projectedKm / KM_POR_MES;
 
