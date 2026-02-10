@@ -43,7 +43,28 @@ export class VehicleController {
     return this.vehicleService.findByPlaca(placa);
   }
 
-  // New endpoint for updating vehicle kilometraje.
+  // Update vehicle data (for edit functionality)
+  @Patch(':id')
+  async updateVehicle(
+    @Param('id') id: string,
+    @Body() updateData: {
+      placa?: string;
+      kilometrajeActual?: number;
+      carga?: string;
+      pesoCarga?: number;
+      tipovhc?: string;
+      cliente?: string | null;
+    }
+  ) {
+    try {
+      const vehicle = await this.vehicleService.updateVehicle(id, updateData);
+      return { message: 'Vehicle updated successfully', vehicle };
+    } catch (error) {
+      throw new BadRequestException(error.message);
+    }
+  }
+
+  // Update vehicle kilometraje (specific endpoint)
   @Patch(':id/kilometraje')
   async updateKilometraje(@Param('id') vehicleId: string, @Body() body: { kilometrajeActual: number }) {
     try {
@@ -70,7 +91,6 @@ export class VehicleController {
     }
   }
 
-  // Remove a placa from the vehicle's union array
   @Patch(':id/union/remove')
   async removeUnion(
     @Param('id') vehicleId: string,

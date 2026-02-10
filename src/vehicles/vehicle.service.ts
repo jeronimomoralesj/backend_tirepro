@@ -3,6 +3,16 @@ import { Injectable, BadRequestException, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../database/prisma.service';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 
+// Add this DTO interface
+interface UpdateVehicleDto {
+  placa?: string;
+  kilometrajeActual?: number;
+  carga?: string;
+  pesoCarga?: number;
+  tipovhc?: string;
+  cliente?: string | null;
+}
+
 @Injectable()
 export class VehicleService {
   constructor(private readonly prisma: PrismaService) {}
@@ -117,6 +127,67 @@ async findVehiclesByCompany(companyId: string) {
   }
 }
 
+  async updateVehicle(vehicleId: string, updateVehicleDto: UpdateVehicleDto) {
+    // Find the vehicle first
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where: { id: vehicleId },
+    });
+    if (!vehicle) {
+      throw new NotFoundException('Vehicle not found');
+    }
+
+    // If placa is being updated, check for duplicates
+    if (updateVehicleDto.placa && updateVehicleDto.placa !== vehicle.placa) {
+      const existingVehicle = await this.prisma.vehicle.findFirst({
+        where: { 
+          placa: updateVehicleDto.placa,
+          id: { not: vehicleId }
+        },
+      });
+      if (existingVehicle) {
+        throw new BadRequestException('A vehicle with this placa already exists');
+      }
+    }
+
+    // Validate kilometraje if provided
+    if (updateVehicleDto.kilometrajeActual !== undefined && 
+        updateVehicleDto.kilometrajeActual < vehicle.kilometrajeActual) {
+      throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al actual');
+    }
+
+    try {
+      const updatedVehicle = await this.prisma.vehicle.update({
+        where: { id: vehicleId },
+        data: {
+          ...(updateVehicleDto.placa !== undefined && { placa: updateVehicleDto.placa }),
+          ...(updateVehicleDto.kilometrajeActual !== undefined && { kilometrajeActual: updateVehicleDto.kilometrajeActual }),
+          ...(updateVehicleDto.carga !== undefined && { carga: updateVehicleDto.carga }),
+          ...(updateVehicleDto.pesoCarga !== undefined && { pesoCarga: updateVehicleDto.pesoCarga }),
+          ...(updateVehicleDto.tipovhc !== undefined && { tipovhc: updateVehicleDto.tipovhc }),
+          ...(updateVehicleDto.cliente !== undefined && { cliente: updateVehicleDto.cliente }),
+        },
+        select: {
+          id: true,
+          placa: true,
+          kilometrajeActual: true,
+          carga: true,
+          pesoCarga: true,
+          tipovhc: true,
+          companyId: true,
+          tireCount: true,
+          union: true,
+          cliente: true,
+        }
+      });
+
+      console.log("Updated vehicle:", updatedVehicle);
+      return updatedVehicle;
+    } catch (error) {
+      console.error("Error updating vehicle:", error);
+      throw error;
+    }
+  }
+
   async deleteVehicle(vehicleId: string) {
     // Find the vehicle first
     const vehicle = await this.prisma.vehicle.findUnique({
@@ -215,7 +286,7 @@ async findVehiclesByCompany(companyId: string) {
       throw new BadRequestException('These vehicles are not currently united');
     }
 
-    // 2. Remove each from the other’s union array
+    // 2. Remove each from the other's union array
     const newUnion1 = union1.filter((p) => p !== v2.placa);
     const newUnion2 = union2.filter((p) => p !== v1.placa);
 
