@@ -143,41 +143,78 @@ async bulkUploadTires(file: any, companyId: string) {
 
   const KM_POR_MES = 6000;
   const MS_POR_DIA = 1000 * 60 * 60 * 24;
+  const PREMIUM_TIRE_THRESHOLD = 2000000;
+  const PREMIUM_TIRE_EXPECTED_KM = 100000;
+  const STANDARD_TIRE_EXPECTED_KM = 80000;
+  const SIGNIFICANT_WEAR_MM = 5;
+  const RECENT_REGISTRATION_DAYS = 30;
+  const DEFAULT_PROFUNDIDAD_INICIAL = 22;
+  const REENCAUCHE_COST = 900000;
+  const FALLBACK_TIRE_PRICE = 1800000;
+  const MIN_VALID_PRICE = 1000000;
 
-  const headerMap: Record<string, string> = {
+  // =========================
+  // FORMAT DETECTION
+  // =========================
+  const isFormatB = rows.length > 0 && (
+    Object.keys(rows[0]).some(k => 
+      k.toLowerCase().includes('numero de llanta') || 
+      k.toLowerCase().includes('tipo de equipo')
+    )
+  );
+
+  console.log(`📋 Detected Excel Format: ${isFormatB ? 'FORMAT B (New)' : 'FORMAT A (Original)'}`);
+
+  // =========================
+  // HEADER MAPPING
+  // =========================
+  const headerMap: Record<string, string> = isFormatB ? {
+    // FORMAT B mappings
+    'tipo de equipo': 'tipovhc',
+    'placa': 'placa_vehiculo',
+    'km actual': 'kilometros_vehiculo',
+    'pos': 'posicion',
+    '# numero de llanta': 'llanta',
+    'numero de llanta': 'llanta',
+    'diseño': 'diseno_original',
+    'diseno': 'diseno_original',
+    'marca': 'marca',
+    'marca band': 'marca_banda',
+    'banda': 'banda_name',
+    'tipo llanta': 'eje',
+    'dimensión': 'dimension',
+    'dimension': 'dimension',
+    'prf int': 'profundidad_int',
+    'pro cent': 'profundidad_cen',
+    'pro ext': 'profundidad_ext',
+    'profundidad inicial': 'profundidad_inicial',
+  } : {
+    // FORMAT A mappings (original)
     'llanta': 'llanta',
     'numero de llanta': 'llanta',
     'id': 'llanta',
-
     'placa vehiculo': 'placa_vehiculo',
     'placa': 'placa_vehiculo',
-
     'marca': 'marca',
-    'diseno': 'diseno',
+    'diseno': 'diseno_original',
+    'diseño': 'diseno_original',
     'dimension': 'dimension',
+    'dimensión': 'dimension',
     'eje': 'eje',
     'posicion': 'posicion',
-
     'vida': 'vida',
-
     'kilometros llanta': 'kilometros_llanta',
     'kilometraje vehiculo': 'kilometros_vehiculo',
-
     'profundidad int': 'profundidad_int',
     'profundidad cen': 'profundidad_cen',
     'profundidad ext': 'profundidad_ext',
-
     'profundidad inicial': 'profundidad_inicial',
-
     'costo': 'costo',
     'cost': 'costo',
     'precio': 'costo',
     'costo furgon': 'costo',
-
     'fecha instalacion': 'fecha_instalacion',
-
     'imageurl': 'imageurl',
-
     'tipovhc': 'tipovhc',
     'tipo de vehiculo': 'tipovhc',
     'tipo vhc': 'tipovhc',
@@ -214,24 +251,126 @@ async bulkUploadTires(file: any, companyId: string) {
     return `${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
   };
 
+  // Check if tire ID is invalid and needs generation
+  const needsIdGeneration = (id: string): boolean => {
+    if (!id || !id.trim()) return true;
+    const normalizedId = normalize(id);
+    const invalidPatterns = ['no aplica', 'no visible', 'no space', 'nospace'];
+    return invalidPatterns.some(pattern => normalizedId.includes(pattern));
+  };
+
+  // Normalize tipovhc to highest variant if incomplete
+  const normalizeTipoVHC = (tipovhc: string): string => {
+    if (!tipovhc) return '';
+    const normalized = normalize(tipovhc);
+    
+    if (normalized === 'trailer') {
+      console.log(`🔄 Normalized 'trailer' to 'trailer 3 ejes'`);
+      return 'trailer 3 ejes';
+    }
+    
+    if (normalized === 'cabezote') {
+      console.log(`🔄 Normalized 'cabezote' to 'cabezote 2 ejes'`);
+      return 'cabezote 2 ejes';
+    }
+    
+    return tipovhc.trim().toLowerCase();
+  };
+
+  // Web scraping function for tire prices
+  const fetchTirePriceFromGoogle = async (
+    marca: string, 
+    diseno: string, 
+    dimension: string
+  ): Promise<number> => {
+    try {
+      // Note: This is a placeholder for the actual web scraping implementation
+      // You'll need to implement this using Puppeteer or a similar library
+      console.log(`🌐 Attempting to fetch price for: ${marca} ${diseno} ${dimension}`);
+      
+      // For now, return fallback
+      // TODO: Implement actual Google Shopping scraping
+      /*
+      const puppeteer = require('puppeteer');
+      const browser = await puppeteer.launch({ headless: true });
+      const page = await browser.newPage();
+      
+      const query = `${marca} ${diseno} ${dimension} llanta`;
+      const url = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=shop&gl=co&hl=es`;
+      
+      await page.goto(url, { waitUntil: 'networkidle2' });
+      
+      const prices = await page.$$eval('.a8Pemb', elements => 
+        elements.map(el => {
+          const text = el.innerText || el.textContent;
+          const cleaned = text.replace(/[^0-9]/g, '');
+          return parseInt(cleaned);
+        }).filter(price => price >= 1000000)
+      );
+      
+      await browser.close();
+      
+      if (prices.length > 0) {
+        console.log(`✅ Found price from Google Shopping: ${prices[0]}`);
+        return prices[0];
+      }
+      */
+      
+      console.log(`⚠️ Could not fetch price, using fallback: ${FALLBACK_TIRE_PRICE}`);
+      return FALLBACK_TIRE_PRICE;
+      
+    } catch (error) {
+      console.error(`❌ Error fetching price from Google:`, error);
+      return FALLBACK_TIRE_PRICE;
+    }
+  };
+
   const tireDataMap = new Map<string, { lastVida: string; lastCosto: number }>();
   const processedIds = new Set<string>();
   const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // Tracking variables for FORMAT B sparse data
+  let lastSeenTipoVHC = '';
+  let lastSeenPlaca = '';
 
   if (rows.length > 0) {
     console.log('📋 First row raw keys:', Object.keys(rows[0]));
-    console.log('📋 First row costo value:', rows[0]['costo furgon']);
-    console.log('📋 Testing get() for costo:', get(rows[0], 'costo'));
   }
 
+  // =========================
+  // MAIN PROCESSING LOOP
+  // =========================
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
     const row = rows[rowIndex];
     
-    let tirePlaca = get(row, 'llanta')?.trim().toLowerCase();
+    // =========================
+    // HANDLE SPARSE DATA (FORMAT B)
+    // =========================
+    if (isFormatB) {
+      const currentTipoVHC = get(row, 'tipovhc')?.trim();
+      const currentPlaca = get(row, 'placa_vehiculo')?.trim();
+      
+      if (currentTipoVHC) {
+        lastSeenTipoVHC = currentTipoVHC;
+      }
+      
+      if (currentPlaca) {
+        lastSeenPlaca = currentPlaca;
+      }
+    }
     
-    if (!tirePlaca) {
+    // =========================
+    // TIRE ID HANDLING
+    // =========================
+    let tirePlacaRaw = get(row, 'llanta')?.trim();
+    let tirePlaca = '';
+    
+    if (needsIdGeneration(tirePlacaRaw)) {
       tirePlaca = generateTireId().toLowerCase();
-      console.log(`🔢 Generated ID for row ${rowIndex + 2}: ${tirePlaca}`);
+      console.log(`🔢 Generated ID for row ${rowIndex + 2}: ${tirePlaca} (original: "${tirePlacaRaw}")`);
+    } else {
+      tirePlaca = tirePlacaRaw.toLowerCase();
     }
 
     if (processedIds.has(tirePlaca)) {
@@ -243,28 +382,73 @@ async bulkUploadTires(file: any, companyId: string) {
 
     processedIds.add(tirePlaca);
 
+    // =========================
+    // EXTRACT BASIC TIRE DATA
+    // =========================
     const marca = get(row, 'marca').toLowerCase();
-    const diseno = get(row, 'diseno').toLowerCase();
+    let diseno = get(row, 'diseno_original').toLowerCase();
     const dimension = get(row, 'dimension').toLowerCase();
     const eje = get(row, 'eje').toLowerCase();
     const posicion = parseInt(get(row, 'posicion') || '0', 10);
     
-    // Normalize vida value - if it's "rencauche" or "reencauche", convert to "reencauche1"
-    let vidaValor = get(row, 'vida').trim().toLowerCase();
-    if (vidaValor === 'rencauche' || vidaValor === 'reencauche') {
-      vidaValor = 'reencauche1';
-      console.log(`🔄 Normalized vida from "${get(row, 'vida')}" to "reencauche1" for row ${rowIndex + 2}`);
+    // Get tipovhc (from current row or carry forward in FORMAT B)
+    let tipovhc = isFormatB 
+      ? (get(row, 'tipovhc')?.trim() || lastSeenTipoVHC)
+      : get(row, 'tipovhc')?.trim();
+    
+    tipovhc = normalizeTipoVHC(tipovhc);
+    
+    // =========================
+    // PROFUNDIDAD INICIAL HANDLING
+    // =========================
+    let profundidadInicial = parseFloat(get(row, 'profundidad_inicial') || '0');
+    
+    if (!profundidadInicial || profundidadInicial <= 0) {
+      profundidadInicial = DEFAULT_PROFUNDIDAD_INICIAL;
+      warnings.push(`Row ${rowIndex + 2}: Using default profundidad inicial: ${DEFAULT_PROFUNDIDAD_INICIAL}mm`);
     }
     
-    const tipovhc = get(row, 'tipovhc')?.trim().toLowerCase() || '';
-    const profundidadInicial = parseFloat(
-      get(row, 'profundidad_inicial') || '0',
-    );
+    // =========================
+    // VIDA DETECTION (FORMAT B)
+    // =========================
+    let vidaValor = '';
+    let needsReencauche = false;
+    let bandaName = '';
+    
+    if (isFormatB) {
+      const marcaBanda = normalize(get(row, 'marca_banda'));
+      bandaName = get(row, 'banda_name').toLowerCase();
+      
+      if (marcaBanda.includes('original')) {
+        vidaValor = 'nueva';
+        needsReencauche = false;
+      } else if (marcaBanda.includes('reencauche') || marcaBanda.includes('rencauche')) {
+        vidaValor = 'nueva'; // Start as nueva, will immediately reencauche
+        needsReencauche = true;
+        console.log(`🔄 Tire ${tirePlaca} will be created as nueva then reencauched with banda: ${bandaName}`);
+      } else {
+        vidaValor = 'nueva';
+        needsReencauche = false;
+      }
+    } else {
+      // FORMAT A - original logic
+      vidaValor = get(row, 'vida').trim().toLowerCase();
+      if (vidaValor === 'rencauche' || vidaValor === 'reencauche') {
+        vidaValor = 'reencauche1';
+        console.log(`🔄 Normalized vida from "${get(row, 'vida')}" to "reencauche1" for row ${rowIndex + 2}`);
+      }
+    }
 
-    const placaVehiculo = get(row, 'placa_vehiculo')?.trim().toLowerCase();
-    const kilometrosVehiculo = parseFloat(
-      get(row, 'kilometros_vehiculo') || '0',
-    );
+    // =========================
+    // VEHICLE HANDLING
+    // =========================
+    let placaVehiculo = isFormatB 
+      ? (get(row, 'placa_vehiculo')?.trim() || lastSeenPlaca)
+      : get(row, 'placa_vehiculo')?.trim();
+    
+    placaVehiculo = placaVehiculo?.toLowerCase();
+    
+    const kilometrosVehiculo = parseFloat(get(row, 'kilometros_vehiculo') || '0');
 
     let vehicle: any = null;
 
@@ -300,6 +484,9 @@ async bulkUploadTires(file: any, companyId: string) {
       vehicle.tipovhc = tipovhc;
     }
 
+    // =========================
+    // TIRE DUPLICATE CHECK
+    // =========================
     let tire = await this.prisma.tire.findFirst({
       where: { placa: tirePlaca },
     });
@@ -311,16 +498,37 @@ async bulkUploadTires(file: any, companyId: string) {
       continue;
     }
 
+    // =========================
+    // FECHA INSTALACION
+    // =========================
     const fechaInstalacionRaw = get(row, 'fecha_instalacion');
     const fechaInstalacion = fechaInstalacionRaw
       ? new Date(fechaInstalacionRaw)
       : new Date();
 
+    // =========================
+    // COST HANDLING WITH WEB SCRAPING FALLBACK
+    // =========================
+    const costoRaw = get(row, 'costo');
+    let costoCell = parseCurrency(costoRaw);
+
+    // If no valid cost provided, attempt to fetch from web
+    if (costoCell <= 0) {
+      console.log(`💰 No cost provided for row ${rowIndex + 2}, attempting to fetch from Google Shopping...`);
+      costoCell = await fetchTirePriceFromGoogle(marca, diseno, dimension);
+      warnings.push(`Row ${rowIndex + 2}: Cost fetched/fallback used: ${costoCell}`);
+    } else {
+      console.log(`💰 Row ${rowIndex + 2} - Using provided cost: ${costoCell}`);
+    }
+
+    // =========================
+    // CREATE TIRE (ALWAYS START AS NUEVA FOR FORMAT B)
+    // =========================
     tire = await this.prisma.tire.create({
       data: {
         placa: tirePlaca,
         marca,
-        diseno,
+        diseno, // Original diseño for now
         dimension,
         eje,
         posicion,
@@ -331,7 +539,9 @@ async bulkUploadTires(file: any, companyId: string) {
         vida: vidaValor
           ? [{ fecha: new Date().toISOString(), valor: vidaValor }]
           : [],
-        costo: [],
+        costo: costoCell > 0 
+          ? [{ fecha: new Date().toISOString(), valor: costoCell }]
+          : [],
         inspecciones: [],
         eventos: [],
       },
@@ -349,13 +559,15 @@ async bulkUploadTires(file: any, companyId: string) {
       });
     }
 
+    // =========================
+    // TIME & KM CALCULATIONS
+    // =========================
     const rec = await this.prisma.tire.findUnique({
       where: { id: tire.id },
     });
     if (!rec) continue;
 
     const now = new Date();
-
     const instalacionDate = rec.fechaInstalacion 
       ? new Date(rec.fechaInstalacion) 
       : now;
@@ -367,35 +579,64 @@ async bulkUploadTires(file: any, companyId: string) {
 
     const mesesEnUso = diasEnUso / 30;
 
+    // =========================
+    // KILOMETROS ESTIMATION (with used tire detection)
+    // =========================
     const kmLlantaExcel = parseFloat(get(row, 'kilometros_llanta') || '0');
+    
+    // Get profundidades for wear detection
+    const profInt = parseFloat(get(row, 'profundidad_int') || '0');
+    const profCen = parseFloat(get(row, 'profundidad_cen') || '0');
+    const profExt = parseFloat(get(row, 'profundidad_ext') || '0');
+    
+    const minDepth = Math.min(profInt, profCen, profExt);
+    const mmWorn = profundidadInicial - minDepth;
+    
+    const hasSignificantWear = mmWorn > SIGNIFICANT_WEAR_MM;
+    const isRecentlyRegistered = diasEnUso < RECENT_REGISTRATION_DAYS;
+    const isPremiumTire = costoCell >= PREMIUM_TIRE_THRESHOLD;
+    const hasInspection = profInt > 0 || profCen > 0 || profExt > 0;
+    
+    let kilometrosEstimados = 0;
+    
+    // Special case: Used tire being registered for the first time
+    if (
+      kmLlantaExcel === 0 &&
+      hasSignificantWear &&
+      hasInspection &&
+      isRecentlyRegistered &&
+      mmWorn > 0
+    ) {
+      const expectedLifetimeKm = isPremiumTire 
+        ? PREMIUM_TIRE_EXPECTED_KM 
+        : STANDARD_TIRE_EXPECTED_KM;
+      
+      const kmPerMm = expectedLifetimeKm / profundidadInicial;
+      const estimatedKmTraveled = Math.round(kmPerMm * mmWorn);
+      
+      const maxReasonableKm = diasEnUso * 500;
+      kilometrosEstimados = Math.min(estimatedKmTraveled, maxReasonableKm);
+      
+      console.log(`🔍 Used tire detected (row ${rowIndex + 2}): Estimated ${kilometrosEstimados} km based on ${mmWorn}mm wear`);
+      warnings.push(`Row ${rowIndex + 2}: Used tire detected - estimated ${kilometrosEstimados} km from wear pattern`);
+      
+    } else if (kmLlantaExcel > 0) {
+      kilometrosEstimados = kmLlantaExcel;
+    } else {
+      kilometrosEstimados = Math.round(mesesEnUso * KM_POR_MES);
+    }
 
-    const kilometrosEstimados = kmLlantaExcel > 0
-      ? kmLlantaExcel
-      : Math.round(mesesEnUso * KM_POR_MES);
-
-    const costoRaw = get(row, 'costo');
-    const costoCell = parseCurrency(costoRaw);
-
-    console.log(`💰 Row ${rowIndex + 2} - Raw costo: "${costoRaw}" → Parsed: ${costoCell}`);
-
+    // =========================
+    // COST ARRAY
+    // =========================
     const lastData = tireDataMap.get(tirePlaca) || { 
       lastVida: '', 
       lastCosto: -1 
     };
 
-    const costosActuales: any[] = [];
-
-    if (costoCell > 0) {
-      costosActuales.push({
-        fecha: now.toISOString(),
-        valor: costoCell,
-      });
-      lastData.lastCosto = costoCell;
-      
-      console.log(`✅ Added cost for tire ${tirePlaca}: ${costoCell}`);
-    } else {
-      console.log(`⚠️ No valid cost for tire ${tirePlaca} (value: ${costoCell})`);
-    }
+    const costosActuales: any[] = costoCell > 0 
+      ? [{ fecha: now.toISOString(), valor: costoCell }]
+      : [];
 
     const totalCost = costosActuales.reduce((sum, c) => {
       return sum + (typeof c?.valor === 'number' ? c.valor : 0);
@@ -407,15 +648,10 @@ async bulkUploadTires(file: any, companyId: string) {
 
     lastData.lastVida = vidaValor;
 
-    const profInt = parseFloat(get(row, 'profundidad_int') || '0');
-    const profCen = parseFloat(get(row, 'profundidad_cen') || '0');
-    const profExt = parseFloat(get(row, 'profundidad_ext') || '0');
-
-    const hasInspection = profInt > 0 || profCen > 0 || profExt > 0;
-
+    // =========================
+    // INSPECTION CREATION (if applicable)
+    // =========================
     if (hasInspection) {
-      const minDepth = Math.min(profInt, profCen, profExt);
-
       const cpk = kilometrosEstimados > 0 
         ? totalCost / kilometrosEstimados 
         : 0;
@@ -424,12 +660,15 @@ async bulkUploadTires(file: any, companyId: string) {
         ? totalCost / mesesEnUso 
         : 0;
 
-      const profundidadInicial = rec.profundidadInicial;
       const desgaste = profundidadInicial - minDepth;
 
-      const projectedKm = desgaste > 0
-        ? (kilometrosEstimados / desgaste) * profundidadInicial
-        : 0;
+      let projectedKm = 0;
+      if (desgaste > 0 && kilometrosEstimados > 0) {
+        const kmPerMm = kilometrosEstimados / desgaste;
+        const mmLeft = Math.max(minDepth - 2, 0); // 2mm legal limit
+        const remainingKm = kmPerMm * mmLeft;
+        projectedKm = kilometrosEstimados + remainingKm;
+      }
 
       const projectedMonths = projectedKm / KM_POR_MES;
 
@@ -478,23 +717,59 @@ async bulkUploadTires(file: any, companyId: string) {
       });
     }
 
+    // =========================
+    // REENCAUCHE OPERATION (FORMAT B - if needed)
+    // =========================
+    if (needsReencauche) {
+      try {
+        console.log(`🔧 Performing reencauche operation for tire ${tire.id} (row ${rowIndex + 2})`);
+        
+        await this.updateVida(
+          tire.id,
+          'reencauche1',
+          bandaName || diseno, // Use banda name if available
+          REENCAUCHE_COST,
+          profundidadInicial,
+          undefined // No desechoData
+        );
+        
+        console.log(`✅ Reencauche completed for tire ${tire.id}`);
+      } catch (error) {
+        const errorMsg = `Error performing reencauche for tire ${tirePlaca} (row ${rowIndex + 2}): ${error.message}`;
+        console.error(`❌ ${errorMsg}`);
+        errors.push(errorMsg);
+      }
+    }
+
     tireDataMap.set(tirePlaca, lastData);
   }
 
+  // =========================
+  // FINAL RESPONSE
+  // =========================
   const successCount = processedIds.size;
   const errorCount = errors.length;
+  const warningCount = warnings.length;
 
   let message = `Carga masiva completada. ${successCount} llantas procesadas exitosamente.`;
   
+  if (warningCount > 0) {
+    message += ` ${warningCount} advertencias encontradas.`;
+  }
+  
   if (errorCount > 0) {
-    message += ` ${errorCount} errores encontrados: ${errors.join('; ')}`;
+    message += ` ${errorCount} errores encontrados.`;
   }
 
   return { 
     message,
     success: successCount,
     errors: errorCount,
-    details: errors
+    warnings: warningCount,
+    details: {
+      errors,
+      warnings,
+    }
   };
 }
 
@@ -525,6 +800,11 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
   }
   const KM_POR_MES = 6000;
   const MS_POR_DIA = 1000 * 60 * 60 * 24;
+  const PREMIUM_TIRE_THRESHOLD = 2000000;
+  const PREMIUM_TIRE_EXPECTED_KM = 100000;
+  const STANDARD_TIRE_EXPECTED_KM = 80000;
+  const SIGNIFICANT_WEAR_MM = 5;
+  const RECENT_REGISTRATION_DAYS = 30; // Adjust this threshold as needed
 
   // =========================
   // VALIDACIONES BÁSICAS
@@ -594,12 +874,75 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
   const mesesEnUso = diasEnUso / 30;
 
   // =========================
+  // DETECCIÓN DE LLANTA USADA RECIÉN REGISTRADA
+  // =========================
+  const minDepth = Math.min(
+    updateDto.profundidadInt,
+    updateDto.profundidadCen,
+    updateDto.profundidadExt,
+  );
+
+  const profundidadInicial = updatedTire.profundidadInicial;
+  const mmWorn = profundidadInicial - minDepth;
+
+  const currentInspections = Array.isArray(updatedTire.inspecciones)
+    ? updatedTire.inspecciones
+    : [];
+  
+  const isFirstInspection = currentInspections.length === 0;
+  const hasSignificantWear = mmWorn > SIGNIFICANT_WEAR_MM;
+
+  // Calculate days since tire creation
+  const tireCreatedAt = updatedTire.createdAt || now;
+  const daysSinceCreation = Math.max(
+    Math.floor(
+      (now.getTime() - new Date(tireCreatedAt).getTime()) / MS_POR_DIA,
+    ),
+    0,
+  );
+  const isRecentlyRegistered = daysSinceCreation < RECENT_REGISTRATION_DAYS;
+
+  // Get first cost to determine tire type
+  const firstCostValue = Array.isArray(updatedTire.costo) && updatedTire.costo.length > 0
+    ? updatedTire.costo[0]?.valor || 0
+    : 0;
+  
+  const isPremiumTire = firstCostValue >= PREMIUM_TIRE_THRESHOLD;
+
+  // =========================
   // KILOMETROS LLANTA (REAL O ESTIMADO)
   // =========================
   const realTireKm = updatedTire.kilometrosRecorridos || 0;
-  const kilometrosEstimados = odometerStuck
-    ? Math.round(mesesEnUso * KM_POR_MES)
-    : realTireKm;
+  let kilometrosEstimados = 0;
+
+  // Special case: Used tire being registered for the first time
+  if (
+    odometerStuck &&
+    realTireKm === 0 &&
+    (isFirstInspection || hasSignificantWear) &&
+    isRecentlyRegistered &&
+    mmWorn > 0
+  ) {
+    // Use wear-based estimation for recently registered tires with significant wear
+    const expectedLifetimeKm = isPremiumTire 
+      ? PREMIUM_TIRE_EXPECTED_KM 
+      : STANDARD_TIRE_EXPECTED_KM;
+    
+    const kmPerMm = expectedLifetimeKm / profundidadInicial;
+    const estimatedKmTraveled = Math.round(kmPerMm * mmWorn);
+    
+    // Safety cap: prevent unrealistic estimates
+    const maxReasonableKm = daysSinceCreation * 500; // Max 500 km/day
+    kilometrosEstimados = Math.min(estimatedKmTraveled, maxReasonableKm);
+    
+  } else if (odometerStuck) {
+    // Time-based estimation when odometer is unreliable
+    kilometrosEstimados = Math.round(mesesEnUso * KM_POR_MES);
+    
+  } else {
+    // Use actual tracked kilometers when odometer is working
+    kilometrosEstimados = realTireKm;
+  }
 
   // =========================
   // COSTO TOTAL
@@ -622,33 +965,24 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
   const cpt = mesesEnUso > 0 ? totalCost / mesesEnUso : 0;
 
   const LIMITE_LEGAL_MM = 2;
+
   // =========================
-  // PROFUNDIDADES
+  // PROYECCIÓN DE VIDA ÚTIL
   // =========================
-  const minDepth = Math.min(
-    updateDto.profundidadInt,
-    updateDto.profundidadCen,
-    updateDto.profundidadExt,
-  );
+  let projectedKm = 0;
 
-  const profundidadInicial = updatedTire.profundidadInicial;
+  if (mmWorn > 0 && kilometrosEstimados > 0) {
+    const kmPerMm = kilometrosEstimados / mmWorn;
 
-  const mmWorn = profundidadInicial - minDepth;
+    const mmLeft = Math.max(
+      minDepth - LIMITE_LEGAL_MM,
+      0,
+    );
 
-let projectedKm = 0;
+    const remainingKm = kmPerMm * mmLeft;
 
-if (mmWorn > 0 && kilometrosEstimados > 0) {
-  const kmPerMm = kilometrosEstimados / mmWorn;
-
-  const mmLeft = Math.max(
-    minDepth - LIMITE_LEGAL_MM,
-    0,
-  );
-
-  const remainingKm = kmPerMm * mmLeft;
-
-  projectedKm = kilometrosEstimados + remainingKm;
-}
+    projectedKm = kilometrosEstimados + remainingKm;
+  }
 
   const projectedMonths = projectedKm / KM_POR_MES;
 
@@ -698,14 +1032,8 @@ if (mmWorn > 0 && kilometrosEstimados > 0) {
     cptProyectado,
   };
 
-  const currentInspecciones = Array.isArray(
-    updatedTire.inspecciones,
-  )
-    ? updatedTire.inspecciones
-    : [];
-
   const updatedInspecciones = [
-    ...currentInspecciones,
+    ...currentInspections,
     newInspection,
   ];
 
@@ -1138,3 +1466,5 @@ async findAllTires() {
   }
   
 }
+
+/* SE LOGROOO */
