@@ -143,15 +143,15 @@ async bulkUploadTires(file: any, companyId: string) {
 
   const KM_POR_MES = 6000;
   const MS_POR_DIA = 1000 * 60 * 60 * 24;
-  const PREMIUM_TIRE_THRESHOLD = 2000000;
-  const PREMIUM_TIRE_EXPECTED_KM = 100000;
+  const PREMIUM_TIRE_EXPECTED_KM = 120000;
   const STANDARD_TIRE_EXPECTED_KM = 80000;
   const SIGNIFICANT_WEAR_MM = 5;
   const RECENT_REGISTRATION_DAYS = 30;
   const DEFAULT_PROFUNDIDAD_INICIAL = 22;
-  const REENCAUCHE_COST = 900000;
-  const FALLBACK_TIRE_PRICE = 1800000;
+  const REENCAUCHE_COST = 650000;
+  const FALLBACK_TIRE_PRICE = 2200000;
   const MIN_VALID_PRICE = 1000000;
+  const PREMIUM_TIRE_THRESHOLD = 2100000;
 
   // =========================
   // FORMAT DETECTION
@@ -277,50 +277,94 @@ async bulkUploadTires(file: any, companyId: string) {
     return tipovhc.trim().toLowerCase();
   };
 
-  // Web scraping function for tire prices
-  const fetchTirePriceFromGoogle = async (
+  // =========================
+  // FETCH PRICE FROM MARKET DATA DB
+  // =========================
+  const fetchTirePriceFromMarketData = async (
     marca: string, 
     diseno: string, 
     dimension: string
   ): Promise<number> => {
     try {
-      // Note: This is a placeholder for the actual web scraping implementation
-      // You'll need to implement this using Puppeteer or a similar library
-      console.log(`🌐 Attempting to fetch price for: ${marca} ${diseno} ${dimension}`);
+      console.log(`💰 Searching market data for: ${marca} ${diseno} ${dimension}`);
       
-      // For now, return fallback
-      // TODO: Implement actual Google Shopping scraping
-      /*
-      const puppeteer = require('puppeteer');
-      const browser = await puppeteer.launch({ headless: true });
-      const page = await browser.newPage();
-      
-      const query = `${marca} ${diseno} ${dimension} llanta`;
-      const url = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=shop&gl=co&hl=es`;
-      
-      await page.goto(url, { waitUntil: 'networkidle2' });
-      
-      const prices = await page.$$eval('.a8Pemb', elements => 
-        elements.map(el => {
-          const text = el.innerText || el.textContent;
-          const cleaned = text.replace(/[^0-9]/g, '');
-          return parseInt(cleaned);
-        }).filter(price => price >= 1000000)
-      );
-      
-      await browser.close();
-      
-      if (prices.length > 0) {
-        console.log(`✅ Found price from Google Shopping: ${prices[0]}`);
-        return prices[0];
+      // Try exact match first
+      let marketTire = await this.prisma.marketTire.findFirst({
+        where: {
+          brand: { equals: marca, mode: 'insensitive' },
+          diseno: { equals: diseno, mode: 'insensitive' },
+          dimension: { equals: dimension, mode: 'insensitive' },
+        },
+      });
+
+      // If no exact match, try without dimension
+      if (!marketTire) {
+        console.log(`🔍 No exact match found, trying without dimension...`);
+        marketTire = await this.prisma.marketTire.findFirst({
+          where: {
+            brand: { equals: marca, mode: 'insensitive' },
+            diseno: { equals: diseno, mode: 'insensitive' },
+          },
+        });
       }
-      */
+
+      // If still no match, try just brand
+      if (!marketTire) {
+        console.log(`🔍 No match with diseno, trying just brand...`);
+        marketTire = await this.prisma.marketTire.findFirst({
+          where: {
+            brand: { equals: marca, mode: 'insensitive' },
+          },
+          orderBy: {
+            updatedAt: 'desc', // Get most recent price
+          },
+        });
+      }
+
+      if (marketTire) {
+        // Define the price entry type
+        type PriceEntry = {
+          price: number;
+          date: string;
+          source?: string;
+        };
+
+        // Parse prices JSON array with proper typing
+        const prices = Array.isArray(marketTire.prices) 
+          ? (marketTire.prices as PriceEntry[])
+          : [];
+        
+        if (prices.length > 0) {
+          // Get the most recent price
+          const sortedPrices = [...prices].sort((a, b) => {
+            const dateA = new Date(a.date || 0).getTime();
+            const dateB = new Date(b.date || 0).getTime();
+            return dateB - dateA; // Most recent first
+          });
+          
+          const latestPrice = sortedPrices[0]?.price;
+          
+          if (latestPrice && latestPrice >= MIN_VALID_PRICE) {
+            console.log(`✅ Found market price: $${latestPrice} (${marketTire.brand} ${marketTire.diseno}) from ${sortedPrices[0]?.date || 'unknown date'}`);
+            return latestPrice;
+          }
+        }
+        
+        // Fallback: use CPK-based estimation if available
+        if (marketTire.cpk && marketTire.cpk > 0) {
+          const estimatedPrice = Math.round(marketTire.cpk * STANDARD_TIRE_EXPECTED_KM);
+          if (estimatedPrice >= MIN_VALID_PRICE) {
+            console.log(`✅ Estimated price from CPK: $${estimatedPrice} (${marketTire.brand} ${marketTire.diseno})`);
+            return estimatedPrice;
+          }
+        }
+      }
       
-      console.log(`⚠️ Could not fetch price, using fallback: ${FALLBACK_TIRE_PRICE}`);
+      console.log(`⚠️ No valid market data found, using fallback price: $${FALLBACK_TIRE_PRICE}`);
       return FALLBACK_TIRE_PRICE;
       
     } catch (error) {
-      console.error(`❌ Error fetching price from Google:`, error);
+      console.error(`❌ Error fetching market data:`, error);
       return FALLBACK_TIRE_PRICE;
     }
   };
@@ -507,18 +551,18 @@ async bulkUploadTires(file: any, companyId: string) {
       : new Date();
 
     // =========================
-    // COST HANDLING WITH WEB SCRAPING FALLBACK
+    // COST HANDLING WITH MARKET DATA FALLBACK
     // =========================
     const costoRaw = get(row, 'costo');
     let costoCell = parseCurrency(costoRaw);
 
-    // If no valid cost provided, attempt to fetch from web
+    // If no valid cost provided, fetch from market data
     if (costoCell <= 0) {
-      console.log(`💰 No cost provided for row ${rowIndex + 2}, attempting to fetch from Google Shopping...`);
-      costoCell = await fetchTirePriceFromGoogle(marca, diseno, dimension);
-      warnings.push(`Row ${rowIndex + 2}: Cost fetched/fallback used: ${costoCell}`);
+      console.log(`💰 No cost provided for row ${rowIndex + 2}, fetching from market data...`);
+      costoCell = await fetchTirePriceFromMarketData(marca, diseno, dimension);
+      warnings.push(`Row ${rowIndex + 2}: Cost fetched from market data: $${costoCell}`);
     } else {
-      console.log(`💰 Row ${rowIndex + 2} - Using provided cost: ${costoCell}`);
+      console.log(`💰 Row ${rowIndex + 2} - Using provided cost: $${costoCell}`);
     }
 
     // =========================
@@ -572,12 +616,10 @@ async bulkUploadTires(file: any, companyId: string) {
       ? new Date(rec.fechaInstalacion) 
       : now;
 
-    const diasEnUso = Math.max(
+    let diasEnUso = Math.max(
       Math.floor((now.getTime() - instalacionDate.getTime()) / MS_POR_DIA),
       1,
     );
-
-    const mesesEnUso = diasEnUso / 30;
 
     // =========================
     // KILOMETROS ESTIMATION (with used tire detection)
@@ -598,6 +640,7 @@ async bulkUploadTires(file: any, companyId: string) {
     const hasInspection = profInt > 0 || profCen > 0 || profExt > 0;
     
     let kilometrosEstimados = 0;
+    let shouldEstimateTime = false; // Flag to know if we should recalculate time
     
     // Special case: Used tire being registered for the first time
     if (
@@ -611,20 +654,38 @@ async bulkUploadTires(file: any, companyId: string) {
         ? PREMIUM_TIRE_EXPECTED_KM 
         : STANDARD_TIRE_EXPECTED_KM;
       
-      const kmPerMm = expectedLifetimeKm / profundidadInicial;
+      const LIMITE_LEGAL_MM = 2;
+      const usableDepth = profundidadInicial - LIMITE_LEGAL_MM;
+      const kmPerMm = expectedLifetimeKm / usableDepth;
       const estimatedKmTraveled = Math.round(kmPerMm * mmWorn);
       
-      const maxReasonableKm = diasEnUso * 500;
-      kilometrosEstimados = Math.min(estimatedKmTraveled, maxReasonableKm);
-      
-      console.log(`🔍 Used tire detected (row ${rowIndex + 2}): Estimated ${kilometrosEstimados} km based on ${mmWorn}mm wear`);
+      kilometrosEstimados = estimatedKmTraveled;
+      shouldEstimateTime = true; // We estimated KM, so we should estimate time too
+
+      console.log(`🔍 Used tire detected (row ${rowIndex + 2}): Estimated ${kilometrosEstimados} km based on ${mmWorn}mm wear (${kmPerMm} km/mm)`);
       warnings.push(`Row ${rowIndex + 2}: Used tire detected - estimated ${kilometrosEstimados} km from wear pattern`);
       
     } else if (kmLlantaExcel > 0) {
       kilometrosEstimados = kmLlantaExcel;
     } else {
-      kilometrosEstimados = Math.round(mesesEnUso * KM_POR_MES);
+      kilometrosEstimados = Math.round((diasEnUso / 30) * KM_POR_MES);
     }
+
+    // =========================
+    // TIME ESTIMATION (if recently registered but has significant KM)
+    // =========================
+    if (isRecentlyRegistered && kilometrosEstimados > 0 && shouldEstimateTime) {
+      // Calculate estimated days based on KM traveled
+      const kmPerDay = KM_POR_MES / 30; // 6000 km/month = 200 km/day
+      const estimatedDays = Math.round(kilometrosEstimados / kmPerDay);
+      
+      diasEnUso = Math.max(estimatedDays, 1);
+      
+      console.log(`📅 Estimated time in use: ${diasEnUso} days (based on ${kilometrosEstimados} km at ${kmPerDay} km/day)`);
+      warnings.push(`Row ${rowIndex + 2}: Time estimated from kilometers - ${diasEnUso} days from ${kilometrosEstimados} km`);
+    }
+
+    const mesesEnUso = diasEnUso / 30;
 
     // =========================
     // COST ARRAY
@@ -928,12 +989,12 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
       ? PREMIUM_TIRE_EXPECTED_KM 
       : STANDARD_TIRE_EXPECTED_KM;
     
-    const kmPerMm = expectedLifetimeKm / profundidadInicial;
+    const LIMITE_LEGAL_MM = 2;
+    const usableDepth = profundidadInicial - LIMITE_LEGAL_MM;
+    const kmPerMm = expectedLifetimeKm / usableDepth;
     const estimatedKmTraveled = Math.round(kmPerMm * mmWorn);
     
-    // Safety cap: prevent unrealistic estimates
-    const maxReasonableKm = daysSinceCreation * 500; // Max 500 km/day
-    kilometrosEstimados = Math.min(estimatedKmTraveled, maxReasonableKm);
+    kilometrosEstimados = estimatedKmTraveled;
     
   } else if (odometerStuck) {
     // Time-based estimation when odometer is unreliable

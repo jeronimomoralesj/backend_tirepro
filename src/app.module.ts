@@ -14,6 +14,7 @@ import { ComunidadModule } from './comunidad/comunidad.module';
 import { CuponesModule } from './cupones/cupones.module';
 import { IncomeModule } from './income/income.module';
 import { EmailModule } from './email/email.module';
+import { MarketDataModule } from './market-data/market-data.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { EmailModule } from './email/email.module';
     CuponesModule,
     IncomeModule,
     EmailModule,
+    MarketDataModule,
   ],
   controllers: [AppController],
   providers: [AppService],

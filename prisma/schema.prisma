@@ -255,3 +255,34 @@ model Income {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
+
+model MarketTire {
+  id String @id @default(uuid())
+
+  // Core tire identification
+  brand     String // e.g., "Continental"
+  diseno    String // e.g., "HDR2"
+  dimension String // e.g., "295/80R22.5"
+
+  // Analytics data
+  cpk   Float? // Average cost per kilometer
+  cpt   Float? // Average cost per time (monthly)
+  count Int    @default(0) // Number of tires in our database with this reference
+
+  // Manufacturer specs
+  profundidadInicial Float @default(22) // Initial tread depth in mm
+
+  // Historical price data (max 10 entries, updated monthly)
+  prices Json @default("[]") // [{ price: number, date: string, source?: string }]
+
+  // Metadata
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastScraped DateTime?
+
+  // Unique constraint on brand + design + dimension
+  @@unique([brand, diseno, dimension])
+  @@index([brand])
+  @@index([dimension])
+  @@map("market_tires")
+}
