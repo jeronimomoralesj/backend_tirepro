@@ -893,7 +893,7 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
   const hasSignificantWear = mmWorn > SIGNIFICANT_WEAR_MM;
 
   // Calculate days since tire creation
-  const tireCreatedAt = updatedTire.createdAt || now;
+  const tireCreatedAt = updatedTire.fechaInstalacion || now;
   const daysSinceCreation = Math.max(
     Math.floor(
       (now.getTime() - new Date(tireCreatedAt).getTime()) / MS_POR_DIA,
@@ -904,8 +904,8 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
 
   // Get first cost to determine tire type
   const firstCostValue = Array.isArray(updatedTire.costo) && updatedTire.costo.length > 0
-    ? updatedTire.costo[0]?.valor || 0
-    : 0;
+  ? ((updatedTire.costo[0] as any)?.valor || 0)
+  : 0;
   
   const isPremiumTire = firstCostValue >= PREMIUM_TIRE_THRESHOLD;
 
