@@ -31,7 +31,7 @@ async createUser(createUserDto: CreateUserDto) {
       role: role || "regular", 
       puntos: 0, 
       plates: [], 
-      isVerified: false,
+      isVerified: true,
       verificationToken,
       preferredLanguage: preferredLanguage || "es"
     },

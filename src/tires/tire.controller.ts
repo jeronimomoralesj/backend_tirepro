@@ -149,4 +149,18 @@ async bulkUpload(
   ) {
     return this.tireService.removeInspection(tireId, fecha);
   }
+
+@Post('assign-vehicle')
+async assignVehicle(
+  @Body() body: { vehiclePlaca: string; tireIds: string[] }
+) {
+  try {
+    return await this.tireService.assignTiresToVehicle(
+      body.vehiclePlaca,
+      body.tireIds
+    );
+  } catch (error) {
+    throw new BadRequestException(error.message);
+  }
+}
 }

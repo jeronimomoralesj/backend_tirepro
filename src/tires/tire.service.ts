@@ -1603,6 +1603,30 @@ async findAllTires() {
     return await this.prisma.tire.findMany();
   }
   
+async assignTiresToVehicle(vehiclePlaca: string, tireIds: string[]) {
+  const vehicle = await this.prisma.vehicle.findFirst({
+    where: { placa: vehiclePlaca }
+  });
+  if (!vehicle) {
+    throw new BadRequestException('Vehicle not found');
+  }
+
+  // Update each tire to belong to this vehicle
+  await this.prisma.tire.updateMany({
+    where: { id: { in: tireIds } },
+    data: {
+      vehicleId: vehicle.id,
+      placa: vehiclePlaca,
+    }
+  });
+
+  // Fix vehicle tireCount
+  await this.prisma.vehicle.update({
+    where: { id: vehicle.id },
+    data: { tireCount: { increment: tireIds.length } }
+  });
+
+  return { message: 'Tires assigned successfully', count: tireIds.length };
 }
 
-/* SE LOGROOO */
+}
