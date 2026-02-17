@@ -6,12 +6,14 @@ import { uploadFileToS3 } from './s3.service';
 import * as XLSX from 'xlsx';
 import { VehicleService } from 'src/vehicles/vehicle.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { MarketDataService } from '../market-data/market-data.service';
 
 @Injectable()
 export class TireService {
   constructor(private readonly prisma: PrismaService,
     private readonly vehicleService: VehicleService, 
     private notificationsService: NotificationsService,
+    private readonly marketDataService: MarketDataService,
   ) {}
 
   // Helper function to generate a random string of given length.
@@ -78,6 +80,16 @@ async createTire(createTireDto: CreateTireDto) {
       : this.generateRandomString(8);
 
   // =========================
+// SYNC WITH MARKET DATA
+// =========================
+const { canonicalBrand, canonicalDiseno, canonicalDimension } =
+  await this.marketDataService.syncTireWithMarketData(
+    marca,
+    diseno ?? '',
+    dimension ?? '',
+  );
+
+  // =========================
   // FECHA DE INSTALACIÓN
   // =========================
   const fechaInstalacionFinal =
@@ -89,10 +101,10 @@ async createTire(createTireDto: CreateTireDto) {
   const newTire = await this.prisma.tire.create({
     data: {
       placa: finalPlaca,
-      marca,
-      diseno,
+      marca: canonicalBrand,
+      diseno: canonicalDiseno,
       profundidadInicial,
-      dimension,
+      dimension: canonicalDimension,
       eje,
       posicion,
 
@@ -445,11 +457,27 @@ async bulkUploadTires(file: any, companyId: string) {
     // =========================
     // PROFUNDIDAD INICIAL HANDLING
     // =========================
+
+    // We need profundidades early to set profundidadInicial smartly
+    const profIntEarly = parseFloat(get(row, 'profundidad_int') || '0');
+    const profCenEarly = parseFloat(get(row, 'profundidad_cen') || '0');
+    const profExtEarly = parseFloat(get(row, 'profundidad_ext') || '0');
+
     let profundidadInicial = parseFloat(get(row, 'profundidad_inicial') || '0');
-    
+
     if (!profundidadInicial || profundidadInicial <= 0) {
-      profundidadInicial = DEFAULT_PROFUNDIDAD_INICIAL;
-      warnings.push(`Row ${rowIndex + 2}: Using default profundidad inicial: ${DEFAULT_PROFUNDIDAD_INICIAL}mm`);
+      const maxObservedDepth = Math.max(profIntEarly, profCenEarly, profExtEarly);
+      if (maxObservedDepth > 0) {
+        // If any measured depth exceeds 22mm, use that as the baseline (+ 1mm)
+        // Otherwise fall back to the default of 22mm
+        profundidadInicial = maxObservedDepth > DEFAULT_PROFUNDIDAD_INICIAL
+          ? maxObservedDepth + 1
+          : DEFAULT_PROFUNDIDAD_INICIAL;
+        warnings.push(`Row ${rowIndex + 2}: profundidad inicial inferred as ${profundidadInicial}mm from measured depths (max: ${maxObservedDepth}mm)`);
+      } else {
+        profundidadInicial = DEFAULT_PROFUNDIDAD_INICIAL;
+        warnings.push(`Row ${rowIndex + 2}: Using default profundidad inicial: ${DEFAULT_PROFUNDIDAD_INICIAL}mm`);
+      }
     }
     
     // =========================
@@ -543,6 +571,24 @@ async bulkUploadTires(file: any, companyId: string) {
     }
 
     // =========================
+// SYNC WITH MARKET DATA
+// =========================
+const {
+  canonicalBrand,
+  canonicalDiseno,
+  canonicalDimension,
+} = await this.marketDataService.syncTireWithMarketData(
+  marca,
+  diseno,
+  dimension,
+);
+
+// Use canonical values going forward (corrects typos like "conttinental")
+const finalMarca = canonicalBrand;
+const finalDiseno = canonicalDiseno;
+const finalDimension = canonicalDimension;
+diseno = finalDiseno; 
+    // =========================
     // FECHA INSTALACION
     // =========================
     const fechaInstalacionRaw = get(row, 'fecha_instalacion');
@@ -559,7 +605,7 @@ async bulkUploadTires(file: any, companyId: string) {
     // If no valid cost provided, fetch from market data
     if (costoCell <= 0) {
       console.log(`💰 No cost provided for row ${rowIndex + 2}, fetching from market data...`);
-      costoCell = await fetchTirePriceFromMarketData(marca, diseno, dimension);
+      costoCell = await fetchTirePriceFromMarketData(finalMarca, finalDiseno, finalDimension);  // ✅ canonical
       warnings.push(`Row ${rowIndex + 2}: Cost fetched from market data: $${costoCell}`);
     } else {
       console.log(`💰 Row ${rowIndex + 2} - Using provided cost: $${costoCell}`);
@@ -571,9 +617,9 @@ async bulkUploadTires(file: any, companyId: string) {
     tire = await this.prisma.tire.create({
       data: {
         placa: tirePlaca,
-        marca,
-        diseno, // Original diseño for now
-        dimension,
+        marca: finalMarca,
+        diseno: finalDiseno,
+        dimension: finalDimension,
         eje,
         posicion,
         profundidadInicial,
@@ -627,9 +673,9 @@ async bulkUploadTires(file: any, companyId: string) {
     const kmLlantaExcel = parseFloat(get(row, 'kilometros_llanta') || '0');
     
     // Get profundidades for wear detection
-    const profInt = parseFloat(get(row, 'profundidad_int') || '0');
-    const profCen = parseFloat(get(row, 'profundidad_cen') || '0');
-    const profExt = parseFloat(get(row, 'profundidad_ext') || '0');
+    const profInt = profIntEarly;
+    const profCen = profCenEarly;
+    const profExt = profExtEarly;
     
     const minDepth = Math.min(profInt, profCen, profExt);
     const mmWorn = profundidadInicial - minDepth;
@@ -643,33 +689,39 @@ async bulkUploadTires(file: any, companyId: string) {
     let shouldEstimateTime = false; // Flag to know if we should recalculate time
     
     // Special case: Used tire being registered for the first time
-    if (
-      kmLlantaExcel === 0 &&
-      hasSignificantWear &&
-      hasInspection &&
-      isRecentlyRegistered &&
-      mmWorn > 0
-    ) {
-      const expectedLifetimeKm = isPremiumTire 
-        ? PREMIUM_TIRE_EXPECTED_KM 
-        : STANDARD_TIRE_EXPECTED_KM;
-      
-      const LIMITE_LEGAL_MM = 2;
-      const usableDepth = profundidadInicial - LIMITE_LEGAL_MM;
-      const kmPerMm = expectedLifetimeKm / usableDepth;
-      const estimatedKmTraveled = Math.round(kmPerMm * mmWorn);
-      
-      kilometrosEstimados = estimatedKmTraveled;
-      shouldEstimateTime = true; // We estimated KM, so we should estimate time too
+    const LIMITE_LEGAL_MM = 2;
+const usableDepth = profundidadInicial - LIMITE_LEGAL_MM;
 
-      console.log(`🔍 Used tire detected (row ${rowIndex + 2}): Estimated ${kilometrosEstimados} km based on ${mmWorn}mm wear (${kmPerMm} km/mm)`);
-      warnings.push(`Row ${rowIndex + 2}: Used tire detected - estimated ${kilometrosEstimados} km from wear pattern`);
-      
-    } else if (kmLlantaExcel > 0) {
-      kilometrosEstimados = kmLlantaExcel;
-    } else {
-      kilometrosEstimados = Math.round((diasEnUso / 30) * KM_POR_MES);
-    }
+if (kmLlantaExcel > 0) {
+  // Always trust explicit KM from the file first
+  kilometrosEstimados = kmLlantaExcel;
+
+} else if (hasInspection && mmWorn > 0 && usableDepth > 0) {
+  // We have depth readings — use wear-based estimation regardless of
+  // how much wear has occurred. This is always more accurate than
+  // time-based guessing, especially for recently registered tires.
+  const expectedLifetimeKm = isPremiumTire
+    ? PREMIUM_TIRE_EXPECTED_KM
+    : STANDARD_TIRE_EXPECTED_KM;
+
+  const kmPerMm = expectedLifetimeKm / usableDepth;
+  kilometrosEstimados = Math.round(kmPerMm * mmWorn);
+  shouldEstimateTime = true;
+
+  console.log(
+    `🔍 Wear-based KM estimation (row ${rowIndex + 2}): ` +
+    `${mmWorn}mm worn × ${kmPerMm.toFixed(1)} km/mm = ${kilometrosEstimados} km ` +
+    `(usableDepth: ${usableDepth}mm, lifetime: ${expectedLifetimeKm}km)`
+  );
+  warnings.push(
+    `Row ${rowIndex + 2}: KM estimated from wear — ${kilometrosEstimados} km ` +
+    `(${mmWorn}mm worn of ${usableDepth}mm usable)`
+  );
+
+} else {
+  // No depth readings and no explicit KM — fall back to time-based
+  kilometrosEstimados = Math.round((diasEnUso / 30) * KM_POR_MES);
+}
 
     // =========================
     // TIME ESTIMATION (if recently registered but has significant KM)
@@ -779,6 +831,19 @@ async bulkUploadTires(file: any, companyId: string) {
     }
 
     // =========================
+// UPDATE MARKET CPK (bulk upload, if inspection data present)
+// =========================
+if (hasInspection) {
+  this.marketDataService.updateMarketCpkFromInspection(
+    finalMarca,
+    finalDiseno,
+    finalDimension,
+  ).catch((err) => {
+    console.warn(`Market CPK update failed for row ${rowIndex + 2}: ${err.message}`);
+  });
+}
+
+    // =========================
     // REENCAUCHE OPERATION (FORMAT B - if needed)
     // =========================
     if (needsReencauche) {
@@ -788,10 +853,10 @@ async bulkUploadTires(file: any, companyId: string) {
         await this.updateVida(
           tire.id,
           'reencauche1',
-          bandaName || diseno, // Use banda name if available
+          bandaName || finalDiseno,  // ✅ canonical
           REENCAUCHE_COST,
           profundidadInicial,
-          undefined // No desechoData
+          undefined
         );
         
         console.log(`✅ Reencauche completed for tire ${tire.id}`);
@@ -1148,6 +1213,18 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
       companyId: finalTire.companyId ?? undefined,
     });
   }
+
+  // =========================
+// UPDATE MARKET DATA CPK
+// =========================
+// Fire-and-forget — never block the inspection response
+this.marketDataService.updateMarketCpkFromInspection(
+  finalTire.marca,
+  finalTire.diseno,
+  finalTire.dimension,
+).catch((err) => {
+  console.warn(`Market CPK update failed silently: ${err.message}`);  // ✅ safe fallback
+});
 
   return finalTire;
 }

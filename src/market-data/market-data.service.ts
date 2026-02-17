@@ -477,6 +477,286 @@ export class MarketDataService {
     };
   }
 
+  // =============================================
+// FUZZY BRAND/DESIGN MATCHING
+// =============================================
+
+/**
+ * Normalize a string for fuzzy comparison:
+ * lowercase, remove accents, collapse spaces, remove punctuation
+ */
+private normalizeForFuzzy(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+private normalizeDimension(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/-/g, '/')       // 295-80r22.5 → 295/80r22.5
+    .replace(/\s+/g, '')      // remove spaces
+    .trim();
+}
+/**
+ * Simple Levenshtein distance for typo detection
+ */
+private levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] =
+        a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * Find the best matching MarketTire for a given brand/diseno/dimension.
+ * Returns the match and the edit distances so the caller can decide
+ * whether the match is close enough.
+ *
+ * Strategy:
+ *  1. Exact match (case-insensitive) → distance 0
+ *  2. Fuzzy match on brand + diseno within the same dimension
+ *     (accepts brand distance ≤ 3 AND diseno distance ≤ 2)
+ *  3. No acceptable match → null
+ */
+
+async findFuzzyMarketTire(
+  brand: string,
+  diseno: string,
+  dimension: string,
+): Promise<{
+  tire: any;
+  canonicalBrand: string;
+  canonicalDiseno: string;
+  canonicalDimension: string;
+} | null> {
+  const normBrand = this.normalizeForFuzzy(brand);
+  const normDiseno = this.normalizeForFuzzy(diseno);
+  const normDimension = this.normalizeForFuzzy(dimension);
+  const cleanDimension = this.normalizeDimension(dimension); // add this
+
+  // Step 1: Exact match (Prisma insensitive)
+  const exact = await this.prisma.marketTire.findFirst({
+  where: {
+    brand: { equals: brand, mode: 'insensitive' },
+    diseno: { equals: diseno, mode: 'insensitive' },
+    dimension: { equals: cleanDimension, mode: 'insensitive' }, // ← changed
+  },
+});
+
+  if (exact) {
+    return {
+      tire: exact,
+      canonicalBrand: exact.brand,
+      canonicalDiseno: exact.diseno,
+      canonicalDimension: exact.dimension,
+    };
+  }
+
+  // Step 2: Fuzzy — load candidates with matching dimension first
+  // (dimension is usually exact e.g. "295/80R22.5")
+  const candidates = await this.prisma.marketTire.findMany({});
+
+  let bestMatch: any = null;
+  let bestScore = Infinity;
+
+  for (const candidate of candidates) {
+  const dBrand = this.levenshtein(normBrand, this.normalizeForFuzzy(candidate.brand));
+  const dDiseno = this.levenshtein(normDiseno, this.normalizeForFuzzy(candidate.diseno));
+  const dDimension = this.levenshtein(
+    this.normalizeDimension(dimension),
+    this.normalizeDimension(candidate.dimension),
+  );
+
+  if (dBrand <= 3 && dDiseno <= 3 && dDimension <= 3) { // loosened all thresholds
+    const score = dBrand + dDiseno + dDimension;
+    if (score < bestScore) {
+      bestScore = score;
+      bestMatch = candidate;
+    }
+  }
+}
+
+  if (bestMatch) {
+    this.logger.log(
+      `🔍 Fuzzy match: "${brand} ${diseno}" → "${bestMatch.brand} ${bestMatch.diseno}" (score ${bestScore})`,
+    );
+    return {
+      tire: bestMatch,
+      canonicalBrand: bestMatch.brand,
+      canonicalDiseno: bestMatch.diseno,
+      canonicalDimension: bestMatch.dimension,
+    };
+  }
+
+  // Step 3: No match
+  return null;
+}
+
+// =============================================
+// SYNC TIRE WITH MARKET DATA
+// =============================================
+
+/**
+ * Called every time a user tire is created.
+ *
+ * - Tries fuzzy match first.
+ * - If found: increments count, returns canonical names.
+ * - If not found: creates a new MarketTire entry with count = 1.
+ *
+ * Returns the canonical { brand, diseno, dimension } to store on the tire.
+ */
+async syncTireWithMarketData(
+  brand: string,
+  diseno: string,
+  dimension: string,
+): Promise<{ canonicalBrand: string; canonicalDiseno: string; canonicalDimension: string }> {
+  try {
+    const match = await this.findFuzzyMarketTire(brand, diseno, dimension);
+
+    if (match) {
+      // Increment count on existing entry
+      await this.prisma.marketTire.update({
+        where: { id: match.tire.id },
+        data: { count: { increment: 1 } },
+      });
+
+      this.logger.log(
+        `📊 MarketTire count incremented: ${match.canonicalBrand} ${match.canonicalDiseno} ${match.canonicalDimension}`,
+      );
+
+      return {
+        canonicalBrand: match.canonicalBrand,
+        canonicalDiseno: match.canonicalDiseno,
+        canonicalDimension: match.canonicalDimension,
+      };
+    }
+
+    // No match → create new MarketTire
+    // Normalize to title case for brand, keep diseno/dimension as-is
+    const cleanBrand =
+      brand.trim().charAt(0).toUpperCase() + brand.trim().slice(1).toLowerCase();
+    const cleanDiseno = diseno.trim().toLowerCase();
+    const cleanDimension = this.normalizeDimension(dimension);
+
+    await this.prisma.marketTire.create({
+      data: {
+        brand: cleanBrand,
+        diseno: cleanDiseno,
+        dimension: cleanDimension,
+        profundidadInicial: 22,
+        prices: [],
+        count: 1,
+      },
+    });
+
+    this.logger.log(
+      `✨ New MarketTire created: ${cleanBrand} ${cleanDiseno} ${cleanDimension}`,
+    );
+
+    return {
+      canonicalBrand: cleanBrand,
+      canonicalDiseno: cleanDiseno,
+      canonicalDimension: cleanDimension,
+    };
+  } catch (error) {
+    // Never block tire creation because of market data issues
+    this.logger.error(`syncTireWithMarketData failed: ${error.message}`);
+    return { canonicalBrand: brand, canonicalDiseno: diseno, canonicalDimension: dimension };
+  }
+}
+
+// =============================================
+// UPDATE MARKET CPK FROM INSPECTION DATA
+// =============================================
+
+/**
+ * Called after every inspection save.
+ * Recalculates the average cpkProyectado across all user tires
+ * matching this brand/diseno/dimension and stores it on MarketTire.
+ */
+async updateMarketCpkFromInspection(
+  brand: string,
+  diseno: string,
+  dimension: string,
+): Promise<void> {
+  try {
+    const match = await this.findFuzzyMarketTire(brand, diseno, dimension);
+    if (!match) {
+      this.logger.warn(
+        `updateMarketCpk: no MarketTire found for ${brand} ${diseno} ${dimension}`,
+      );
+      return;
+    }
+
+    // Fetch all user tires for this reference
+    const userTires = await this.prisma.tire.findMany({
+      where: {
+        marca: { equals: match.canonicalBrand, mode: 'insensitive' },
+        diseno: { equals: match.canonicalDiseno, mode: 'insensitive' },
+        dimension: { equals: match.canonicalDimension, mode: 'insensitive' },
+      },
+    });
+
+    let totalCpkProyectado = 0;
+    let validCount = 0;
+
+    for (const tire of userTires) {
+      const inspecciones = Array.isArray(tire.inspecciones)
+        ? (tire.inspecciones as any[])
+        : [];
+
+      if (inspecciones.length === 0) continue;
+
+      // Use the most recent inspection's cpkProyectado
+      const latest = inspecciones[inspecciones.length - 1];
+      const cpkP = latest?.cpkProyectado;
+
+      if (typeof cpkP === 'number' && cpkP > 0) {
+        totalCpkProyectado += cpkP;
+        validCount++;
+      }
+    }
+
+    if (validCount === 0) {
+      this.logger.log(
+        `updateMarketCpk: no valid cpkProyectado data yet for ${match.canonicalBrand} ${match.canonicalDiseno}`,
+      );
+      return;
+    }
+
+    const avgCpkProyectado = totalCpkProyectado / validCount;
+
+    await this.prisma.marketTire.update({
+      where: { id: match.tire.id },
+      data: {
+        cpk: avgCpkProyectado,
+        updatedAt: new Date(),
+      },
+    });
+
+    this.logger.log(
+      `✅ Market CPK updated: ${match.canonicalBrand} ${match.canonicalDiseno} = ${avgCpkProyectado.toFixed(4)} (from ${validCount} tires)`,
+    );
+  } catch (error) {
+    this.logger.error(`updateMarketCpkFromInspection failed: ${error.message}`);
+    // Never throw — inspection save must not be blocked
+  }
+}
+
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
