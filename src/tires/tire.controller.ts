@@ -163,4 +163,13 @@ async assignVehicle(
     throw new BadRequestException(error.message);
   }
 }
+
+@Post('unassign-vehicle')
+async unassignVehicle(@Body() body: { tireIds: string[] }) {
+  try {
+    return await this.tireService.unassignTiresFromVehicle(body.tireIds);
+  } catch (error) {
+    throw new BadRequestException(error.message);
+  }
+}
 }

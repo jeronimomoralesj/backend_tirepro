@@ -1616,7 +1616,6 @@ async assignTiresToVehicle(vehiclePlaca: string, tireIds: string[]) {
     where: { id: { in: tireIds } },
     data: {
       vehicleId: vehicle.id,
-      placa: vehiclePlaca,
     }
   });
 
@@ -1629,4 +1628,24 @@ async assignTiresToVehicle(vehiclePlaca: string, tireIds: string[]) {
   return { message: 'Tires assigned successfully', count: tireIds.length };
 }
 
+async unassignTiresFromVehicle(tireIds: string[]) {
+  const tires = await this.prisma.tire.findMany({ where: { id: { in: tireIds } } });
+  
+  // Decrement tireCount for each affected vehicle
+  const vehicleIds = [...new Set(tires.map(t => t.vehicleId).filter((id): id is string => id !== null))];
+  for (const vid of vehicleIds) {
+    const count = tires.filter(t => t.vehicleId === vid).length;
+    await this.prisma.vehicle.update({
+      where: { id: vid },
+      data: { tireCount: { decrement: count } }
+    });
+  }
+
+  await this.prisma.tire.updateMany({
+    where: { id: { in: tireIds } },
+    data: { vehicleId: null, posicion: 0 }
+  });
+
+  return { message: 'Tires unassigned successfully', count: tireIds.length };
+}
 }
