@@ -16,6 +16,17 @@ export class BlogService {
     this.initializeTransporter();
   }
 
+  private generateSlug(title: string): string {
+  return title
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // remove accents
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-');
+}
+
   private initializeTransporter() {
     const smtpHost = this.configService.get<string>('SMTP_HOST');
     const smtpPort = Number(this.configService.get<string>('SMTP_PORT', '587'));
@@ -83,17 +94,19 @@ export class BlogService {
   }
 
   async create(createArticleDto: CreateArticleDto) {
-    return this.prisma.article.create({
-      data: {
-        title: createArticleDto.title,
-        subtitle: createArticleDto.subtitle,
-        content: createArticleDto.content,
-        coverImage: createArticleDto.coverImage,
-        category: createArticleDto.category,
-        hashtags: createArticleDto.hashtags || [],
-      },
-    });
-  }
+  const slug = this.generateSlug(createArticleDto.title);
+  return this.prisma.article.create({
+    data: {
+      title: createArticleDto.title,
+      subtitle: createArticleDto.subtitle,
+      content: createArticleDto.content,
+      coverImage: createArticleDto.coverImage,
+      category: createArticleDto.category,
+      hashtags: createArticleDto.hashtags || [],
+      slug,
+    },
+  });
+}
 
   async update(id: number, updateArticleDto: UpdateArticleDto) {
     await this.findOne(id); // This will throw if not found
@@ -250,4 +263,12 @@ export class BlogService {
       throw error;
     }
   }
+
+  async findBySlug(slug: string) {
+  const article = await this.prisma.article.findUnique({
+    where: { slug },
+  });
+  if (!article) throw new NotFoundException(`Article not found`);
+  return article;
+}
 }

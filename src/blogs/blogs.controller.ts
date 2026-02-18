@@ -77,4 +77,9 @@ export class BlogController {
       throw error;
     }
   }
+
+  @Get('slug/:slug')
+findBySlug(@Param('slug') slug: string) {
+  return this.blogService.findBySlug(slug);
+}
 }

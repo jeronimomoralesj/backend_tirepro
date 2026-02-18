@@ -154,6 +154,7 @@ model Article {
   coverImage String
   category   String
   hashtags   String[] @default([])
+  slug       String   @unique  // ADD THIS
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
