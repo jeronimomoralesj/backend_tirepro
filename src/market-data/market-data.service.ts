@@ -597,7 +597,7 @@ async findFuzzyMarketTire(
     return {
       tire: bestMatch,
       canonicalBrand: bestMatch.brand,
-      canonicalDiseno: bestMatch.diseno,
+      canonicalDiseno: diseno,
       canonicalDimension: bestMatch.dimension,
     };
   }
