@@ -785,41 +785,50 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
   const vehicle = await this.prisma.vehicle.findUnique({ where: { id: tire.vehicleId } });
   if (!vehicle) throw new BadRequestException('Vehicle not found for tire');
 
-  // ── Km calculation (race-condition-proof) ───────────────────────────────
-  //
-  // Model: every tire stores kmInstalacion = vehicle odometer when it was installed.
-  //        tire km = newVehicleKm (from user) - kmInstalacion
-  //
-  // This is safe under Promise.all / concurrent requests because:
-  //  - newVehicleKm is sent by the frontend (same value for every tire in one session)
-  //  - kmInstalacion is stored on the tire itself (immutable, no race)
-  //  - We never use vehicle.kilometrajeActual for the km calculation
-  //  - The vehicle odometer update (at the end) is an idempotent SET, safe to run N times
-  //
   const newVehicleKm = updateDto.newKilometraje || 0;
   const odometerProvided = newVehicleKm > 0;
+  const priorTireKm = tire.kilometrosRecorridos || 0;
 
-  // Re-fetch the tire to get the latest kmInstalacion (set at creation/assignment time).
-  const updatedTire = await this.prisma.tire.findUnique({ where: { id: tireId } });
-  if (!updatedTire) throw new BadRequestException('Tire not found');
-
-  // kmInstalacion defaults to 0 for tires created before this field existed,
-  // meaning we treat them as installed when the vehicle was at km 0.
-  const kmInstalacion: number = (updatedTire as any).kmInstalacion ?? 0;
-
+  // ── Km calculation ───────────────────────────────────────────────────────
+  //
+  // Since we have no kmInstalacion column, we derive the previous vehicle km
+  // from the last inspection's kmActualVehiculo field (stored in the JSON).
+  // This gives us a reliable delta per inspection session without schema changes.
+  //
+  // Formula: tireKm = priorTireKm + (newVehicleKm - lastKnownVehicleKm)
+  //
   let kilometrosRecorridos: number;
 
   if (odometerProvided) {
-    if (newVehicleKm < kmInstalacion) {
-      throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al kilometraje de instalación');
+    const inspecciones = Array.isArray(tire.inspecciones) ? tire.inspecciones as any[] : [];
+
+    // Find the vehicle km recorded at the last inspection
+    // If no prior inspection exists, use the current vehicle odometer as baseline
+    // (meaning this is the first inspection — delta will be 0, tire km stays at priorTireKm)
+    let lastKnownVehicleKm: number;
+
+    if (inspecciones.length > 0) {
+      // Sort by fecha descending and take the most recent kmActualVehiculo
+      const sorted = [...inspecciones].sort(
+        (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
+      );
+      lastKnownVehicleKm = sorted[0]?.kmActualVehiculo ?? vehicle.kilometrajeActual ?? 0;
+    } else {
+      // No prior inspections — use current vehicle odometer as baseline so
+      // the first inspection contributes 0 delta (we don't know how long
+      // the tire has been on, so we don't guess)
+      lastKnownVehicleKm = vehicle.kilometrajeActual ?? 0;
     }
-    kilometrosRecorridos = Math.max(newVehicleKm - kmInstalacion, updatedTire.kilometrosRecorridos || 0);
+
+    const vehicleDelta = Math.max(newVehicleKm - lastKnownVehicleKm, 0);
+    kilometrosRecorridos = priorTireKm + vehicleDelta;
+
   } else {
-    // No odometer given — preserve whatever is already on the tire so we never regress.
-    kilometrosRecorridos = updatedTire.kilometrosRecorridos || 0;
+    // No odometer provided — preserve existing tire km unchanged
+    kilometrosRecorridos = priorTireKm;
   }
 
-  // Persist the tire km
+  // Persist updated tire km
   await this.prisma.tire.update({
     where: { id: tireId },
     data: { kilometrosRecorridos },
@@ -827,7 +836,7 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
 
   // ── Time in use ──────────────────────────────────────────────────────────
   const now = new Date();
-  const fechaInstalacion = updatedTire.fechaInstalacion ?? now;
+  const fechaInstalacion = tire.fechaInstalacion ?? now;
   const diasEnUso = Math.max(
     Math.floor((now.getTime() - new Date(fechaInstalacion).getTime()) / MS_POR_DIA),
     1,
@@ -840,22 +849,20 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
     updateDto.profundidadCen,
     updateDto.profundidadExt,
   );
-  const profundidadInicial = updatedTire.profundidadInicial;
+  const profundidadInicial = tire.profundidadInicial;
   const mmWorn = profundidadInicial - minDepth;
 
-  // kilometrosRecorridos is already computed and persisted above.
-  // If it ended up 0 (no odometer provided AND nothing on record), fall back
-  // to a time-based estimate so CPK/CPT are never divided by zero.
+  // If km ended up 0 fall back to time-based estimate so CPK never divides by zero
   const effectiveKm = kilometrosRecorridos > 0
     ? kilometrosRecorridos
     : Math.round(mesesEnUso * KM_POR_MES);
 
-  // ── Total cost (sum of ALL cost entries) ─────────────────────────────────
-  const totalCost = Array.isArray(updatedTire.costo)
-    ? updatedTire.costo.reduce((sum: number, entry: any) => sum + (entry?.valor || 0), 0)
+  // ── Total cost ───────────────────────────────────────────────────────────
+  const totalCost = Array.isArray(tire.costo)
+    ? tire.costo.reduce((sum: number, entry: any) => sum + (entry?.valor || 0), 0)
     : 0;
 
-  // ── CPK = total cost / total km ──────────────────────────────────────────
+  // ── CPK ──────────────────────────────────────────────────────────────────
   const cpk = effectiveKm > 0 ? totalCost / effectiveKm : 0;
   const cpt = mesesEnUso > 0 ? totalCost / mesesEnUso : 0;
 
@@ -881,8 +888,8 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
   }
 
   // ── Build and save new inspection ────────────────────────────────────────
-  const currentInspections = Array.isArray(updatedTire.inspecciones)
-    ? updatedTire.inspecciones
+  const currentInspections = Array.isArray(tire.inspecciones)
+    ? tire.inspecciones as any[]
     : [];
 
   const newInspection = {
@@ -893,11 +900,9 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
     fecha: now.toISOString(),
     diasEnUso,
     mesesEnUso,
-    // Accumulated km on the tire at the moment of this inspection
     kilometrosRecorridos,
-    // Effective km used for CPK/projection (may include time-based fallback)
     kmEfectivos: effectiveKm,
-    // Vehicle odometer reading at the moment of this inspection (0 if not provided)
+    // ← this is the key field — used by the NEXT inspection to compute delta
     kmActualVehiculo: odometerProvided ? newVehicleKm : (vehicle.kilometrajeActual || 0),
     cpk,
     cpkProyectado,
@@ -905,19 +910,15 @@ async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
     cptProyectado,
   };
 
-  const updatedInspecciones = [...currentInspections, newInspection];
-
-  // Save the updated inspection list + days counter.
-  // kilometrosRecorridos is already persisted above — no need to set it again.
   const finalTire = await this.prisma.tire.update({
     where: { id: tireId },
     data: {
-      inspecciones: updatedInspecciones,
+      inspecciones: [...currentInspections, newInspection],
       diasAcumulados: diasEnUso,
     },
   });
 
-  // Update vehicle odometer
+  // ── Update vehicle odometer ───────────────────────────────────────────────
   if (odometerProvided) {
     await this.prisma.vehicle.update({
       where: { id: vehicle.id },

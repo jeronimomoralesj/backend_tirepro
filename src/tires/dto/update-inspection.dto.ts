@@ -19,7 +19,7 @@ export class UpdateInspectionDto {
   @IsString()
   imageUrl?: string;
 
-  // 🆕 Puede ser 0 o igual al anterior (odómetro trabado)
+  // New vehicle odometer reading at time of inspection
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
