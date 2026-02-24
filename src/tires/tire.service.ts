@@ -16,7 +16,6 @@ export class TireService {
     private readonly marketDataService: MarketDataService,
   ) {}
 
-  // Helper function to generate a random string of given length.
   private generateRandomString(length: number): string {
     let result = "";
     const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -45,12 +44,9 @@ async createTire(createTireDto: CreateTireDto) {
     vehicleId,
     posicion,
     desechos,
-    fechaInstalacion, // 🆕 opcional
+    fechaInstalacion,
   } = createTireDto;
 
-  // =========================
-  // VALIDAR EMPRESA
-  // =========================
   const company = await this.prisma.company.findUnique({
     where: { id: companyId },
   });
@@ -58,9 +54,6 @@ async createTire(createTireDto: CreateTireDto) {
     throw new BadRequestException('Invalid companyId provided');
   }
 
-  // =========================
-  // VALIDAR VEHÍCULO (SI APLICA)
-  // =========================
   let vehicle: any = null;
   if (vehicleId) {
     vehicle = await this.prisma.vehicle.findUnique({
@@ -71,34 +64,26 @@ async createTire(createTireDto: CreateTireDto) {
     }
   }
 
-  // =========================
-  // PLACA FINAL
-  // =========================
   const finalPlaca =
     placa && placa.trim() !== ''
       ? placa.trim().toLowerCase()
       : this.generateRandomString(8);
 
-  // =========================
-// SYNC WITH MARKET DATA
-// =========================
-const { canonicalBrand, canonicalDiseno, canonicalDimension } =
-  await this.marketDataService.syncTireWithMarketData(
-    marca,
-    diseno ?? '',
-    dimension ?? '',
-  );
+  const { canonicalBrand, canonicalDiseno, canonicalDimension } =
+    await this.marketDataService.syncTireWithMarketData(
+      marca,
+      diseno ?? '',
+      dimension ?? '',
+    );
 
-  // =========================
-  // FECHA DE INSTALACIÓN
-  // =========================
   const fechaInstalacionFinal =
     fechaInstalacion ? new Date(fechaInstalacion) : new Date();
 
-  // =========================
-  // CREAR LLANTA
-  // =========================
-  const newTire = await this.prisma.tire.create({
+  // kmInstalacion = vehicle odometer at the moment this tire was installed.
+  // Used later to compute tirKm = currentVehicleKm - kmInstalacion.
+  const kmInstalacion: number = vehicle ? (vehicle.kilometrajeActual || 0) : 0;
+
+  const newTire = await (this.prisma.tire.create as any)({
     data: {
       placa: finalPlaca,
       marca: canonicalBrand,
@@ -107,29 +92,21 @@ const { canonicalBrand, canonicalDiseno, canonicalDimension } =
       dimension: canonicalDimension,
       eje,
       posicion,
-
       vida: Array.isArray(vida) ? vida : [],
       costo: Array.isArray(costo) ? costo : [],
       inspecciones: Array.isArray(inspecciones) ? inspecciones : [],
       primeraVida: Array.isArray(primeraVida) ? primeraVida : [],
-
       kilometrosRecorridos: kilometrosRecorridos ?? 0,
       eventos: Array.isArray(eventos) ? eventos : [],
-
       companyId,
       vehicleId: vehicleId ?? null,
-
-      // 🆕 CAMPOS DE TIEMPO
       fechaInstalacion: fechaInstalacionFinal,
       diasAcumulados: 0,
-
       desechos: desechos ?? null,
+      kmInstalacion,
     },
   });
 
-  // =========================
-  // CONTADORES
-  // =========================
   await this.prisma.company.update({
     where: { id: companyId },
     data: { tireCount: { increment: 1 } },
@@ -166,9 +143,6 @@ async bulkUploadTires(file: any, companyId: string) {
   const PREMIUM_TIRE_THRESHOLD = 2100000;
   const LIMITE_LEGAL_MM = 2;
 
-  // =========================
-  // FORMAT DETECTION
-  // =========================
   const isFormatB = rows.length > 0 && (
     Object.keys(rows[0]).some(k =>
       k.toLowerCase().includes('numero de llanta') ||
@@ -178,9 +152,6 @@ async bulkUploadTires(file: any, companyId: string) {
 
   console.log(`📋 Detected Excel Format: ${isFormatB ? 'FORMAT B (New)' : 'FORMAT A (Original)'}`);
 
-  // =========================
-  // HEADER MAPPING
-  // =========================
   const headerMap: Record<string, string> = isFormatB ? {
     'tipo de equipo': 'tipovhc',
     'placa': 'placa_vehiculo',
@@ -272,28 +243,17 @@ async bulkUploadTires(file: any, companyId: string) {
   const normalizeTipoVHC = (tipovhc: string): string => {
     if (!tipovhc) return '';
     const normalized = normalize(tipovhc);
-    if (normalized === 'trailer') {
-      console.log(`🔄 Normalized 'trailer' to 'trailer 3 ejes'`);
-      return 'trailer 3 ejes';
-    }
-    if (normalized === 'cabezote') {
-      console.log(`🔄 Normalized 'cabezote' to 'cabezote 2 ejes'`);
-      return 'cabezote 2 ejes';
-    }
+    if (normalized === 'trailer') return 'trailer 3 ejes';
+    if (normalized === 'cabezote') return 'cabezote 2 ejes';
     return tipovhc.trim().toLowerCase();
   };
 
-  // =========================
-  // FETCH PRICE FROM MARKET DATA DB
-  // =========================
   const fetchTirePriceFromMarketData = async (
     marca: string,
     diseno: string,
     dimension: string,
   ): Promise<number> => {
     try {
-      console.log(`💰 Searching market data for: ${marca} ${diseno} ${dimension}`);
-
       let marketTire = await this.prisma.marketTire.findFirst({
         where: {
           brand: { equals: marca, mode: 'insensitive' },
@@ -303,7 +263,6 @@ async bulkUploadTires(file: any, companyId: string) {
       });
 
       if (!marketTire) {
-        console.log(`🔍 No exact match found, trying without dimension...`);
         marketTire = await this.prisma.marketTire.findFirst({
           where: {
             brand: { equals: marca, mode: 'insensitive' },
@@ -313,7 +272,6 @@ async bulkUploadTires(file: any, companyId: string) {
       }
 
       if (!marketTire) {
-        console.log(`🔍 No match with diseno, trying just brand...`);
         marketTire = await this.prisma.marketTire.findFirst({
           where: { brand: { equals: marca, mode: 'insensitive' } },
           orderBy: { updatedAt: 'desc' },
@@ -327,15 +285,11 @@ async bulkUploadTires(file: any, companyId: string) {
           : [];
 
         if (prices.length > 0) {
-          const sortedPrices = [...prices].sort((a, b) => {
-            const dateA = new Date(a.date || 0).getTime();
-            const dateB = new Date(b.date || 0).getTime();
-            return dateB - dateA;
-          });
-
+          const sortedPrices = [...prices].sort((a, b) =>
+            new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()
+          );
           const latestPrice = sortedPrices[0]?.price;
           if (latestPrice && latestPrice >= MIN_VALID_PRICE) {
-            console.log(`✅ Found market price: $${latestPrice} (${marketTire.brand} ${marketTire.diseno})`);
             return latestPrice;
           }
         }
@@ -343,13 +297,11 @@ async bulkUploadTires(file: any, companyId: string) {
         if (marketTire.cpk && marketTire.cpk > 0) {
           const estimatedPrice = Math.round(marketTire.cpk * STANDARD_TIRE_EXPECTED_KM);
           if (estimatedPrice >= MIN_VALID_PRICE) {
-            console.log(`✅ Estimated price from CPK: $${estimatedPrice}`);
             return estimatedPrice;
           }
         }
       }
 
-      console.log(`⚠️ No valid market data found, using fallback price: $${FALLBACK_TIRE_PRICE}`);
       return FALLBACK_TIRE_PRICE;
     } catch (error) {
       console.error(`❌ Error fetching market data:`, error);
@@ -369,15 +321,9 @@ async bulkUploadTires(file: any, companyId: string) {
     console.log('📋 First row raw keys:', Object.keys(rows[0]));
   }
 
-  // =========================
-  // MAIN PROCESSING LOOP
-  // =========================
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
     const row = rows[rowIndex];
 
-    // =========================
-    // HANDLE SPARSE DATA (FORMAT B)
-    // =========================
     if (isFormatB) {
       const currentTipoVHC = get(row, 'tipovhc')?.trim();
       const currentPlaca = get(row, 'placa_vehiculo')?.trim();
@@ -385,44 +331,28 @@ async bulkUploadTires(file: any, companyId: string) {
       if (currentPlaca) lastSeenPlaca = currentPlaca;
     }
 
-    // =========================
-    // TIRE ID HANDLING
-    // =========================
     const tirePlacaRaw = get(row, 'llanta')?.trim();
     let tirePlaca = '';
 
     if (needsIdGeneration(tirePlacaRaw)) {
       tirePlaca = generateTireId().toLowerCase();
-      console.log(`🔢 Generated ID for row ${rowIndex + 2}: ${tirePlaca} (original: "${tirePlacaRaw}")`);
     } else {
       tirePlaca = tirePlacaRaw.toLowerCase();
     }
 
-    // NOTE: We do NOT skip duplicate tirePlaca here anymore — the same physical
-    // tire may appear multiple times as separate inspection rows. We detect that
-    // below via position+vehicle+specs matching. Only truly duplicate IDs that
-    // can't be matched to a vehicle/position are skipped.
     if (processedIds.has(tirePlaca)) {
-      // If no vehicle context we truly can't resolve it — skip.
-      // Otherwise we'll let the existingTireMatch logic below handle it.
       const placaVehiculoCheck = isFormatB
         ? (get(row, 'placa_vehiculo')?.trim() || lastSeenPlaca)
         : get(row, 'placa_vehiculo')?.trim();
 
       if (!placaVehiculoCheck) {
-        const errorMsg = `Error: Duplicate tire ID "${tirePlaca}" found in row ${rowIndex + 2} with no vehicle context. Skipping.`;
-        console.error(`❌ ${errorMsg}`);
-        errors.push(errorMsg);
+        errors.push(`Error: Duplicate tire ID "${tirePlaca}" found in row ${rowIndex + 2} with no vehicle context. Skipping.`);
         continue;
       }
-      // Has vehicle context — fall through; existingTireMatch will resolve it.
     }
 
     processedIds.add(tirePlaca);
 
-    // =========================
-    // EXTRACT BASIC TIRE DATA
-    // =========================
     const marca = get(row, 'marca').toLowerCase();
     let diseno = get(row, 'diseno_original').toLowerCase();
     const dimension = get(row, 'dimension').toLowerCase();
@@ -434,9 +364,6 @@ async bulkUploadTires(file: any, companyId: string) {
       : get(row, 'tipovhc')?.trim();
     tipovhc = normalizeTipoVHC(tipovhc);
 
-    // =========================
-    // PROFUNDIDAD INICIAL
-    // =========================
     const profIntEarly = parseFloat(get(row, 'profundidad_int') || '0');
     const profCenEarly = parseFloat(get(row, 'profundidad_cen') || '0');
     const profExtEarly = parseFloat(get(row, 'profundidad_ext') || '0');
@@ -449,16 +376,13 @@ async bulkUploadTires(file: any, companyId: string) {
         profundidadInicial = maxObservedDepth > DEFAULT_PROFUNDIDAD_INICIAL
           ? maxObservedDepth + 1
           : DEFAULT_PROFUNDIDAD_INICIAL;
-        warnings.push(`Row ${rowIndex + 2}: profundidad inicial inferred as ${profundidadInicial}mm (max observed: ${maxObservedDepth}mm)`);
+        warnings.push(`Row ${rowIndex + 2}: profundidad inicial inferred as ${profundidadInicial}mm`);
       } else {
         profundidadInicial = DEFAULT_PROFUNDIDAD_INICIAL;
         warnings.push(`Row ${rowIndex + 2}: Using default profundidad inicial: ${DEFAULT_PROFUNDIDAD_INICIAL}mm`);
       }
     }
 
-    // =========================
-    // VIDA DETECTION
-    // =========================
     let vidaValor = '';
     let needsReencauche = false;
     let bandaName = '';
@@ -466,29 +390,19 @@ async bulkUploadTires(file: any, companyId: string) {
     if (isFormatB) {
       const marcaBanda = normalize(get(row, 'marca_banda'));
       bandaName = get(row, 'banda_name').toLowerCase();
-
-      if (marcaBanda.includes('original')) {
-        vidaValor = 'nueva';
-        needsReencauche = false;
-      } else if (marcaBanda.includes('reencauche') || marcaBanda.includes('rencauche')) {
+      if (marcaBanda.includes('reencauche') || marcaBanda.includes('rencauche')) {
         vidaValor = 'nueva';
         needsReencauche = true;
-        console.log(`🔄 Tire ${tirePlaca} will be created as nueva then reencauched with banda: ${bandaName}`);
       } else {
         vidaValor = 'nueva';
-        needsReencauche = false;
       }
     } else {
       vidaValor = get(row, 'vida').trim().toLowerCase();
       if (vidaValor === 'rencauche' || vidaValor === 'reencauche') {
         vidaValor = 'reencauche1';
-        console.log(`🔄 Normalized vida to "reencauche1" for row ${rowIndex + 2}`);
       }
     }
 
-    // =========================
-    // VEHICLE HANDLING
-    // =========================
     let placaVehiculo = isFormatB
       ? (get(row, 'placa_vehiculo')?.trim() || lastSeenPlaca)
       : get(row, 'placa_vehiculo')?.trim();
@@ -527,10 +441,6 @@ async bulkUploadTires(file: any, companyId: string) {
       vehicle.tipovhc = tipovhc;
     }
 
-    // =========================
-    // SYNC WITH MARKET DATA
-    // ⚠️ Must happen BEFORE the existingTireMatch lookup so finalMarca/Diseno/Dimension are ready
-    // =========================
     const { canonicalBrand, canonicalDiseno, canonicalDimension } =
       await this.marketDataService.syncTireWithMarketData(marca, diseno, dimension);
 
@@ -539,32 +449,19 @@ async bulkUploadTires(file: any, companyId: string) {
     const finalDimension = canonicalDimension;
     diseno = finalDiseno;
 
-    // =========================
-    // FECHA INSTALACION
-    // =========================
     const fechaInstalacionRaw = get(row, 'fecha_instalacion');
     const fechaInstalacion = fechaInstalacionRaw
       ? new Date(fechaInstalacionRaw)
       : new Date();
 
-    // =========================
-    // COST HANDLING WITH MARKET DATA FALLBACK
-    // =========================
     const costoRaw = get(row, 'costo');
     let costoCell = parseCurrency(costoRaw);
 
     if (costoCell <= 0) {
-      console.log(`💰 No cost provided for row ${rowIndex + 2}, fetching from market data...`);
       costoCell = await fetchTirePriceFromMarketData(finalMarca, finalDiseno, finalDimension);
       warnings.push(`Row ${rowIndex + 2}: Cost fetched from market data: $${costoCell}`);
-    } else {
-      console.log(`💰 Row ${rowIndex + 2} - Using provided cost: $${costoCell}`);
     }
 
-    // =========================
-    // SHARED KM/WEAR CALCULATIONS
-    // (needed whether we create a new tire or append an inspection)
-    // =========================
     const profInt = profIntEarly;
     const profCen = profCenEarly;
     const profExt = profExtEarly;
@@ -577,114 +474,71 @@ async bulkUploadTires(file: any, companyId: string) {
     const isPremiumTire = costoCell >= PREMIUM_TIRE_THRESHOLD;
     const kmLlantaExcel = parseFloat(get(row, 'kilometros_llanta') || '0');
 
-    let kilometrosEstimados = 0;
-    let shouldEstimateTime = false;
-
-    // Temporary diasEnUso based on fechaInstalacion for KM estimation fallback
     const now = new Date();
     const tempDiasEnUso = Math.max(
-      Math.floor((now.getTime() - fechaInstalacion.getTime()) / MS_POR_DIA),
+      Math.floor((now.getTime() - fechaInstalacion.getTime()) / (1000 * 60 * 60 * 24)),
       1,
     );
 
+    // ─── KM ESTIMATION ───────────────────────────────────────────────────────
+    // Priority: (1) explicit km from excel, (2) vehicle odometer km, (3) wear-based, (4) time-based
+    let kilometrosEstimados = 0;
+    let shouldEstimateTime = false;
+
     if (kmLlantaExcel > 0) {
+      // Explicit tire km provided — always trust this first
       kilometrosEstimados = kmLlantaExcel;
+    } else if (kilometrosVehiculo > 0) {
+      // Vehicle odometer provided — use it directly as the tire's km base
+      kilometrosEstimados = kilometrosVehiculo;
     } else if (hasInspection && mmWorn > 0 && usableDepth > 0) {
+      // Wear-based estimation (no km data at all)
       const expectedLifetimeKm = isPremiumTire ? PREMIUM_TIRE_EXPECTED_KM : STANDARD_TIRE_EXPECTED_KM;
       const kmPerMm = expectedLifetimeKm / usableDepth;
       kilometrosEstimados = Math.round(kmPerMm * mmWorn);
       shouldEstimateTime = true;
-      console.log(
-        `🔍 Wear-based KM estimation (row ${rowIndex + 2}): ` +
-        `${mmWorn}mm worn × ${kmPerMm.toFixed(1)} km/mm = ${kilometrosEstimados} km`,
-      );
-      warnings.push(
-        `Row ${rowIndex + 2}: KM estimated from wear — ${kilometrosEstimados} km ` +
-        `(${mmWorn}mm worn of ${usableDepth}mm usable)`,
-      );
+      warnings.push(`Row ${rowIndex + 2}: KM estimated from wear — ${kilometrosEstimados} km`);
     } else {
+      // Time-based fallback (last resort)
       kilometrosEstimados = Math.round((tempDiasEnUso / 30) * KM_POR_MES);
     }
 
-    const isRecentlyRegistered = tempDiasEnUso < RECENT_REGISTRATION_DAYS;
-
     let diasEnUso = tempDiasEnUso;
-    if (isRecentlyRegistered && kilometrosEstimados > 0 && shouldEstimateTime) {
+    if (shouldEstimateTime && tempDiasEnUso < RECENT_REGISTRATION_DAYS && kilometrosEstimados > 0) {
       const kmPerDay = KM_POR_MES / 30;
       diasEnUso = Math.max(Math.round(kilometrosEstimados / kmPerDay), 1);
-      console.log(`📅 Estimated time in use: ${diasEnUso} days (based on ${kilometrosEstimados} km)`);
       warnings.push(`Row ${rowIndex + 2}: Time estimated from kilometers - ${diasEnUso} days`);
     }
 
     const mesesEnUso = diasEnUso / 30;
 
-    // =========================
-    // MATCH EXISTING TIRE — TWO-TIER STRATEGY
-    //
-    // Tier 1: match by tire placa/ID directly in DB.
-    //   Handles the case where the same tire ID appears on multiple rows.
-    //
-    // Tier 2: match by vehicleId + posicion ONLY.
-    //   A vehicle position can only hold one tire at a time, so if any tire
-    //   already occupies that position on that vehicle, this row is a new
-    //   inspection for it — regardless of whether specs differ between rows
-    //   (column formatting inconsistencies, etc).
-    //   We intentionally do NOT filter by marca/diseno/dimension here because
-    //   minor differences in how specs are written across rows would cause
-    //   false negatives and duplicate tire creation.
-    // =========================
+    // ─── MATCH EXISTING TIRE ─────────────────────────────────────────────────
     let existingTireMatch: any = null;
 
-    // Tier 1: exact placa match in DB (covers duplicate-ID rows)
     if (!needsIdGeneration(tirePlacaRaw)) {
       existingTireMatch = await this.prisma.tire.findFirst({
         where: { placa: tirePlaca },
       });
-      if (existingTireMatch) {
-        console.log(
-          `🔁 Row ${rowIndex + 2}: Matched existing tire ${existingTireMatch.id} by placa "${tirePlaca}". ` +
-          `Will add inspection instead of creating new tire.`,
-        );
-        warnings.push(
-          `Row ${rowIndex + 2}: Matched existing tire by ID "${tirePlaca}". Adding as new inspection.`,
-        );
-      }
     }
 
-    // Tier 2: position-on-vehicle match (covers rows with different or generated IDs)
     if (!existingTireMatch && vehicle && posicion > 0) {
       existingTireMatch = await this.prisma.tire.findFirst({
-        where: {
-          vehicleId: vehicle.id,
-          posicion,
-        },
+        where: { vehicleId: vehicle.id, posicion },
       });
-      if (existingTireMatch) {
-        console.log(
-          `🔁 Row ${rowIndex + 2}: Matched existing tire ${existingTireMatch.id} ` +
-          `(placa: ${existingTireMatch.placa}) at position ${posicion} on vehicle ${placaVehiculo}. ` +
-          `Will add inspection instead of creating new tire.`,
-        );
-        warnings.push(
-          `Row ${rowIndex + 2}: Matched existing tire at position ${posicion} on ${placaVehiculo}. ` +
-          `Adding as new inspection.`,
-        );
-      }
     }
 
-    // =========================
-    // BRANCH: EXISTING TIRE (add inspection) vs NEW TIRE (create)
-    // =========================
+    // ─── BRANCH: EXISTING TIRE ───────────────────────────────────────────────
     if (existingTireMatch) {
-      // ── EXISTING TIRE: APPEND INSPECTION ONLY ──────────────────────────
       if (hasInspection) {
         const existingInspections = Array.isArray(existingTireMatch.inspecciones)
           ? existingTireMatch.inspecciones
           : [];
 
+        // Use whichever km is larger: existing accumulated or this row's value
         const existingKm = existingTireMatch.kilometrosRecorridos || 0;
         const kmForInspection = Math.max(kilometrosEstimados, existingKm);
 
+        // CPK = total cost / total km
         const totalCostExisting = Array.isArray(existingTireMatch.costo)
           ? existingTireMatch.costo.reduce((sum: number, c: any) => sum + (c?.valor || 0), 0)
           : 0;
@@ -705,13 +559,16 @@ async bulkUploadTires(file: any, companyId: string) {
         const cptProyectado = projectedMonthsExisting > 0 ? totalCostExisting / projectedMonthsExisting : 0;
 
         const newInspection = {
-          fecha: fechaInstalacion.toISOString(), // use the row's fecha as the inspection date
+          fecha: fechaInstalacion.toISOString(),
           profundidadInt: profInt,
           profundidadCen: profCen,
           profundidadExt: profExt,
           diasEnUso,
           mesesEnUso,
-          kilometrosEstimados: kmForInspection,
+          // Accumulated km on the tire at the moment of this inspection
+          kilometrosRecorridos: kmForInspection,
+          // Vehicle odometer at the moment of this inspection (0 if no vehicle linked)
+          kmActualVehiculo: kilometrosVehiculo || 0,
           cpk,
           cpkProyectado,
           cpt,
@@ -719,12 +576,10 @@ async bulkUploadTires(file: any, companyId: string) {
           imageUrl: get(row, 'imageurl') || '',
         };
 
-        // Sort all inspections by minDepth DESCENDING — a tire always starts with more
-        // tread and loses it over time, so the highest minDepth = oldest inspection.
         const sortedInspecciones = [...existingInspections, newInspection].sort((a: any, b: any) => {
           const minA = Math.min(a.profundidadInt ?? Infinity, a.profundidadCen ?? Infinity, a.profundidadExt ?? Infinity);
           const minB = Math.min(b.profundidadInt ?? Infinity, b.profundidadCen ?? Infinity, b.profundidadExt ?? Infinity);
-          return minB - minA; // highest minDepth first
+          return minB - minA;
         });
 
         await this.prisma.tire.update({
@@ -736,32 +591,20 @@ async bulkUploadTires(file: any, companyId: string) {
           },
         });
 
-        console.log(`✅ Added inspection to existing tire ${existingTireMatch.id}`);
-
         this.marketDataService.updateMarketCpkFromInspection(
           existingTireMatch.marca,
           existingTireMatch.diseno,
           existingTireMatch.dimension,
-        ).catch((err) => {
-          console.warn(`Market CPK update failed for row ${rowIndex + 2}: ${err.message}`);
-        });
-      } else {
-        console.log(
-          `ℹ️ Row ${rowIndex + 2}: No depth readings — skipping inspection append for existing tire ${existingTireMatch.id}`,
-        );
+        ).catch((err) => console.warn(`Market CPK update failed: ${err.message}`));
       }
 
     } else {
-      // ── NEW TIRE: CREATE + INSPECT ─────────────────────────────────────
-
-      // Final duplicate-by-placa guard (belt-and-suspenders)
+      // ─── NEW TIRE ─────────────────────────────────────────────────────────
       const existingByPlaca = await this.prisma.tire.findFirst({
         where: { placa: tirePlaca },
       });
       if (existingByPlaca) {
-        const errorMsg = `Error: Tire ID "${tirePlaca}" already exists in database (row ${rowIndex + 2}) and couldn't be matched by position/specs. Skipping.`;
-        console.error(`❌ ${errorMsg}`);
-        errors.push(errorMsg);
+        errors.push(`Error: Tire ID "${tirePlaca}" already exists (row ${rowIndex + 2}). Skipping.`);
         continue;
       }
 
@@ -778,7 +621,7 @@ async bulkUploadTires(file: any, companyId: string) {
         ? [{ fecha: now.toISOString(), valor: vidaValor }]
         : [];
 
-      const tire = await this.prisma.tire.create({
+      const tire = await (this.prisma.tire.create as any)({
         data: {
           placa: tirePlaca,
           marca: finalMarca,
@@ -794,6 +637,8 @@ async bulkUploadTires(file: any, companyId: string) {
           costo: costosActuales,
           inspecciones: [],
           eventos: [],
+          // Vehicle odometer at install time — used later to compute tire km accurately
+          kmInstalacion: 0,
         },
       });
 
@@ -809,7 +654,6 @@ async bulkUploadTires(file: any, companyId: string) {
         });
       }
 
-      // Build inspection if we have depth readings
       if (hasInspection) {
         const cpk = kilometrosEstimados > 0 ? totalCost / kilometrosEstimados : 0;
         const cpt = mesesEnUso > 0 ? totalCost / mesesEnUso : 0;
@@ -833,7 +677,10 @@ async bulkUploadTires(file: any, companyId: string) {
           profundidadExt: profExt,
           diasEnUso,
           mesesEnUso,
-          kilometrosEstimados,
+          // Accumulated km on the tire at the moment of this inspection
+          kilometrosRecorridos: kilometrosEstimados,
+          // Vehicle odometer at the moment of this inspection (0 if no vehicle linked)
+          kmActualVehiculo: kilometrosVehiculo || 0,
           cpk,
           cpkProyectado,
           cpt,
@@ -865,18 +712,12 @@ async bulkUploadTires(file: any, companyId: string) {
 
       if (hasInspection) {
         this.marketDataService.updateMarketCpkFromInspection(
-          finalMarca,
-          finalDiseno,
-          finalDimension,
-        ).catch((err) => {
-          console.warn(`Market CPK update failed for row ${rowIndex + 2}: ${err.message}`);
-        });
+          finalMarca, finalDiseno, finalDimension,
+        ).catch((err) => console.warn(`Market CPK update failed: ${err.message}`));
       }
 
-      // Reencauche (FORMAT B only)
       if (needsReencauche) {
         try {
-          console.log(`🔧 Performing reencauche for tire ${tire.id} (row ${rowIndex + 2})`);
           await this.updateVida(
             tire.id,
             'reencauche1',
@@ -885,11 +726,8 @@ async bulkUploadTires(file: any, companyId: string) {
             profundidadInicial,
             undefined,
           );
-          console.log(`✅ Reencauche completed for tire ${tire.id}`);
         } catch (error) {
-          const errorMsg = `Error performing reencauche for tire ${tirePlaca} (row ${rowIndex + 2}): ${error.message}`;
-          console.error(`❌ ${errorMsg}`);
-          errors.push(errorMsg);
+          errors.push(`Error performing reencauche for tire ${tirePlaca} (row ${rowIndex + 2}): ${error.message}`);
         }
       }
     }
@@ -899,9 +737,6 @@ async bulkUploadTires(file: any, companyId: string) {
     tireDataMap.set(tirePlaca, lastData);
   }
 
-  // =========================
-  // FINAL RESPONSE
-  // =========================
   const successCount = processedIds.size;
   const errorCount = errors.length;
   const warningCount = warnings.length;
@@ -920,331 +755,199 @@ async bulkUploadTires(file: any, companyId: string) {
 }
 
 async findTiresByCompany(companyId: string) {
-    return await this.prisma.tire.findMany({
-      where: { companyId },
-    });
+    return await this.prisma.tire.findMany({ where: { companyId } });
 }
 
 async findTiresByVehicle(vehicleId: string) {
-    if (!vehicleId) {
-      throw new BadRequestException('vehicleId is required');
-    }
-    return await this.prisma.tire.findMany({
-      where: { vehicleId },
-    });
+    if (!vehicleId) throw new BadRequestException('vehicleId is required');
+    return await this.prisma.tire.findMany({ where: { vehicleId } });
 }
 
 async updateInspection(tireId: string, updateDto: UpdateInspectionDto) {
+  // ── Guard: all-zero depths means nothing to record ──────────────────────
   if (
     updateDto.profundidadInt === 0 &&
     updateDto.profundidadCen === 0 &&
     updateDto.profundidadExt === 0
   ) {
-    return this.prisma.tire.findUnique({
-      where: { id: tireId },
-    });
+    return this.prisma.tire.findUnique({ where: { id: tireId } });
   }
-  const KM_POR_MES = 6000;
+
   const MS_POR_DIA = 1000 * 60 * 60 * 24;
-  const PREMIUM_TIRE_THRESHOLD = 2000000;
-  const PREMIUM_TIRE_EXPECTED_KM = 100000;
-  const STANDARD_TIRE_EXPECTED_KM = 80000;
-  const SIGNIFICANT_WEAR_MM = 5;
-  const RECENT_REGISTRATION_DAYS = 30; // Adjust this threshold as needed
+  const KM_POR_MES = 6000;
+  const LIMITE_LEGAL_MM = 2;
 
-  // =========================
-  // VALIDACIONES BÁSICAS
-  // =========================
-  const tire = await this.prisma.tire.findUnique({
-    where: { id: tireId },
-  });
+  // ── Fetch tire + vehicle ─────────────────────────────────────────────────
+  const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
   if (!tire) throw new BadRequestException('Tire not found');
+  if (!tire.vehicleId) throw new BadRequestException('Tire is not associated with a vehicle');
 
-  if (!tire.vehicleId) {
-    throw new BadRequestException('Tire is not associated with a vehicle');
-  }
+  const vehicle = await this.prisma.vehicle.findUnique({ where: { id: tire.vehicleId } });
+  if (!vehicle) throw new BadRequestException('Vehicle not found for tire');
 
-  const vehicle = await this.prisma.vehicle.findUnique({
-    where: { id: tire.vehicleId },
-  });
-  if (!vehicle) {
-    throw new BadRequestException('Vehicle not found for tire');
-  }
-
-  // =========================
-  // KILOMETRAJE VEHÍCULO
-  // =========================
-  const oldVehicleKm = vehicle.kilometrajeActual || 0;
+  // ── Km calculation (race-condition-proof) ───────────────────────────────
+  //
+  // Model: every tire stores kmInstalacion = vehicle odometer when it was installed.
+  //        tire km = newVehicleKm (from user) - kmInstalacion
+  //
+  // This is safe under Promise.all / concurrent requests because:
+  //  - newVehicleKm is sent by the frontend (same value for every tire in one session)
+  //  - kmInstalacion is stored on the tire itself (immutable, no race)
+  //  - We never use vehicle.kilometrajeActual for the km calculation
+  //  - The vehicle odometer update (at the end) is an idempotent SET, safe to run N times
+  //
   const newVehicleKm = updateDto.newKilometraje || 0;
+  const odometerProvided = newVehicleKm > 0;
 
-  const odometerStuck =
-    newVehicleKm === 0 || newVehicleKm === oldVehicleKm;
+  // Re-fetch the tire to get the latest kmInstalacion (set at creation/assignment time).
+  const updatedTire = await this.prisma.tire.findUnique({ where: { id: tireId } });
+  if (!updatedTire) throw new BadRequestException('Tire not found');
 
-  let deltaKm = 0;
+  // kmInstalacion defaults to 0 for tires created before this field existed,
+  // meaning we treat them as installed when the vehicle was at km 0.
+  const kmInstalacion: number = (updatedTire as any).kmInstalacion ?? 0;
 
-  if (!odometerStuck) {
-    deltaKm = newVehicleKm - oldVehicleKm;
-    if (deltaKm < 0) {
-      throw new BadRequestException(
-        'El nuevo kilometraje debe ser mayor o igual al actual',
-      );
+  let kilometrosRecorridos: number;
+
+  if (odometerProvided) {
+    if (newVehicleKm < kmInstalacion) {
+      throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al kilometraje de instalación');
     }
-
-    await this.prisma.tire.update({
-      where: { id: tireId },
-      data: { kilometrosRecorridos: { increment: deltaKm } },
-    });
+    kilometrosRecorridos = Math.max(newVehicleKm - kmInstalacion, updatedTire.kilometrosRecorridos || 0);
+  } else {
+    // No odometer given — preserve whatever is already on the tire so we never regress.
+    kilometrosRecorridos = updatedTire.kilometrosRecorridos || 0;
   }
 
-  const updatedTire = await this.prisma.tire.findUnique({
+  // Persist the tire km
+  await this.prisma.tire.update({
     where: { id: tireId },
+    data: { kilometrosRecorridos },
   });
-  if (!updatedTire) {
-    throw new BadRequestException('Tire not found after update');
-  }
 
-  // =========================
-  // TIEMPO EN USO
-  // =========================
+  // ── Time in use ──────────────────────────────────────────────────────────
   const now = new Date();
   const fechaInstalacion = updatedTire.fechaInstalacion ?? now;
-
   const diasEnUso = Math.max(
-    Math.floor(
-      (now.getTime() - new Date(fechaInstalacion).getTime()) /
-        MS_POR_DIA,
-    ),
+    Math.floor((now.getTime() - new Date(fechaInstalacion).getTime()) / MS_POR_DIA),
     1,
   );
-
   const mesesEnUso = diasEnUso / 30;
 
-  // =========================
-  // DETECCIÓN DE LLANTA USADA RECIÉN REGISTRADA
-  // =========================
+  // ── Depth values ─────────────────────────────────────────────────────────
   const minDepth = Math.min(
     updateDto.profundidadInt,
     updateDto.profundidadCen,
     updateDto.profundidadExt,
   );
-
   const profundidadInicial = updatedTire.profundidadInicial;
   const mmWorn = profundidadInicial - minDepth;
 
-  const currentInspections = Array.isArray(updatedTire.inspecciones)
-    ? updatedTire.inspecciones
-    : [];
-  
-  const isFirstInspection = currentInspections.length === 0;
-  const hasSignificantWear = mmWorn > SIGNIFICANT_WEAR_MM;
+  // kilometrosRecorridos is already computed and persisted above.
+  // If it ended up 0 (no odometer provided AND nothing on record), fall back
+  // to a time-based estimate so CPK/CPT are never divided by zero.
+  const effectiveKm = kilometrosRecorridos > 0
+    ? kilometrosRecorridos
+    : Math.round(mesesEnUso * KM_POR_MES);
 
-  // Calculate days since tire creation
-  const tireCreatedAt = updatedTire.fechaInstalacion || now;
-  const daysSinceCreation = Math.max(
-    Math.floor(
-      (now.getTime() - new Date(tireCreatedAt).getTime()) / MS_POR_DIA,
-    ),
-    0,
-  );
-  const isRecentlyRegistered = daysSinceCreation < RECENT_REGISTRATION_DAYS;
-
-  // Get first cost to determine tire type
-  const firstCostValue = Array.isArray(updatedTire.costo) && updatedTire.costo.length > 0
-  ? ((updatedTire.costo[0] as any)?.valor || 0)
-  : 0;
-  
-  const isPremiumTire = firstCostValue >= PREMIUM_TIRE_THRESHOLD;
-
-  // =========================
-  // KILOMETROS LLANTA (REAL O ESTIMADO)
-  // =========================
-  const realTireKm = updatedTire.kilometrosRecorridos || 0;
-  let kilometrosEstimados = 0;
-
-  // Special case: Used tire being registered for the first time
-  if (
-    odometerStuck &&
-    realTireKm === 0 &&
-    (isFirstInspection || hasSignificantWear) &&
-    isRecentlyRegistered &&
-    mmWorn > 0
-  ) {
-    // Use wear-based estimation for recently registered tires with significant wear
-    const expectedLifetimeKm = isPremiumTire 
-      ? PREMIUM_TIRE_EXPECTED_KM 
-      : STANDARD_TIRE_EXPECTED_KM;
-    
-    const LIMITE_LEGAL_MM = 2;
-    const usableDepth = profundidadInicial - LIMITE_LEGAL_MM;
-    const kmPerMm = expectedLifetimeKm / usableDepth;
-    const estimatedKmTraveled = Math.round(kmPerMm * mmWorn);
-    
-    kilometrosEstimados = estimatedKmTraveled;
-    
-  } else if (odometerStuck) {
-    // Time-based estimation when odometer is unreliable
-    kilometrosEstimados = Math.round(mesesEnUso * KM_POR_MES);
-    
-  } else {
-    // Use actual tracked kilometers when odometer is working
-    kilometrosEstimados = realTireKm;
-  }
-
-  // =========================
-  // COSTO TOTAL
-  // =========================
+  // ── Total cost (sum of ALL cost entries) ─────────────────────────────────
   const totalCost = Array.isArray(updatedTire.costo)
-    ? updatedTire.costo.reduce(
-        (sum, entry: any) => sum + (entry?.valor || 0),
-        0,
-      )
+    ? updatedTire.costo.reduce((sum: number, entry: any) => sum + (entry?.valor || 0), 0)
     : 0;
 
-  // =========================
-  // CPK / CPT
-  // =========================
-  const cpk =
-    kilometrosEstimados > 0
-      ? totalCost / kilometrosEstimados
-      : 0;
-
+  // ── CPK = total cost / total km ──────────────────────────────────────────
+  const cpk = effectiveKm > 0 ? totalCost / effectiveKm : 0;
   const cpt = mesesEnUso > 0 ? totalCost / mesesEnUso : 0;
 
-  const LIMITE_LEGAL_MM = 2;
-
-  // =========================
-  // PROYECCIÓN DE VIDA ÚTIL
-  // =========================
+  // ── Projected life ───────────────────────────────────────────────────────
   let projectedKm = 0;
-
-  if (mmWorn > 0 && kilometrosEstimados > 0) {
-    const kmPerMm = kilometrosEstimados / mmWorn;
-
-    const mmLeft = Math.max(
-      minDepth - LIMITE_LEGAL_MM,
-      0,
-    );
-
-    const remainingKm = kmPerMm * mmLeft;
-
-    projectedKm = kilometrosEstimados + remainingKm;
+  if (mmWorn > 0 && effectiveKm > 0) {
+    const kmPerMm = effectiveKm / mmWorn;
+    const mmLeft = Math.max(minDepth - LIMITE_LEGAL_MM, 0);
+    projectedKm = effectiveKm + kmPerMm * mmLeft;
   }
 
   const projectedMonths = projectedKm / KM_POR_MES;
+  const cpkProyectado = projectedKm > 0 ? totalCost / projectedKm : 0;
+  const cptProyectado = projectedMonths > 0 ? totalCost / projectedMonths : 0;
 
-  const cpkProyectado =
-    projectedKm > 0 ? totalCost / projectedKm : 0;
-
-  const cptProyectado =
-    projectedMonths > 0 ? totalCost / projectedMonths : 0;
-
-  // =========================
-  // IMAGEN
-  // =========================
+  // ── Image upload ─────────────────────────────────────────────────────────
   let finalImageUrl = updateDto.imageUrl;
-
-  if (
-    updateDto.imageUrl &&
-    updateDto.imageUrl.startsWith('data:')
-  ) {
+  if (updateDto.imageUrl?.startsWith('data:')) {
     const base64Data = updateDto.imageUrl.split(',')[1];
     const fileBuffer = Buffer.from(base64Data, 'base64');
     const fileName = `tire-inspections/${tireId}-${Date.now()}.jpg`;
-
-    finalImageUrl = await uploadFileToS3(
-      fileBuffer,
-      fileName,
-      'image/jpeg',
-    );
+    finalImageUrl = await uploadFileToS3(fileBuffer, fileName, 'image/jpeg');
   }
 
-  // =========================
-  // NUEVA INSPECCIÓN
-  // =========================
+  // ── Build and save new inspection ────────────────────────────────────────
+  const currentInspections = Array.isArray(updatedTire.inspecciones)
+    ? updatedTire.inspecciones
+    : [];
+
   const newInspection = {
     profundidadInt: updateDto.profundidadInt,
     profundidadCen: updateDto.profundidadCen,
     profundidadExt: updateDto.profundidadExt,
     imageUrl: finalImageUrl,
     fecha: now.toISOString(),
-
     diasEnUso,
     mesesEnUso,
-    kilometrosEstimados,
-
+    // Accumulated km on the tire at the moment of this inspection
+    kilometrosRecorridos,
+    // Effective km used for CPK/projection (may include time-based fallback)
+    kmEfectivos: effectiveKm,
+    // Vehicle odometer reading at the moment of this inspection (0 if not provided)
+    kmActualVehiculo: odometerProvided ? newVehicleKm : (vehicle.kilometrajeActual || 0),
     cpk,
     cpkProyectado,
     cpt,
     cptProyectado,
   };
 
-  const updatedInspecciones = [
-    ...currentInspections,
-    newInspection,
-  ];
+  const updatedInspecciones = [...currentInspections, newInspection];
 
-  // =========================
-  // GUARDAR LLANTA
-  // =========================
+  // Save the updated inspection list + days counter.
+  // kilometrosRecorridos is already persisted above — no need to set it again.
   const finalTire = await this.prisma.tire.update({
     where: { id: tireId },
     data: {
       inspecciones: updatedInspecciones,
-      kilometrosRecorridos: kilometrosEstimados,
       diasAcumulados: diasEnUso,
     },
   });
 
-  // =========================
-  // ACTUALIZAR VEHÍCULO (SI APLICA)
-  // =========================
-  if (!odometerStuck) {
+  // Update vehicle odometer
+  if (odometerProvided) {
     await this.prisma.vehicle.update({
       where: { id: vehicle.id },
       data: { kilometrajeActual: newVehicleKm },
     });
   }
 
-  // =========================
-  // NOTIFICACIONES
-  // =========================
+  // ── Notifications ─────────────────────────────────────────────────────────
   await this.notificationsService.deleteByTire(finalTire.id);
 
   const analysis = this.analyzeTire(finalTire);
-  const recommendation =
-    analysis?.recomendaciones?.[0] ?? '';
+  const recommendation = analysis?.recomendaciones?.[0] ?? '';
 
-  if (
-    recommendation.startsWith('🔴') ||
-    recommendation.startsWith('🟡')
-  ) {
+  if (recommendation.startsWith('🔴') || recommendation.startsWith('🟡')) {
     await this.notificationsService.createNotification({
-      title: `Llantas - ${
-        recommendation.includes('🔴')
-          ? 'Crítico'
-          : 'Precaución'
-      }`,
+      title: `Llantas - ${recommendation.includes('🔴') ? 'Crítico' : 'Precaución'}`,
       message: recommendation,
-      type: recommendation.includes('🔴')
-        ? 'critical'
-        : 'warning',
+      type: recommendation.includes('🔴') ? 'critical' : 'warning',
       tireId: finalTire.id,
       vehicleId: finalTire.vehicleId ?? undefined,
       companyId: finalTire.companyId ?? undefined,
     });
   }
 
-  // =========================
-// UPDATE MARKET DATA CPK
-// =========================
-// Fire-and-forget — never block the inspection response
-this.marketDataService.updateMarketCpkFromInspection(
-  finalTire.marca,
-  finalTire.diseno,
-  finalTire.dimension,
-).catch((err) => {
-  console.warn(`Market CPK update failed silently: ${err.message}`);  // ✅ safe fallback
-});
+  // ── Market data CPK update (fire-and-forget) ──────────────────────────────
+  this.marketDataService.updateMarketCpkFromInspection(
+    finalTire.marca,
+    finalTire.diseno,
+    finalTire.dimension,
+  ).catch((err) => console.warn(`Market CPK update failed silently: ${err.message}`));
 
   return finalTire;
 }
@@ -1254,22 +957,12 @@ async updateVida(
   newValor: string | undefined,
   banda?: string,
   costo?: number,
-  profundidadInicial?: number | string, // Accept both types safely
+  profundidadInicial?: number | string,
   desechoData?: {
     causales: string;
     milimetrosDesechados: number;
   }
 ) {
-  console.log('Backend Debug - Received parameters:', {
-    tireId,
-    newValor,
-    banda,
-    costo,
-    profundidadInicial,
-    profundidadInicialType: typeof profundidadInicial,
-    desechoData
-  });
-
   if (!newValor) {
     throw new BadRequestException(`El campo 'valor' es obligatorio`);
   }
@@ -1304,9 +997,7 @@ async updateVida(
   }
 
   const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
-  if (!tire) {
-    throw new BadRequestException('Tire not found');
-  }
+  if (!tire) throw new BadRequestException('Tire not found');
 
   const vidaArray = (Array.isArray(tire.vida) ? tire.vida : []) as Array<{
     fecha: string;
@@ -1316,9 +1007,7 @@ async updateVida(
   const lastEntry = vidaArray.length ? vidaArray[vidaArray.length - 1] : null;
   if (lastEntry) {
     const lastIndex = allowed.indexOf(lastEntry.valor.toLowerCase());
-    if (lastIndex < 0) {
-      throw new BadRequestException('Último valor de vida inválido');
-    }
+    if (lastIndex < 0) throw new BadRequestException('Último valor de vida inválido');
     if (newIndex <= lastIndex) {
       throw new BadRequestException(
         `Debe avanzar en la secuencia. Último valor: "${lastEntry.valor}".`
@@ -1347,10 +1036,7 @@ async updateVida(
 
     if (typeof costo === 'number' && costo > 0) {
       costoValue = costo;
-    } else if (
-      normalizedValor === 'reencauche1' &&
-      existingCosto.length
-    ) {
+    } else if (normalizedValor === 'reencauche1' && existingCosto.length) {
       const lastC = existingCosto[existingCosto.length - 1] as any;
       costoValue = typeof lastC.valor === 'number' ? lastC.valor : 0;
     }
@@ -1366,13 +1052,8 @@ async updateVida(
   if (normalizedValor === 'reencauche1') {
     let cpk = 0;
     if (Array.isArray(tire.inspecciones) && tire.inspecciones.length) {
-      const insps = [...tire.inspecciones] as Array<{
-        fecha: string;
-        cpk?: number;
-      }>;
-      insps.sort(
-        (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()
-      );
+      const insps = [...tire.inspecciones] as Array<{ fecha: string; cpk?: number }>;
+      insps.sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
       cpk = insps[0]?.cpk ?? 0;
     }
 
@@ -1383,14 +1064,13 @@ async updateVida(
         : Array.isArray(tire.costo) && tire.costo.length
         ? ((tire.costo[tire.costo.length - 1] as any).valor as number) || 0
         : 0;
-    const kms = tire.kilometrosRecorridos || 0;
 
     updateData.primeraVida = [
       {
         diseno: designValue,
         cpk,
         costo: costoForPrimera,
-        kilometros: kms,
+        kilometros: tire.kilometrosRecorridos || 0,
       },
     ];
   }
@@ -1411,7 +1091,6 @@ async updateVida(
 
     const profundidad = tire.profundidadInicial || 0;
     let lastCosto = 0;
-
     if (Array.isArray(tire.costo) && tire.costo.length > 0) {
       const lastEntry = tire.costo[tire.costo.length - 1] as any;
       lastCosto = typeof lastEntry.valor === 'number' ? lastEntry.valor : 0;
@@ -1424,7 +1103,7 @@ async updateVida(
       causales: desechoData.causales,
       milimetrosDesechados: desechoData.milimetrosDesechados,
       remanente: Number(remanente.toFixed(2)),
-      fecha: new Date().toISOString(), // ✅ Added timestamp
+      fecha: new Date().toISOString(),
     };
   }
 
@@ -1439,73 +1118,41 @@ async updateVida(
 }
 
 async updateEvento(tireId: string, newValor: string) {
-  // Fetch the tire.
   const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
-  if (!tire) {
-    throw new BadRequestException('Tire not found');
-  }
-  
-  // Parse the existing eventos array (if any).
+  if (!tire) throw new BadRequestException('Tire not found');
+
   const eventosArray: { valor: string; fecha: string }[] = Array.isArray(tire.eventos)
     ? tire.eventos as any
     : [];
-  
-  // Create a new event entry.
-  const newEvent = {
-    valor: newValor,
-    fecha: new Date().toISOString(),
-  };
-  
-  // Append the new event.
-  const updatedEventos = [...eventosArray, newEvent];
-  
-  // Update the tire record with the new eventos array.
-  const updatedTire = await this.prisma.tire.update({
+
+  const updatedEventos = [...eventosArray, { valor: newValor, fecha: new Date().toISOString() }];
+
+  return this.prisma.tire.update({
     where: { id: tireId },
     data: { eventos: updatedEventos },
   });
-  
-  return updatedTire;
 }
 
 async updatePositions(placa: string, updates: { [position: string]: string | string[] }) {
-  // Find the vehicle by placa
-  const vehicle = await this.prisma.vehicle.findFirst({
-    where: { placa }
-  });
-  if (!vehicle) {
-    throw new BadRequestException('Vehicle not found for the given placa');
-  }
+  const vehicle = await this.prisma.vehicle.findFirst({ where: { placa } });
+  if (!vehicle) throw new BadRequestException('Vehicle not found for the given placa');
 
-  // First, reset all tires for this vehicle to unassigned (posicion = null)
-  // This ensures we have a clean slate before applying new positions
   await this.prisma.tire.updateMany({
-    where: { 
-      vehicleId: vehicle.id,
-      placa: placa 
-    },
-data: { posicion: 0 }
+    where: { vehicleId: vehicle.id, placa },
+    data: { posicion: 0 },
   });
 
-  // Process all updates
   for (const pos in updates) {
     const tireIds = Array.isArray(updates[pos]) ? updates[pos] : [updates[pos]];
-    
     for (const tireId of tireIds) {
       const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
-      
-      if (!tire) {
-        throw new BadRequestException(`Tire with id ${tireId} not found`);
-      }
+      if (!tire) throw new BadRequestException(`Tire with id ${tireId} not found`);
       if (tire.vehicleId !== vehicle.id) {
         throw new BadRequestException(`Tire with id ${tireId} does not belong to vehicle with plate ${placa}`);
       }
-      
-      // Set the tire position
-      const posicion = pos === '0' ? 0 : parseInt(pos, 10);
       await this.prisma.tire.update({
         where: { id: tireId },
-        data: { posicion }
+        data: { posicion: pos === '0' ? 0 : parseInt(pos, 10) },
       });
     }
   }
@@ -1514,18 +1161,13 @@ data: { posicion: 0 }
 }
 
 async analyzeTires(vehiclePlaca: string) {
-  const vehicle = await this.prisma.vehicle.findFirst({
-    where: { placa: vehiclePlaca }
-  });
-
+  const vehicle = await this.prisma.vehicle.findFirst({ where: { placa: vehiclePlaca } });
   if (!vehicle) throw new BadRequestException(`Vehicle with placa ${vehiclePlaca} not found`);
 
-  const tires = await this.prisma.tire.findMany({
-    where: { vehicleId: vehicle.id }
-  });
-
-  if (!tires || tires.length === 0)
+  const tires = await this.prisma.tire.findMany({ where: { vehicleId: vehicle.id } });
+  if (!tires || tires.length === 0) {
     throw new BadRequestException(`No tires found for vehicle with placa ${vehiclePlaca}`);
+  }
 
   const analysisResults = await Promise.all(tires.map(tire => this.analyzeTire(tire)));
   return { vehicle, tires: analysisResults };
@@ -1540,12 +1182,12 @@ private analyzeTire(tire: any) {
       inspecciones: [],
       recomendaciones: [
         "🔴 Inspección requerida: No se han registrado inspecciones. Realizar una evaluación inmediata."
-      ]
+      ],
     };
   }
 
   const lastInspections = [...tire.inspecciones]
-    .sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime())
+    .sort((a: any, b: any) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime())
     .slice(0, 3);
   const latest = lastInspections[0];
 
@@ -1562,28 +1204,17 @@ private analyzeTire(tire: any) {
 
   let recomendacion = "";
 
-  // Priority 1: Critical depth
   if (profundidadActual <= 2) {
     recomendacion = "🔴 Cambio inmediato: Desgaste crítico. Reemplazo urgente.";
-  }
-  // Priority 2: No depth issue, but uneven wear
-  else if (delta1 > 3 || delta2 > 3 || delta3 > 3) {
+  } else if (delta1 > 3 || delta2 > 3 || delta3 > 3) {
     recomendacion = "🟡 Desgaste irregular: Diferencias notables entre zonas. Revisar alineación o presión.";
-  }
-  // Priority 3: Poor CPK
-  else if (cpk && cpk < 5) {
+  } else if (cpk && cpk < 5) {
     recomendacion = "🔴 CPK muy bajo: Alto costo por kilómetro. Evaluar desempeño de la llanta.";
-  }
-  // Priority 4: Under/Over inflation
-  else if (presion != null && (presion < 100 || presion > 130)) {
+  } else if (presion != null && (presion < 100 || presion > 130)) {
     recomendacion = `🟡 Presión fuera de rango: Actual: ${presion} PSI. Ajustar conforme a especificación.`;
-  }
-  // Priority 5: Low but not critical depth
-  else if (profundidadActual <= 4) {
+  } else if (profundidadActual <= 4) {
     recomendacion = "🟡 Revisión frecuente: La profundidad está bajando. Monitorear en próximas inspecciones.";
-  }
-  // Priority 7: Everything fine
-  else {
+  } else {
     recomendacion = "🟢 Buen estado: Sin hallazgos relevantes en esta inspección.";
   }
 
@@ -1601,15 +1232,12 @@ async removeInspection(tireId: string, fecha: string) {
   const tire = await this.prisma.tire.findUnique({ where: { id: tireId } });
   if (!tire) throw new BadRequestException('Tire not found');
 
-  // 1️⃣ Narrow the JSON field into an array
   const inspeccionesArray = Array.isArray(tire.inspecciones)
     ? tire.inspecciones as Array<{ fecha: string }>
     : [];
 
-  // 2️⃣ Filter out the one with the matching fecha
   const updated = inspeccionesArray.filter(i => i.fecha !== fecha);
 
-  // 3️⃣ Persist back as JSON
   await this.prisma.tire.update({
     where: { id: tireId },
     data: { inspecciones: updated },
@@ -1619,30 +1247,28 @@ async removeInspection(tireId: string, fecha: string) {
 }
 
 async findAllTires() {
-    // Admin-only access, return all tires without filtering by company
     return await this.prisma.tire.findMany();
-  }
+}
   
 async assignTiresToVehicle(vehiclePlaca: string, tireIds: string[]) {
-  const vehicle = await this.prisma.vehicle.findFirst({
-    where: { placa: vehiclePlaca }
-  });
-  if (!vehicle) {
-    throw new BadRequestException('Vehicle not found');
-  }
+  const vehicle = await this.prisma.vehicle.findFirst({ where: { placa: vehiclePlaca } });
+  if (!vehicle) throw new BadRequestException('Vehicle not found');
 
-  // Update each tire to belong to this vehicle
-  await this.prisma.tire.updateMany({
+  // Record the vehicle odometer at the moment each tire is assigned.
+  // This allows us to compute tire km as: currentVehicleKm - kmInstalacion.
+  const kmInstalacion = vehicle.kilometrajeActual || 0;
+
+  await (this.prisma.tire.updateMany as any)({
     where: { id: { in: tireIds } },
     data: {
       vehicleId: vehicle.id,
-    }
+      kmInstalacion,
+    },
   });
 
-  // Fix vehicle tireCount
   await this.prisma.vehicle.update({
     where: { id: vehicle.id },
-    data: { tireCount: { increment: tireIds.length } }
+    data: { tireCount: { increment: tireIds.length } },
   });
 
   return { message: 'Tires assigned successfully', count: tireIds.length };
@@ -1650,20 +1276,19 @@ async assignTiresToVehicle(vehiclePlaca: string, tireIds: string[]) {
 
 async unassignTiresFromVehicle(tireIds: string[]) {
   const tires = await this.prisma.tire.findMany({ where: { id: { in: tireIds } } });
-  
-  // Decrement tireCount for each affected vehicle
+
   const vehicleIds = [...new Set(tires.map(t => t.vehicleId).filter((id): id is string => id !== null))];
   for (const vid of vehicleIds) {
     const count = tires.filter(t => t.vehicleId === vid).length;
     await this.prisma.vehicle.update({
       where: { id: vid },
-      data: { tireCount: { decrement: count } }
+      data: { tireCount: { decrement: count } },
     });
   }
 
   await this.prisma.tire.updateMany({
     where: { id: { in: tireIds } },
-    data: { vehicleId: null, posicion: 0 }
+    data: { vehicleId: null, posicion: 0 },
   });
 
   return { message: 'Tires unassigned successfully', count: tireIds.length };

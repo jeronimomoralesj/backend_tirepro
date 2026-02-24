@@ -562,8 +562,8 @@ async sendWelcomeEmail(to: string, name: string) {
       <div class="email-container">
         <!-- Header -->
         <div class="header">
-          <div class="welcome-icon"><img src="https://www.tirepro.com.co/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flogo_text.6327c77f.png&w=256&q=75"/></div>
-          <p class="subtitle-header">Your tire managment platform</p>
+          <div class="welcome-icon"><img src="https://www.tirepro.com.co/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flogo_full.44b4ba32.png&w=256&q=75"/></div>
+          <p class="subtitle-header">Tu plataforma para gestión de llantas</p>
         </div>
         
         <!-- Main Content -->
@@ -604,7 +604,7 @@ async sendWelcomeEmail(to: string, name: string) {
         
         <!-- Footer -->
         <div class="footer">
-          <div class="company-name"><img src= "https://www.tirepro.com.co/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flogo_text.6327c77f.png&w=256&q=75"/></div>
+          <div class="company-name"><img src= "https://www.tirepro.com.co/favicon.ico"/></div>
           <div class="contact-info">
             info@tirepro.com.co
           </div>
@@ -622,7 +622,7 @@ async sendWelcomeEmail(to: string, name: string) {
     </html>
   `;
   
-  return this.sendEmail(to, 'Welcome to TirePro! 🚀', htmlContent);
+  return this.sendEmail(to, 'Bienvenido a TirePro! 🚀', htmlContent);
 }
 
   async sendPasswordResetEmail(to: string, resetToken: string) {
