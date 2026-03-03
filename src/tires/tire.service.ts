@@ -622,25 +622,23 @@ async bulkUploadTires(file: any, companyId: string) {
         : [];
 
       const tire = await (this.prisma.tire.create as any)({
-        data: {
-          placa: tirePlaca,
-          marca: finalMarca,
-          diseno: finalDiseno,
-          dimension: finalDimension,
-          eje,
-          posicion,
-          profundidadInicial,
-          companyId,
-          vehicleId: vehicle?.id ?? null,
-          fechaInstalacion,
-          vida: vidaArray,
-          costo: costosActuales,
-          inspecciones: [],
-          eventos: [],
-          // Vehicle odometer at install time — used later to compute tire km accurately
-          kmInstalacion: 0,
-        },
-      });
+  data: {
+    placa: tirePlaca,
+    marca: finalMarca,
+    diseno: finalDiseno,
+    dimension: finalDimension,
+    eje,
+    posicion,
+    profundidadInicial,
+    companyId,
+    vehicleId: vehicle?.id ?? null,
+    fechaInstalacion,
+    vida: vidaArray,
+    costo: costosActuales,
+    inspecciones: [],
+    eventos: [],
+  },
+});
 
       await this.prisma.company.update({
         where: { id: companyId },
