@@ -103,7 +103,6 @@ async createTire(createTireDto: CreateTireDto) {
       fechaInstalacion: fechaInstalacionFinal,
       diasAcumulados: 0,
       desechos: desechos ?? null,
-      kmInstalacion,
     },
   });
 
@@ -1253,15 +1252,10 @@ async assignTiresToVehicle(vehiclePlaca: string, tireIds: string[]) {
   const vehicle = await this.prisma.vehicle.findFirst({ where: { placa: vehiclePlaca } });
   if (!vehicle) throw new BadRequestException('Vehicle not found');
 
-  // Record the vehicle odometer at the moment each tire is assigned.
-  // This allows us to compute tire km as: currentVehicleKm - kmInstalacion.
-  const kmInstalacion = vehicle.kilometrajeActual || 0;
-
   await (this.prisma.tire.updateMany as any)({
     where: { id: { in: tireIds } },
     data: {
       vehicleId: vehicle.id,
-      kmInstalacion,
     },
   });
 
