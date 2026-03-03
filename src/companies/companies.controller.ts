@@ -54,13 +54,16 @@ export class CompaniesController {
     return this.companiesService.createCompany(createCompanyDto);
   }
 
+  @Get('all')
+findAll() { return this.companiesService.getAllCompanies(); }
+
   // =========================
   // DYNAMIC ROUTES (LAST)
   // =========================
   @Get(':companyId')
-  async getCompanyById(@Param('companyId') companyId: string) {
-    return this.companiesService.getCompanyById(companyId);
-  }
+async getCompanyById(@Param('companyId') companyId: string) {
+  return this.companiesService.getCompanyById(companyId);
+}
 
   @Patch(':companyId/logo')
   async updateCompanyLogo(
@@ -102,6 +105,4 @@ export class CompaniesController {
     );
   }
 
-  @Get('all')
-findAll() { return this.companiesService.getAllCompanies(); }
 }
