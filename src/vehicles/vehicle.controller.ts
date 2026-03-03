@@ -106,5 +106,8 @@ export class VehicleController {
       throw new BadRequestException(err.message);
     }
   }
+
+  @Get('all')
+findAll() { return this.vehicleService.findAllVehicles(); }
   
 }

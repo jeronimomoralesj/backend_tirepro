@@ -101,4 +101,7 @@ export class CompaniesController {
       distributorId,
     );
   }
+
+  @Get('all')
+findAll() { return this.companiesService.getAllCompanies(); }
 }

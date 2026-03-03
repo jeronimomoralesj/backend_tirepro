@@ -304,4 +304,8 @@ async findVehiclesByCompany(companyId: string) {
 
     return updated1;
   }
+
+  async findAllVehicles() {
+  return this.prisma.vehicle.findMany();
+}
 }

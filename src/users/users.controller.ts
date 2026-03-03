@@ -148,4 +148,7 @@ async getAllUsers() {
   return this.usersService.getAllUsers();
 }
 
+@Get('all')
+findAll() { return this.usersService.findAllUsers(); }
+
 }

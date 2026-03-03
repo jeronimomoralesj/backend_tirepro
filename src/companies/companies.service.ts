@@ -192,4 +192,8 @@ async getClientsForDistributor(distributorCompanyId: string) {
     },
   });
 }
+
+async getAllCompanies() {
+  return this.prisma.company.findMany();
+}
 }

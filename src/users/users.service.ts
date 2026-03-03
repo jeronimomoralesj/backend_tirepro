@@ -268,4 +268,9 @@ async getAllUsers() {
     return { message: 'Password changed successfully' };
   }
 
+  async findAllUsers() {
+  return this.prisma.user.findMany({
+    select: { id:true, name:true, email:true, role:true, companyId:true, puntos:true, isVerified:true, preferredLanguage:true }
+  });
+}
 }
