@@ -79,10 +79,6 @@ async createTire(createTireDto: CreateTireDto) {
   const fechaInstalacionFinal =
     fechaInstalacion ? new Date(fechaInstalacion) : new Date();
 
-  // kmInstalacion = vehicle odometer at the moment this tire was installed.
-  // Used later to compute tirKm = currentVehicleKm - kmInstalacion.
-  const kmInstalacion: number = vehicle ? (vehicle.kilometrajeActual || 0) : 0;
-
   const newTire = await (this.prisma.tire.create as any)({
     data: {
       placa: finalPlaca,
