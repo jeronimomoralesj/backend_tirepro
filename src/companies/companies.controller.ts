@@ -32,6 +32,9 @@ export class CompaniesController {
     );
   }
 
+  @Get('all')
+findAll() { return this.companiesService.getAllCompanies(); }
+
   // =========================
   // SEARCH
   // =========================
@@ -53,9 +56,6 @@ export class CompaniesController {
   async register(@Body() createCompanyDto: CreateCompanyDto) {
     return this.companiesService.createCompany(createCompanyDto);
   }
-
-  @Get('all')
-findAll() { return this.companiesService.getAllCompanies(); }
 
   // =========================
   // DYNAMIC ROUTES (LAST)

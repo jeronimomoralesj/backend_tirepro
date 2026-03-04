@@ -7,6 +7,11 @@ import { CreateVehicleDto } from './dto/create-vehicle.dto';
 export class VehicleController {
   constructor(private readonly vehicleService: VehicleService) {}
 
+  @Get('all')
+  findAll() {
+    return this.vehicleService.findAllVehicles();
+  }
+
   @Post('create')
   async createVehicle(@Body() createVehicleDto: CreateVehicleDto) {
     try {
@@ -107,7 +112,4 @@ export class VehicleController {
     }
   }
 
-  @Get('all')
-findAll() { return this.vehicleService.findAllVehicles(); }
-  
 }
