@@ -24,4 +24,9 @@ export class UpdateInspectionDto {
   @Type(() => Number)
   @IsNumber()
   newKilometraje?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  kmDelta?: number;
 }

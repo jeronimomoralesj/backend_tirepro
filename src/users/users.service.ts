@@ -15,57 +15,41 @@ async createUser(createUserDto: CreateUserDto) {
   const { email, name, password, companyId, role, preferredLanguage } = createUserDto;
 
   const existingUser = await this.prisma.user.findUnique({ where: { email } });
-  if (existingUser) {
-    throw new BadRequestException('User with this email already exists');
-  }
+  if (existingUser) throw new BadRequestException('User with this email already exists');
 
   const hashedPassword = await bcrypt.hash(password, 10);
   const verificationToken = randomBytes(32).toString('hex');
 
-  const newUser = await this.prisma.user.create({
-    data: { 
-      email, 
-      name, 
-      password: hashedPassword, 
-      companyId: companyId || "", 
-      role: role || "regular", 
-      puntos: 0, 
-      plates: [], 
-      isVerified: true,
-      verificationToken,
-      preferredLanguage: preferredLanguage || "es"
-    },
-    select: {
-      id: true,
-      email: true,
-      name: true,
-      role: true,
-      companyId: true,
-      puntos: true,
-      plates: true
-    }
-  });
+  const newUser = await this.prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: {
+        email, name, password: hashedPassword,
+        companyId: companyId || '',
+        role: role || 'regular',
+        puntos: 0, plates: [],
+        isVerified: true,
+        verificationToken,
+        preferredLanguage: preferredLanguage || 'es',
+      },
+      select: { id: true, email: true, name: true, role: true, companyId: true, puntos: true, plates: true },
+    });
 
-  if (companyId) {
-    try {
-      await this.prisma.company.update({
+    if (companyId) {
+      await tx.company.update({
         where: { id: companyId },
         data: { userCount: { increment: 1 } },
       });
-    } catch (error) {
-      throw new BadRequestException('Failed to update company user count');
     }
-  }
 
-  // 🌐 Send email based on preferred language
-  const verifyLink = `https://tirepro.com.co/verify?token=${verificationToken}`;
-  preferredLanguage === 'es'
-    ? await this.emailService.sendWelcomeEmailEs(email, name)
-    : await this.emailService.sendWelcomeEmailEs(email, name);
+    return user;
+  });
+
+  // Email is sent AFTER successful transaction only
+  await this.emailService.sendWelcomeEmailEs(email, name);
 
   return {
-    message: "User created successfully. Please check your email to verify your account.",
-    user: newUser
+    message: 'User created successfully. Please check your email to verify your account.',
+    user: newUser,
   };
 }
 

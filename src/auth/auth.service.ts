@@ -13,9 +13,27 @@ export class AuthService {
     private readonly mailerService: MailerService
   ) {}
 
-  async generateJwt(user: { email: string; id: string }) {
-    return this.jwtService.sign({ email: user.email, sub: user.id });
-  }
+  // auth.service.ts — replace generateJwt() and the payload block in login()
+
+private createTokenPayload(user: { id: string; email: string; companyId: string; role: string }) {
+  return {
+    sub: user.id,
+    email: user.email,
+    companyId: user.companyId,
+    role: user.role,
+  };
+}
+
+async generateJwt(user: { email: string; id: string; companyId?: string; role?: string }) {
+  return this.jwtService.sign(
+    this.createTokenPayload({
+      id: user.id,
+      email: user.email,
+      companyId: user.companyId ?? '',
+      role: user.role ?? 'regular',
+    })
+  );
+}
 
   async register(email: string, name: string, password: string) {
     const existingUser = await this.prisma.user.findUnique({ where: { email } });
@@ -67,15 +85,14 @@ async login(email: string, password: string) {
     throw new BadRequestException('Invalid credentials');
   }
 
-  // 🔴 INCLUDE EVERYTHING YOU NEED AT REQUEST TIME
-  const payload = {
-    sub: user.id,
+  const access_token = this.jwtService.sign(
+  this.createTokenPayload({
+    id: user.id,
     email: user.email,
     companyId: user.companyId,
     role: user.role,
-  };
-
-  const access_token = this.jwtService.sign(payload);
+  })
+);
 
   return {
     access_token,
@@ -85,7 +102,7 @@ async login(email: string, password: string) {
       role: user.role,
       companyId: user.companyId,
       name: user.name,
-      company: user.company,  // ✅ Now includes company with plan
+      company: user.company,
     },
   };
 }
@@ -160,39 +177,29 @@ async login(email: string, password: string) {
   }
 
   async verifyBlogPassword(password: string): Promise<boolean> {
-    try {
-      // Get the current password from database
-      const blogPassword = await this.prisma.blogPassword.findFirst({
-        where: {
-          isUsed: false,
-          expiresAt: {
-            gt: new Date() // Not expired
-          }
-        },
-        orderBy: {
-          createdAt: 'desc'
-        }
+  try {
+    const blogPassword = await this.prisma.blogPassword.findFirst({
+      where: { isUsed: false, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Always compare — use a dummy hash if no record found to equalize timing
+    const hashToCompare = blogPassword?.password ?? 
+      '$2a$10$abcdefghijklmnopqrstuuABC123DEFGHIJKLMNOPQRSTUVWXYZabc';
+    const isValid = await bcrypt.compare(password, hashToCompare);
+
+    if (isValid && blogPassword) {
+      await this.prisma.blogPassword.update({
+        where: { id: blogPassword.id },
+        data: { isUsed: true },
       });
-
-      if (!blogPassword) {
-        return false; // No valid password found
-      }
-
-      // Verify the password
-      const isValid = await bcrypt.compare(password, blogPassword.password);
-      
-      if (isValid) {
-        // Mark password as used
-        await this.prisma.blogPassword.update({
-          where: { id: blogPassword.id },
-          data: { isUsed: true }
-        });
-      }
-
-      return isValid;
-    } catch (error) {
-      console.error('Error verifying blog password:', error);
-      return false;
+      return true;
     }
+
+    return false;
+  } catch (error) {
+    console.error('Error verifying blog password:', error);
+    return false;
   }
+}
 }
