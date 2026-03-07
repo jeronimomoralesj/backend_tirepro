@@ -78,6 +78,7 @@ export interface InspectionEntry {
   cptProyectado: number;
   imageUrl?: string;
   kmEfectivos?: number;
+  kmProyectado?: number;
 }
 interface DesechoData {
   causales: string;
@@ -974,13 +975,13 @@ if (deltaFromFrontend > 0) {
       diasEnUso,
       mesesEnUso,
       kilometrosRecorridos,
-      kmEfectivos:     effectiveKm,
-      // ← key field: used by the NEXT inspection to compute vehicle-km delta
+      kmEfectivos:      effectiveKm,
       kmActualVehiculo: odometerProvided ? newVehicleKm : (vehicle.kilometrajeActual || 0),
       cpk:              metrics.cpk,
       cpkProyectado:    metrics.cpkProyectado,
       cpt:              metrics.cpt,
       cptProyectado:    metrics.cptProyectado,
+      kmProyectado:     metrics.projectedKm,
     };
 
     const finalTire = await this.prisma.tire.update({
@@ -1549,11 +1550,10 @@ async editTire(tireId: string, dto: EditTireDto) {
     const profInicial  = dto.profundidadInicial ?? tire.profundidadInicial;
 
     const updatedInspections = inspecciones.map((insp) => {
-      const inspDate = new Date(insp.fecha).getTime();
 
       // Only costs on or before this inspection's date
       const costUpToInsp = costoArray
-        .filter((c) => new Date(c.fecha).getTime() <= inspDate)
+        .filter((c) => toDateOnly(c.fecha) <= toDateOnly(insp.fecha))
         .reduce((sum, c) => sum + (c?.valor || 0), 0);
 
       const minDepth   = calcMinDepth(insp.profundidadInt, insp.profundidadCen, insp.profundidadExt);
@@ -1570,6 +1570,7 @@ async editTire(tireId: string, dto: EditTireDto) {
         cpkProyectado: metrics.cpkProyectado,
         cpt:           metrics.cpt,
         cptProyectado: metrics.cptProyectado,
+        kmProyectado:  metrics.projectedKm,
       };
     });
 
@@ -1589,10 +1590,8 @@ if (dto.inspectionEdit) {
   const updatedInspections = inspecciones.map((insp) => {
     if (insp.fecha !== fecha) return insp;
 
-    const inspDate = new Date(insp.fecha).getTime();
-
     const costUpToInsp = costoArray
-      .filter((c) => new Date(c.fecha).getTime() <= inspDate)
+      .filter((c) => toDateOnly(c.fecha) <= toDateOnly(insp.fecha))
       .reduce((sum, c) => sum + (c?.valor || 0), 0);
 
     const minDepth   = calcMinDepth(profundidadInt, profundidadCen, profundidadExt);
@@ -1632,10 +1631,6 @@ if (dto.inspectionEdit) {
     const { fecha: costoFecha, newValor } = dto.costoEdit;
     const costoArray = this.castCosto(tire.costo);
 
-    // Helper scoped here for same-day comparison
-    const toDateOnly = (isoString: string) =>
-      new Date(isoString).toISOString().slice(0, 10);
-
     // Update the matching cost entry
     const updatedCosto = costoArray.map((c) =>
       c.fecha === costoFecha ? { ...c, valor: newValor } : c,
@@ -1656,7 +1651,6 @@ if (dto.inspectionEdit) {
 
       // Recalculate using costs up to and including this inspection's date
       // using the updated cost array so the edited value is reflected
-      const inspDate = new Date(insp.fecha).getTime();
       const costUpToInsp = updatedCosto
         .filter((c) => toDateOnly(c.fecha) <= toDateOnly(insp.fecha))
         .reduce((sum, c) => sum + (c?.valor || 0), 0);
@@ -1676,6 +1670,7 @@ if (dto.inspectionEdit) {
         cpkProyectado: metrics.cpkProyectado,
         cpt:           metrics.cpt,
         cptProyectado: metrics.cptProyectado,
+        kmProyectado:  metrics.projectedKm,
       };
     });
 
