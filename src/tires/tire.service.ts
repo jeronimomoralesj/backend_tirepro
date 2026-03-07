@@ -1577,49 +1577,55 @@ async editTire(tireId: string, dto: EditTireDto) {
   }
 
   // ── 4. Inspection depth edit → recalculate only that one inspection ─────
-  if (dto.inspectionEdit) {
-    const { fecha, profundidadInt, profundidadCen, profundidadExt } = dto.inspectionEdit;
+if (dto.inspectionEdit) {
+  const { fecha, profundidadInt, profundidadCen, profundidadExt } = dto.inspectionEdit;
 
-    const inspecciones = this.castInspections(
-      updateData.inspecciones ?? tire.inspecciones,
-    );
-    const costoArray  = this.castCosto(tire.costo);
-    const profInicial = dto.profundidadInicial ?? tire.profundidadInicial;
+  const inspecciones = this.castInspections(
+    updateData.inspecciones ?? tire.inspecciones,
+  );
+  const costoArray  = this.castCosto(tire.costo);
+  const profInicial = dto.profundidadInicial ?? tire.profundidadInicial;
 
-    const updatedInspections = inspecciones.map((insp) => {
-      if (insp.fecha !== fecha) return insp;
+  const updatedInspections = inspecciones.map((insp) => {
+    if (insp.fecha !== fecha) return insp;
 
-      const inspDate = new Date(insp.fecha).getTime();
+    const inspDate = new Date(insp.fecha).getTime();
 
-      // Only costs on or before this inspection's date
-      const costUpToInsp = costoArray
-        .filter((c) => new Date(c.fecha).getTime() <= inspDate)
-        .reduce((sum, c) => sum + (c?.valor || 0), 0);
+    const costUpToInsp = costoArray
+      .filter((c) => new Date(c.fecha).getTime() <= inspDate)
+      .reduce((sum, c) => sum + (c?.valor || 0), 0);
 
-      const minDepth   = calcMinDepth(profundidadInt, profundidadCen, profundidadExt);
-      const km         = insp.kilometrosRecorridos || tire.kilometrosRecorridos || 0;
-      const mesesEnUso = insp.mesesEnUso || 1;
-      const metrics    = calcCpkMetrics(costUpToInsp, km, mesesEnUso, profInicial, minDepth);
+    const minDepth   = calcMinDepth(profundidadInt, profundidadCen, profundidadExt);
+    const km         = insp.kilometrosRecorridos || tire.kilometrosRecorridos || 0;
+    const mesesEnUso = insp.mesesEnUso || 1;
 
-      return {
-        ...insp,
-        profundidadInt,
-        profundidadCen,
-        profundidadExt,
-        cpk:           metrics.cpk,
-        cpkProyectado: metrics.cpkProyectado,
-        cpt:           metrics.cpt,
-        cptProyectado: metrics.cptProyectado,
-      };
-    });
+    // calcCpkMetrics already computes projectedKm internally —
+    // minDepth and profInicial are the two inputs that drive it,
+    // so updating the depth readings here correctly recalculates it
+    const metrics = calcCpkMetrics(costUpToInsp, km, mesesEnUso, profInicial, minDepth);
 
-    updateData.inspecciones = toJson(updatedInspections);
-    this.triggerMarketCpkUpdate(
-      updateData.marca ?? tire.marca,
-      updateData.diseno ?? tire.diseno,
-      updateData.dimension ?? tire.dimension,
-    );
-  }
+    return {
+      ...insp,
+      profundidadInt,
+      profundidadCen,
+      profundidadExt,
+      cpk:            metrics.cpk,
+      cpkProyectado:  metrics.cpkProyectado,
+      cpt:            metrics.cpt,
+      cptProyectado:  metrics.cptProyectado,
+      // ← this was missing: store the recalculated projected km
+      // so the frontend getProjectedKilometraje() reads fresh data
+      kmProyectado:   metrics.projectedKm,
+    };
+  });
+
+  updateData.inspecciones = toJson(updatedInspections);
+  this.triggerMarketCpkUpdate(
+    updateData.marca ?? tire.marca,
+    updateData.diseno ?? tire.diseno,
+    updateData.dimension ?? tire.dimension,
+  );
+}
 
   // ── 5. Costo edit → recalculate inspections on same day or after ────────
   if (dto.costoEdit) {
