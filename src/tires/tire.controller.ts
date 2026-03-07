@@ -12,7 +12,7 @@ import {
   Delete
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { TireService } from './tire.service';
+import { EditTireDto, TireService } from './tire.service';
 import { CreateTireDto } from './dto/create-tire.dto';
 import { UpdateInspectionDto } from './dto/update-inspection.dto';
 import * as multer from 'multer';
@@ -171,5 +171,13 @@ async unassignVehicle(@Body() body: { tireIds: string[] }) {
   } catch (error) {
     throw new BadRequestException(error.message);
   }
+}
+
+@Patch(':id/edit')
+async editTire(
+  @Param('id') tireId: string,
+  @Body() dto: EditTireDto,
+) {
+  return this.tireService.editTire(tireId, dto);
 }
 }

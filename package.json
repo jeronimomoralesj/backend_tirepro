@@ -31,7 +31,7 @@
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.12",
     "aws-sdk": "^2.1692.0",
-    "axios": "^1.13.5",
+    "axios": "^1.13.6",
     "bcrypt": "^5.1.1",
     "bcryptjs": "^3.0.2",
     "cheerio": "^1.2.0",
