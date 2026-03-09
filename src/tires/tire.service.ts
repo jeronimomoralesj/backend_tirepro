@@ -186,13 +186,25 @@ function calcCpkMetrics(
   const cpt = meses > 0 ? totalCost / meses : 0;
 
   // Remaining mm above legal limit → remaining km via wear-rate extrapolation
-  const mmWorn = profundidadInicial - minDepth;
-  let projectedKm = 0;
-  if (mmWorn > 0 && km > 0) {
-    const kmPerMm  = km / mmWorn;
-    const mmLeft   = Math.max(minDepth - LIMITE_LEGAL_MM, 0);
-    projectedKm    = km + kmPerMm * mmLeft;
+  const usableDepth = profundidadInicial - LIMITE_LEGAL_MM;
+const mmWorn      = profundidadInicial - minDepth;
+const mmLeft      = Math.max(minDepth - LIMITE_LEGAL_MM, 0);
+let projectedKm   = 0;
+
+if (usableDepth > 0 && km > 0) {
+  if (mmWorn >= CONSTANTS.SIGNIFICANT_WEAR_MM) {
+    // Enough wear to trust the observed wear rate
+    const kmPerMm = km / mmWorn;
+    projectedKm   = km + kmPerMm * mmLeft;
+  } else {
+    // Too little wear — extrapolate from remaining depth proportion only,
+    // anchored to the standard expected lifetime, not to current km
+    // This avoids wild swings when mmWorn is near zero
+    const fractionLeft = mmLeft / usableDepth;
+    const expectedLifetimeKm = CONSTANTS.STANDARD_TIRE_EXPECTED_KM;
+    projectedKm = km + fractionLeft * expectedLifetimeKm;
   }
+}
 
   const projectedMonths = projectedKm / KM_POR_MES;
   const cpkProyectado   = projectedKm     > 0 ? totalCost / projectedKm     : 0;
@@ -1570,7 +1582,7 @@ async editTire(tireId: string, dto: EditTireDto) {
         cpkProyectado: metrics.cpkProyectado,
         cpt:           metrics.cpt,
         cptProyectado: metrics.cptProyectado,
-        kmProyectado:  metrics.projectedKm,
+        // kmProyectado:  metrics.projectedKm,
       };
     });
 
@@ -1670,7 +1682,7 @@ if (dto.inspectionEdit) {
         cpkProyectado: metrics.cpkProyectado,
         cpt:           metrics.cpt,
         cptProyectado: metrics.cptProyectado,
-        kmProyectado:  metrics.projectedKm,
+        //kmProyectado:  metrics.projectedKm,
       };
     });
 
