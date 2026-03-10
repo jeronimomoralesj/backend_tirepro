@@ -4,7 +4,11 @@ import {
   IsOptional,
   IsNumber,
   IsDateString,
+  IsEnum,
+  IsArray,
+  Min,
 } from 'class-validator';
+import { EjeType } from '@prisma/client';
 
 export class CreateTireDto {
   @IsOptional()
@@ -20,47 +24,16 @@ export class CreateTireDto {
   diseno: string;
 
   @IsNumber()
+  @Min(1)
   profundidadInicial: number;
 
   @IsString()
   @IsNotEmpty()
   dimension: string;
 
-  @IsString()
-  @IsNotEmpty()
-  eje: string;
+  @IsEnum(EjeType, { message: `eje must be one of: ${Object.values(EjeType).join(', ')}` })
+  eje: EjeType;
 
-  // =========================
-  // HISTÓRICOS
-  // =========================
-  @IsOptional()
-  vida?: any;
-
-  @IsOptional()
-  costo?: any;
-
-  @IsOptional()
-  inspecciones?: any;
-
-  @IsOptional()
-  primeraVida?: any;
-
-  // =========================
-  // MÉTRICAS
-  // =========================
-  @IsOptional()
-  @IsNumber()
-  kilometrosRecorridos?: number;
-
-  // =========================
-  // EVENTOS
-  // =========================
-  @IsOptional()
-  eventos?: any;
-
-  // =========================
-  // RELACIONES
-  // =========================
   @IsString()
   @IsNotEmpty()
   companyId: string;
@@ -69,22 +42,41 @@ export class CreateTireDto {
   @IsString()
   vehicleId?: string;
 
-  // =========================
-  // POSICIÓN
-  // =========================
   @IsNumber()
+  @Min(0)
   posicion: number;
 
-  // =========================
-  // TIEMPO (NUEVO)
-  // =========================
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  kilometrosRecorridos?: number;
+
   @IsOptional()
   @IsDateString()
   fechaInstalacion?: string;
 
-  // =========================
-  // DESECHOS
-  // =========================
+  // Historical arrays — validated loosely because they come from
+  // bulk upload / migration paths with variable shapes
+  @IsOptional()
+  @IsArray()
+  vida?: any[];
+
+  @IsOptional()
+  @IsArray()
+  costo?: any[];
+
+  @IsOptional()
+  @IsArray()
+  inspecciones?: any[];
+
+  @IsOptional()
+  @IsArray()
+  primeraVida?: any[];
+
+  @IsOptional()
+  @IsArray()
+  eventos?: any[];
+
   @IsOptional()
   desechos?: any;
 }

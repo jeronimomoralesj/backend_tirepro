@@ -1,26 +1,44 @@
-// src/companies/companies.service.ts
 import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
-import { uploadCompanyProfilePicToS3 } from './s3.service';
+import { CompanyPlan } from '@prisma/client';
+import { S3Service } from './s3.service';
+import { CreateCompanyDto } from './dto/create-company.dto';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const DEFAULT_LOGO =
+  'https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png';
+
+const COMPANY_PUBLIC_SELECT = {
+  id: true,
+  name: true,
+  plan: true,
+  profileImage: true,
+} as const;
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
 
 @Injectable()
 export class CompaniesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly s3: S3Service,
+  ) {}
+
+  // ── Logo ──────────────────────────────────────────────────────────────────
 
   async updateCompanyLogo(companyId: string, imageBase64: string) {
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-    });
-
-    if (!company) {
-      throw new NotFoundException('Company not found');
-    }
-
-    if (!imageBase64 || !imageBase64.startsWith('data:image')) {
+    // Validate format before hitting the DB or S3
+    if (!imageBase64?.startsWith('data:image')) {
       throw new BadRequestException('Invalid image format');
     }
 
@@ -29,171 +47,149 @@ export class CompaniesService {
       throw new BadRequestException('Invalid base64 payload');
     }
 
+    // Confirm company exists
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: { id: true },
+    });
+    if (!company) throw new NotFoundException('Company not found');
+
+    // Detect mime type from header (support png, jpeg, webp)
+    const mimeMatch = imageBase64.match(/^data:(image\/\w+);base64,/);
+    const contentType = mimeMatch?.[1] ?? 'image/jpeg';
+
     const buffer = Buffer.from(base64Data, 'base64');
+    const imageUrl = await this.s3.uploadCompanyLogo(buffer, companyId, contentType);
 
-    const imageUrl = await uploadCompanyProfilePicToS3(
-      buffer,
-      companyId,
-      'image/jpeg',
-    );
-
-    const updatedCompany = await this.prisma.company.update({
+    await this.prisma.company.update({
       where: { id: companyId },
       data: { profileImage: imageUrl },
     });
 
-    return {
-      message: 'Logo actualizado correctamente',
-      profileImage: updatedCompany.profileImage,
-    };
+    return { message: 'Logo actualizado correctamente', profileImage: imageUrl };
   }
 
-  async createCompany(createCompanyDto) {
-    const { name, plan } = createCompanyDto;
+  // ── Create ────────────────────────────────────────────────────────────────
 
-    const newCompany = await this.prisma.company.create({
+  async createCompany(dto: CreateCompanyDto) {
+    const company = await this.prisma.company.create({
       data: {
-        name,
-        plan,
-        profileImage:
-          'https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png',
-        vehicleCount: 0,
-        userCount: 0,
+        name: dto.name,
+        plan: (dto.plan as CompanyPlan) ?? CompanyPlan.basic,
+        profileImage: DEFAULT_LOGO,
       },
     });
 
-    return {
-      message: 'Company registered successfully',
-      companyId: newCompany.id,
-    };
+    return { message: 'Company registered successfully', companyId: company.id };
   }
+
+  // ── Read ──────────────────────────────────────────────────────────────────
 
   async getCompanyById(companyId: string) {
-  return this.prisma.company.findUniqueOrThrow({
-    where: { id: companyId },
-    include: {
-      distributors: {
-        include: {
-          distributor: {
-            select: {
-              id: true,
-              name: true,
-              profileImage: true,
-              plan: true,
-            },
-          },
-        },
-      },
-    },
-  });
-}
-
-  async grantDistributorAccess(companyId: string, distributorId: string) {
     const company = await this.prisma.company.findUnique({
       where: { id: companyId },
+      include: {
+        distributors: {
+          include: {
+            distributor: { select: COMPANY_PUBLIC_SELECT },
+          },
+        },
+        // Live counts — replaces stale userCount/tireCount/vehicleCount fields
+        _count: {
+          select: { users: true, tires: true, vehicles: true },
+        },
+      },
     });
 
-    if (!company) {
-      throw new NotFoundException('Company not found');
+    if (!company) throw new NotFoundException('Company not found');
+    return company;
+  }
+
+  async getAllCompanies() {
+    return this.prisma.company.findMany({
+      select: {
+        ...COMPANY_PUBLIC_SELECT,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { users: true, tires: true, vehicles: true } },
+      },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async searchCompaniesByName(query: string, excludeCompanyId?: string) {
+    if (!query || query.trim().length < 2) return [];
+
+    return this.prisma.company.findMany({
+      where: {
+        name: { contains: query.trim(), mode: 'insensitive' },
+        ...(excludeCompanyId && { id: { not: excludeCompanyId } }),
+      },
+      select: COMPANY_PUBLIC_SELECT,
+      take: 10,
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  // ── Distributor access ────────────────────────────────────────────────────
+
+  async getConnectedDistributors(companyId: string) {
+    return this.prisma.distributorAccess.findMany({
+      where: { companyId },
+      include: {
+        distributor: { select: COMPANY_PUBLIC_SELECT },
+      },
+    });
+  }
+
+  async getClientsForDistributor(distributorCompanyId: string) {
+    return this.prisma.distributorAccess.findMany({
+      where: { distributorId: distributorCompanyId },
+      include: {
+        company: { select: COMPANY_PUBLIC_SELECT },
+      },
+    });
+  }
+
+  async grantDistributorAccess(companyId: string, distributorId: string) {
+    if (companyId === distributorId) {
+      throw new BadRequestException('A company cannot be its own distributor');
     }
 
-    const distributor = await this.prisma.company.findUnique({
-      where: { id: distributorId },
-    });
+    // Fetch both in parallel — single round-trip
+    const [company, distributor] = await Promise.all([
+      this.prisma.company.findUnique({
+        where: { id: companyId },
+        select: { id: true },
+      }),
+      this.prisma.company.findUnique({
+        where: { id: distributorId },
+        select: { id: true, plan: true },
+      }),
+    ]);
 
-    if (!distributor || distributor.plan !== 'distribuidor') {
+    if (!company) throw new NotFoundException('Company not found');
+    if (!distributor) throw new NotFoundException('Distributor not found');
+    if (distributor.plan !== CompanyPlan.distribuidor) {
       throw new BadRequestException('Selected company is not a distributor');
     }
 
-    try {
-      return await this.prisma.distributorAccess.create({
-        data: {
-          companyId,
-          distributorId,
-        },
-      });
-    } catch (err) {
-      throw new BadRequestException(
-        'Distributor already has access to this company',
-      );
-    }
-  }
-
-
-  async revokeDistributorAccess(companyId: string, distributorId: string) {
-    return this.prisma.distributorAccess.delete({
-      where: {
-        companyId_distributorId: {
-          companyId,
-          distributorId,
-        },
-      },
+    // Upsert is idempotent — no need to catch unique constraint errors
+    return this.prisma.distributorAccess.upsert({
+      where: { companyId_distributorId: { companyId, distributorId } },
+      create: { companyId, distributorId },
+      update: {}, // already exists — no-op
     });
   }
 
-  async searchCompaniesByName(
-  query: string,
-  excludeCompanyId?: string,
-) {
-  if (!query || query.trim().length < 2) {
-    return [];
+  async revokeDistributorAccess(companyId: string, distributorId: string) {
+    const existing = await this.prisma.distributorAccess.findUnique({
+      where: { companyId_distributorId: { companyId, distributorId } },
+    });
+    if (!existing) throw new NotFoundException('Distributor access not found');
+
+    return this.prisma.distributorAccess.delete({
+      where: { companyId_distributorId: { companyId, distributorId } },
+    });
   }
-
-  return this.prisma.company.findMany({
-    where: {
-      name: {
-        contains: query,
-        mode: 'insensitive',
-      },
-      ...(excludeCompanyId && {
-        id: { not: excludeCompanyId },
-      }),
-    },
-    select: {
-      id: true,
-      name: true,
-      plan: true,
-      profileImage: true,
-    },
-    take: 10, // prevents abuse & keeps UI fast
-  });
-}
-
-async getConnectedDistributors(companyId: string) {
-  return this.prisma.distributorAccess.findMany({
-    where: { companyId },
-    include: {
-      distributor: {
-        select: {
-          id: true,
-          name: true,
-          profileImage: true,
-          plan: true,
-        },
-      },
-    },
-  });
-}
-
-async getClientsForDistributor(distributorCompanyId: string) {
-  return this.prisma.distributorAccess.findMany({
-    where: {
-      distributorId: distributorCompanyId,
-    },
-    include: {
-      company: {
-        select: {
-          id: true,
-          name: true,
-          profileImage: true,
-          plan: true,
-        },
-      },
-    },
-  });
-}
-
-async getAllCompanies() {
-  return this.prisma.company.findMany();
-}
 }

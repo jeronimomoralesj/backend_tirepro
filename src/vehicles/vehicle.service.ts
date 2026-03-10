@@ -1,311 +1,230 @@
-// src/vehicles/vehicle.service.ts
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../database/prisma.service';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  Logger,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
+import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 
-// Add this DTO interface
-interface UpdateVehicleDto {
-  placa?: string;
-  kilometrajeActual?: number;
-  carga?: string;
-  pesoCarga?: number;
-  tipovhc?: string;
-  cliente?: string | null;
-}
+// ---------------------------------------------------------------------------
+// Reusable select — never fetch more columns than the caller needs.
+// tireCount removed: derived live via _count to avoid stale cached integers.
+// ---------------------------------------------------------------------------
+const VEHICLE_SELECT = {
+  id:               true,
+  placa:            true,
+  kilometrajeActual: true,
+  carga:            true,
+  pesoCarga:        true,
+  tipovhc:          true,
+  companyId:        true,
+  union:            true,
+  cliente:          true,
+  createdAt:        true,
+  updatedAt:        true,
+  _count: { select: { tires: true } },
+} satisfies Prisma.VehicleSelect;
 
 @Injectable()
 export class VehicleService {
+  private readonly logger = new Logger(VehicleService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
-async createVehicle(createVehicleDto: CreateVehicleDto) {
-  const {
-    placa,
-    kilometrajeActual,
-    carga,
-    pesoCarga,
-    tipovhc,
-    companyId,
-    cliente,
-  } = createVehicleDto;
+  // ── Create ────────────────────────────────────────────────────────────────
 
-  console.log("Creating vehicle with data:", { 
-    placa, kilometrajeActual, carga, pesoCarga, 
-    tipovhc, companyId, cliente 
-  });
+  async createVehicle(dto: CreateVehicleDto) {
+    const { placa, kilometrajeActual, carga, pesoCarga, tipovhc, companyId, cliente } = dto;
 
-  // Check company
-  const company = await this.prisma.company.findUnique({ where: { id: companyId } });
-  if (!company) {
-    throw new BadRequestException('Invalid companyId provided');
-  }
+    // Validate company + check duplicate placa in parallel
+    const [company, duplicate] = await Promise.all([
+      this.prisma.company.findUnique({ where: { id: companyId }, select: { id: true } }),
+      this.prisma.vehicle.findFirst({ where: { placa }, select: { id: true } }),
+    ]);
 
-  // Check for duplicate placa
-  const existingVehicle = await this.prisma.vehicle.findFirst({
-    where: { placa },
-  });
-  if (existingVehicle) {
-    throw new BadRequestException('A vehicle with this placa already exists');
-  }
+    if (!company)   throw new BadRequestException('Invalid companyId provided');
+    if (duplicate)  throw new BadRequestException('A vehicle with this placa already exists');
 
-  try {
-    // IMPORTANT: Use Prisma directly to force field inclusion
-    const newVehicle = await this.prisma.$transaction(async (prisma) => {
-      // Create the vehicle with explicit cliente handling
-      const vehicle = await prisma.vehicle.create({
-        data: {
-          placa,
-          kilometrajeActual,
-          carga,
-          pesoCarga,
-          tipovhc,
-          companyId,
-          cliente: cliente || null,
-          tireCount: 0,
-          union: [], 
-        },
-        // Explicitly select all fields to ensure nothing is missed
-        select: {
-          id: true,
-          placa: true,
-          kilometrajeActual: true,
-          carga: true,
-          pesoCarga: true,
-          tipovhc: true,
-          companyId: true,
-          tireCount: true,
-          union: true,
-          cliente: true,
-        }
-      });
-      
-      // Update company count
-      await prisma.company.update({
-        where: { id: companyId },
-        data: { vehicleCount: { increment: 1 } },
-      });
-      
-      return vehicle;
+    const vehicle = await this.prisma.vehicle.create({
+      data: {
+        placa,
+        kilometrajeActual,
+        carga,
+        pesoCarga,
+        tipovhc,
+        companyId,
+        cliente: cliente ?? null,
+        union:   [],
+      },
+      select: VEHICLE_SELECT,
     });
 
-    console.log("Created vehicle:", newVehicle);
-    return newVehicle;
-  } catch (error) {
-    console.error("Error creating vehicle:", error);
-    throw error;
-  }
-}
-
-async findVehiclesByCompany(companyId: string) {
-  try {
-    const vehicles = await this.prisma.vehicle.findMany({
-      where: { companyId },
-      // IMPORTANT: Explicitly select all fields including cliente
-      select: {
-        id: true,
-        placa: true,
-        kilometrajeActual: true,
-        carga: true,
-        pesoCarga: true,
-        tipovhc: true,
-        companyId: true,
-        tireCount: true,
-        union: true,
-        cliente: true,
-      }
-    });
-    
-    console.log(`Found ${vehicles.length} vehicles for company ${companyId}`);
-    if (vehicles.length > 0) {
-      console.log('Sample vehicle:', vehicles[0]);
-      console.log('Cliente value:', vehicles[0].cliente);
-    }
-    
-    return vehicles;
-  } catch (error) {
-    console.error('Error fetching vehicles:', error);
-    throw error;
-  }
-}
-
-  async updateVehicle(vehicleId: string, updateVehicleDto: UpdateVehicleDto) {
-    // Find the vehicle first
-    const vehicle = await this.prisma.vehicle.findUnique({
-      where: { id: vehicleId },
-    });
-    if (!vehicle) {
-      throw new NotFoundException('Vehicle not found');
-    }
-
-    // If placa is being updated, check for duplicates
-    if (updateVehicleDto.placa && updateVehicleDto.placa !== vehicle.placa) {
-      const existingVehicle = await this.prisma.vehicle.findFirst({
-        where: { 
-          placa: updateVehicleDto.placa,
-          id: { not: vehicleId }
-        },
-      });
-      if (existingVehicle) {
-        throw new BadRequestException('A vehicle with this placa already exists');
-      }
-    }
-
-    // Validate kilometraje if provided
-    if (updateVehicleDto.kilometrajeActual !== undefined && 
-        updateVehicleDto.kilometrajeActual < vehicle.kilometrajeActual) {
-      throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al actual');
-    }
-
-    try {
-      const updatedVehicle = await this.prisma.vehicle.update({
-        where: { id: vehicleId },
-        data: {
-          ...(updateVehicleDto.placa !== undefined && { placa: updateVehicleDto.placa }),
-          ...(updateVehicleDto.kilometrajeActual !== undefined && { kilometrajeActual: updateVehicleDto.kilometrajeActual }),
-          ...(updateVehicleDto.carga !== undefined && { carga: updateVehicleDto.carga }),
-          ...(updateVehicleDto.pesoCarga !== undefined && { pesoCarga: updateVehicleDto.pesoCarga }),
-          ...(updateVehicleDto.tipovhc !== undefined && { tipovhc: updateVehicleDto.tipovhc }),
-          ...(updateVehicleDto.cliente !== undefined && { cliente: updateVehicleDto.cliente }),
-        },
-        select: {
-          id: true,
-          placa: true,
-          kilometrajeActual: true,
-          carga: true,
-          pesoCarga: true,
-          tipovhc: true,
-          companyId: true,
-          tireCount: true,
-          union: true,
-          cliente: true,
-        }
-      });
-
-      console.log("Updated vehicle:", updatedVehicle);
-      return updatedVehicle;
-    } catch (error) {
-      console.error("Error updating vehicle:", error);
-      throw error;
-    }
+    return vehicle;
   }
 
-  async deleteVehicle(vehicleId: string) {
-    // Find the vehicle first
-    const vehicle = await this.prisma.vehicle.findUnique({
-      where: { id: vehicleId },
-    });
-    if (!vehicle) {
-      throw new BadRequestException('Vehicle not found');
-    }
+  // ── Read ──────────────────────────────────────────────────────────────────
 
-    // Decrement the company's vehicleCount by 1.
-    await this.prisma.company.update({
-      where: { id: vehicle.companyId },
-      data: { vehicleCount: { decrement: 1 } },
+  async findVehiclesByCompany(companyId: string) {
+    return this.prisma.vehicle.findMany({
+      where:   { companyId },
+      select:  VEHICLE_SELECT,
+      orderBy: { placa: 'asc' },
     });
+  }
 
-    // Delete the vehicle.
-    return await this.prisma.vehicle.delete({
-      where: { id: vehicleId },
+  async findAllVehicles() {
+    return this.prisma.vehicle.findMany({
+      select:  VEHICLE_SELECT,
+      orderBy: { placa: 'asc' },
     });
   }
 
   async findByPlaca(placa: string) {
     const vehicle = await this.prisma.vehicle.findFirst({
-      where: { placa },
+      where:  { placa },
+      select: VEHICLE_SELECT,
     });
-    if (!vehicle) {
-      throw new NotFoundException(`Vehicle with placa ${placa} not found`);
-    }
+    if (!vehicle) throw new NotFoundException(`Vehicle with placa "${placa}" not found`);
     return vehicle;
   }
 
-  async updateKilometraje(vehicleId: string, newKilometraje: number) {
-    // Find the vehicle.
+  // ── Update ────────────────────────────────────────────────────────────────
+
+  async updateVehicle(vehicleId: string, dto: UpdateVehicleDto) {
     const vehicle = await this.prisma.vehicle.findUnique({
-      where: { id: vehicleId },
+      where:  { id: vehicleId },
+      select: { id: true, placa: true, kilometrajeActual: true },
     });
-    if (!vehicle) {
-      throw new NotFoundException('Vehicle not found');
+    if (!vehicle) throw new NotFoundException('Vehicle not found');
+
+    // Placa uniqueness check — only needed when it actually changes
+    if (dto.placa && dto.placa !== vehicle.placa) {
+      const conflict = await this.prisma.vehicle.findFirst({
+        where:  { placa: dto.placa, id: { not: vehicleId } },
+        select: { id: true },
+      });
+      if (conflict) throw new BadRequestException('A vehicle with this placa already exists');
     }
-    if (newKilometraje < vehicle.kilometrajeActual) {
+
+    // Odometer can never go backwards
+    if (
+      dto.kilometrajeActual !== undefined &&
+      dto.kilometrajeActual < vehicle.kilometrajeActual
+    ) {
       throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al actual');
     }
-    // Update the vehicle's kilometrajeActual.
-    return await this.prisma.vehicle.update({
+
+    return this.prisma.vehicle.update({
       where: { id: vehicleId },
-      data: { kilometrajeActual: newKilometraje },
+      data:  {
+        ...(dto.placa             !== undefined && { placa:             dto.placa             }),
+        ...(dto.kilometrajeActual !== undefined && { kilometrajeActual: dto.kilometrajeActual }),
+        ...(dto.carga             !== undefined && { carga:             dto.carga             }),
+        ...(dto.pesoCarga         !== undefined && { pesoCarga:         dto.pesoCarga         }),
+        ...(dto.tipovhc           !== undefined && { tipovhc:           dto.tipovhc           }),
+        ...(dto.cliente           !== undefined && { cliente:           dto.cliente           }),
+      },
+      select: VEHICLE_SELECT,
     });
   }
 
-  async addToUnion(vehicleId: string, otherPlaca: string) {
-    // 1. Load both vehicles
-    const [v1, v2] = await Promise.all([
-      this.prisma.vehicle.findUnique({ where: { id: vehicleId } }),
-      this.prisma.vehicle.findFirst({ where: { placa: otherPlaca } })
-    ]);
-    if (!v1) throw new NotFoundException(`Vehicle ${vehicleId} not found`);
-    if (!v2) throw new NotFoundException(`Vehicle with placa ${otherPlaca} not found`);
+  async updateKilometraje(vehicleId: string, newKilometraje: number) {
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where:  { id: vehicleId },
+      select: { id: true, kilometrajeActual: true },
+    });
+    if (!vehicle) throw new NotFoundException('Vehicle not found');
 
-    // 2. Prevent self‐linking or duplicates
-    if (v1.id === v2.id) {
-      throw new BadRequestException(`Cannot union a vehicle with itself`);
+    if (newKilometraje < vehicle.kilometrajeActual) {
+      throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al actual');
     }
+
+    return this.prisma.vehicle.update({
+      where:  { id: vehicleId },
+      data:   { kilometrajeActual: newKilometraje },
+      select: VEHICLE_SELECT,
+    });
+  }
+
+  // ── Delete ────────────────────────────────────────────────────────────────
+
+  async deleteVehicle(vehicleId: string) {
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where:  { id: vehicleId },
+      select: { id: true, companyId: true },
+    });
+    if (!vehicle) throw new NotFoundException('Vehicle not found');
+
+    // Cascade delete handled by Prisma schema (onDelete: Cascade on tires).
+    // No manual tireCount decrement needed — that column is removed from schema.
+    return this.prisma.vehicle.delete({ where: { id: vehicleId } });
+  }
+
+  // ── Union (trailer coupling) ──────────────────────────────────────────────
+
+  async addToUnion(vehicleId: string, otherPlaca: string) {
+    const [v1, v2] = await Promise.all([
+      this.prisma.vehicle.findUnique({ where: { id: vehicleId }, select: { id: true, placa: true, union: true } }),
+      this.prisma.vehicle.findFirst({ where: { placa: otherPlaca }, select: { id: true, placa: true, union: true } }),
+    ]);
+
+    if (!v1) throw new NotFoundException(`Vehicle ${vehicleId} not found`);
+    if (!v2) throw new NotFoundException(`Vehicle with placa "${otherPlaca}" not found`);
+    if (v1.id === v2.id) throw new BadRequestException('Cannot union a vehicle with itself');
+
     const union1 = v1.union as string[];
     const union2 = v2.union as string[];
+
     if (union1.includes(v2.placa) || union2.includes(v1.placa)) {
       throw new BadRequestException('These vehicles are already united');
     }
 
-    // 3. Perform both updates in a single transaction
-    const [updated1, updated2] = await this.prisma.$transaction([
+    const [updated] = await this.prisma.$transaction([
       this.prisma.vehicle.update({
-        where: { id: v1.id },
-        data: { union: [...union1, v2.placa] }
+        where:  { id: v1.id },
+        data:   { union: [...union1, v2.placa] },
+        select: VEHICLE_SELECT,
       }),
       this.prisma.vehicle.update({
         where: { id: v2.id },
-        data: { union: [...union2, v1.placa] }
-      })
+        data:  { union: [...union2, v1.placa] },
+      }),
     ]);
 
-    return updated1;
+    return updated;
   }
 
   async removeFromUnion(vehicleId: string, otherPlaca: string) {
-    // 1. Load both vehicles
     const [v1, v2] = await Promise.all([
-      this.prisma.vehicle.findUnique({ where: { id: vehicleId } }),
-      this.prisma.vehicle.findFirst({ where: { placa: otherPlaca } })
+      this.prisma.vehicle.findUnique({ where: { id: vehicleId }, select: { id: true, placa: true, union: true } }),
+      this.prisma.vehicle.findFirst({ where: { placa: otherPlaca }, select: { id: true, placa: true, union: true } }),
     ]);
+
     if (!v1) throw new NotFoundException(`Vehicle ${vehicleId} not found`);
-    if (!v2) throw new NotFoundException(`Vehicle with placa ${otherPlaca} not found`);
+    if (!v2) throw new NotFoundException(`Vehicle with placa "${otherPlaca}" not found`);
 
     const union1 = v1.union as string[];
     const union2 = v2.union as string[];
-    if (!union1.includes(v2.placa) || !union2.includes(v1.placa)) {
+
+    if (!union1.includes(v2.placa)) {
       throw new BadRequestException('These vehicles are not currently united');
     }
 
-    // 2. Remove each from the other's union array
-    const newUnion1 = union1.filter((p) => p !== v2.placa);
-    const newUnion2 = union2.filter((p) => p !== v1.placa);
-
-    // 3. Update both in one transaction
-    const [updated1] = await this.prisma.$transaction([
+    const [updated] = await this.prisma.$transaction([
       this.prisma.vehicle.update({
-        where: { id: v1.id },
-        data: { union: newUnion1 }
+        where:  { id: v1.id },
+        data:   { union: union1.filter(p => p !== v2.placa) },
+        select: VEHICLE_SELECT,
       }),
       this.prisma.vehicle.update({
         where: { id: v2.id },
-        data: { union: newUnion2 }
-      })
+        data:  { union: union2.filter(p => p !== v1.placa) },
+      }),
     ]);
 
-    return updated1;
+    return updated;
   }
-
-  async findAllVehicles() {
-  return this.prisma.vehicle.findMany();
-}
 }

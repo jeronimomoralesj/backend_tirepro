@@ -3,106 +3,97 @@ import {
   Post,
   Get,
   Patch,
+  Delete,
   Body,
   Param,
-  Delete,
+  Query,
   Req,
   UseGuards,
-  Query,
+  HttpCode,
+  HttpStatus,
+  UsePipes,
+  ValidationPipe,
 } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CompaniesService } from './companies.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
 import { UpdateCompanyLogoDto } from './dto/update-company-logo.dto';
 
 @Controller('companies')
+@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
 export class CompaniesController {
   constructor(private readonly companiesService: CompaniesService) {}
 
-  // =========================
-  // AUTH / ME ROUTES (FIRST)
-  // =========================
-  @UseGuards(AuthGuard('jwt'))
-  @Get('me/clients')
-  async getMyClients(@Req() req: any) {
-    const distributorCompanyId = req.user.companyId;
+  // ── Authenticated / "me" routes  (must come before :param routes) ─────────
 
-    return this.companiesService.getClientsForDistributor(
-      distributorCompanyId,
-    );
+  @UseGuards(JwtAuthGuard)
+  @Get('me/clients')
+  getMyClients(@Req() req: any) {
+    return this.companiesService.getClientsForDistributor(req.user.companyId);
   }
 
-  @Get('all')
-findAll() { return this.companiesService.getAllCompanies(); }
+  // ── Search ────────────────────────────────────────────────────────────────
 
-  // =========================
-  // SEARCH
-  // =========================
   @Get('search/by-name')
-  async searchCompaniesByName(
+  searchByName(
     @Query('q') query: string,
     @Query('exclude') excludeCompanyId?: string,
   ) {
-    return this.companiesService.searchCompaniesByName(
-      query,
-      excludeCompanyId,
-    );
+    return this.companiesService.searchCompaniesByName(query, excludeCompanyId);
   }
 
-  // =========================
-  // CREATE COMPANY
-  // =========================
+  // ── Admin list ────────────────────────────────────────────────────────────
+
+  @Get('all')
+  findAll() {
+    return this.companiesService.getAllCompanies();
+  }
+
+  // ── Create ────────────────────────────────────────────────────────────────
+
   @Post('register')
-  async register(@Body() createCompanyDto: CreateCompanyDto) {
-    return this.companiesService.createCompany(createCompanyDto);
+  @HttpCode(HttpStatus.CREATED)
+  register(@Body() dto: CreateCompanyDto) {
+    return this.companiesService.createCompany(dto);
   }
 
-  // =========================
-  // DYNAMIC ROUTES (LAST)
-  // =========================
+  // ── Single company  ───────────────────────────────────────────────────────
+
   @Get(':companyId')
-async getCompanyById(@Param('companyId') companyId: string) {
-  return this.companiesService.getCompanyById(companyId);
-}
+  getById(@Param('companyId') companyId: string) {
+    return this.companiesService.getCompanyById(companyId);
+  }
 
   @Patch(':companyId/logo')
-  async updateCompanyLogo(
+  updateLogo(
     @Param('companyId') companyId: string,
-    @Body() body: UpdateCompanyLogoDto,
+    @Body() dto: UpdateCompanyLogoDto,
   ) {
-    return this.companiesService.updateCompanyLogo(
-      companyId,
-      body.imageBase64,
-    );
+    return this.companiesService.updateCompanyLogo(companyId, dto.imageBase64);
   }
 
+  // ── Distributor access ────────────────────────────────────────────────────
+
   @Get(':companyId/distributors')
-  async getConnectedDistributors(
-    @Param('companyId') companyId: string,
-  ) {
+  getDistributors(@Param('companyId') companyId: string) {
     return this.companiesService.getConnectedDistributors(companyId);
   }
 
   @Post(':companyId/distributors/:distributorId')
-  async grantDistributorAccess(
+  @HttpCode(HttpStatus.OK)
+  grantAccess(
     @Param('companyId') companyId: string,
     @Param('distributorId') distributorId: string,
   ) {
-    return this.companiesService.grantDistributorAccess(
-      companyId,
-      distributorId,
-    );
+    return this.companiesService.grantDistributorAccess(companyId, distributorId);
   }
 
   @Delete(':companyId/distributors/:distributorId')
-  async revokeDistributorAccess(
+  @HttpCode(HttpStatus.OK)
+  revokeAccess(
     @Param('companyId') companyId: string,
     @Param('distributorId') distributorId: string,
   ) {
-    return this.companiesService.revokeDistributorAccess(
-      companyId,
-      distributorId,
-    );
+    return this.companiesService.revokeDistributorAccess(companyId, distributorId);
   }
-
 }

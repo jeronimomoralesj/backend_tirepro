@@ -1,38 +1,60 @@
-// src/companies/s3.service.ts
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import { BadRequestException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 
-const region = process.env.AWS_REGION;
-const bucketName = process.env.AWS_BUCKET_NAME;
+@Injectable()
+export class S3Service {
+  private readonly logger = new Logger(S3Service.name);
+  private readonly s3: S3Client;
+  private readonly bucket: string;
+  private readonly region: string;
 
-if (!bucketName) {
-  throw new BadRequestException('AWS_BUCKET_NAME is not configured');
-}
+  constructor(private readonly config: ConfigService) {
+    this.region = this.config.getOrThrow<string>('AWS_REGION');
+    this.bucket = this.config.getOrThrow<string>('AWS_BUCKET_NAME');
 
-const s3Client = new S3Client({
-  region,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-  },
-});
+    this.s3 = new S3Client({
+      region: this.region,
+      credentials: {
+        accessKeyId: this.config.getOrThrow<string>('AWS_ACCESS_KEY_ID'),
+        secretAccessKey: this.config.getOrThrow<string>('AWS_SECRET_ACCESS_KEY'),
+      },
+    });
+  }
 
-export async function uploadCompanyProfilePicToS3(
-  fileBuffer: Buffer,
-  companyId: string,
-  contentType: string,
-): Promise<string> {
-  const fileName = `profilepics/${companyId}-${Date.now()}.jpg`;
+  async uploadCompanyLogo(
+    buffer: Buffer,
+    companyId: string,
+    contentType: string,
+  ): Promise<string> {
+    const ext = contentType.split('/')[1] ?? 'jpg';
+    const key = `profilepics/${companyId}-${Date.now()}.${ext}`;
 
-  const params = {
-    Bucket: bucketName,
-    Key: fileName,
-    Body: fileBuffer,
-    ContentType: contentType,
-  };
+    try {
+      await this.s3.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: buffer,
+          ContentType: contentType,
+        }),
+      );
+    } catch (err) {
+      this.logger.error(`S3 upload failed for company ${companyId}`, err);
+      throw new InternalServerErrorException('Failed to upload image');
+    }
 
-  const command = new PutObjectCommand(params);
-  await s3Client.send(command);
+    return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
+  }
 
-  return `https://${bucketName}.s3.${region}.amazonaws.com/${fileName}`;
+  async deleteObject(key: string): Promise<void> {
+    try {
+      await this.s3.send(
+        new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+    } catch (err) {
+      // Log but don't throw — stale S3 objects are not critical
+      this.logger.warn(`S3 delete failed for key ${key}`, err);
+    }
+  }
 }

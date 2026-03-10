@@ -1,15 +1,21 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { TireService } from './tire.service';
 import { TireController } from './tire.controller';
-import { PrismaService } from '../database/prisma.service';
-import { VehicleModule } from 'src/vehicles/vehicle.module';
-import { NotificationsModule } from 'src/notifications/notifications.module';
-import { MarketDataModule } from 'src/market-data/market-data.module';
+import { S3Service } from './s3.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { VehicleModule } from '../vehicles/vehicle.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [VehicleModule, NotificationsModule, MarketDataModule],
+  imports: [
+    ConfigModule,
+    VehicleModule,
+    NotificationsModule,
+    // MarketDataModule removed — replaced by tire_benchmarks materialized view
+  ],
   controllers: [TireController],
-  providers: [TireService, PrismaService],
+  providers: [TireService, S3Service, PrismaService],
   exports: [TireService],
 })
 export class TireModule {}

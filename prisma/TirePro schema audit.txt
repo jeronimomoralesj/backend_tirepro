@@ -1,0 +1,289 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String    @id @default(uuid())
+  name              String
+  email             String    @unique
+  password          String
+  companyId         String
+  role              String    @default("admin")
+  plates            String[]  @default([])
+  puntos            Int       @default(0)
+  isVerified        Boolean   @default(false)
+  verificationToken String?
+  preferredLanguage String?   @default("es")
+  company           Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messages          Message[]
+  incomes           Income[]
+}
+
+model Company {
+  id           String @id @default(uuid())
+  name         String
+  periodicity  Int    @default(1)
+  profileImage String @default("https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png")
+  userCount    Int    @default(0)
+  tireCount    Int    @default(0)
+  plan         String @default("basic")
+  vehicleCount Int    @default(0)
+
+  // Distributor access relations
+  distributors DistributorAccess[] @relation("CompanyDistributors")
+  clients      DistributorAccess[] @relation("DistributorClients")
+
+  users         User[]
+  vehicles      Vehicle[]
+  tires         Tire[]
+  notifications Notification[]
+}
+
+model DistributorAccess {
+  companyId     String
+  distributorId String
+
+  company     Company @relation("CompanyDistributors", fields: [companyId], references: [id])
+  distributor Company @relation("DistributorClients", fields: [distributorId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@id([companyId, distributorId])
+}
+
+model Tire {
+  id        String  @id @default(uuid())
+  companyId String
+  vehicleId String?
+  placa     String
+
+  vida               Json   @default("[]") // [{ valor, fecha }]
+  marca              String
+  diseno             String
+  profundidadInicial Float
+  dimension          String
+  eje                String
+
+  costo    Json @default("[]") // [{ valor, fecha }]
+  posicion Int  @default(0)
+
+  inspecciones Json @default("[]")
+  /**
+   * Each inspection object now includes:
+   * {
+   * fecha,
+   * profundidadInt,
+   * profundidadCen,
+   * profundidadExt,
+   * cpk,
+   * cpkProyectado,
+   * cpt,
+   * cptProyectado,
+   * diasEnUso,
+   * mesesEnUso,
+   * kilometrosEstimados,
+   * imageUrl
+   * }
+   */
+
+  primeraVida Json @default("[]")
+
+  kilometrosRecorridos Int @default(0)
+
+  fechaInstalacion DateTime? // NEW: when tire was mounted
+  diasAcumulados   Int       @default(0) // NEW: accumulated usage days
+
+  eventos  Json  @default("[]")
+  desechos Json?
+
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vehicle       Vehicle?       @relation("VehicleTires", fields: [vehicleId], references: [id])
+  notifications Notification[]
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  title     String
+  message   String
+  type      String // "info" | "warning" | "critical"
+  seen      Boolean  @default(false)
+  timestamp DateTime @default(now())
+  date      DateTime @default(now())
+  // Relations
+  tire      Tire?    @relation(fields: [tireId], references: [id])
+  tireId    String?
+
+  vehicle   Vehicle? @relation(fields: [vehicleId], references: [id])
+  vehicleId String?
+
+  company   Company? @relation(fields: [companyId], references: [id])
+  companyId String?
+
+  @@index([companyId])
+  @@index([vehicleId])
+  @@index([tireId])
+}
+
+model Vehicle {
+  id                String         @id @default(uuid())
+  placa             String
+  kilometrajeActual Int            @default(0)
+  carga             String
+  pesoCarga         Float
+  tipovhc           String
+  companyId         String
+  tireCount         Int            @default(0)
+  union             Json           @default("[]")
+  company           Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  cliente           String?
+  tires             Tire[]         @relation("VehicleTires")
+  extras            Extra[]
+  notifications     Notification[]
+}
+
+model Article {
+  id         Int      @id @default(autoincrement())
+  title      String
+  subtitle   String
+  content    String   @db.Text
+  coverImage String
+  category   String
+  hashtags   String[] @default([])
+  slug       String   @unique  // ADD THIS
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("articles")
+}
+
+model AdminPassword {
+  id        Int      @id @default(autoincrement())
+  password  String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  used      Boolean  @default(false)
+
+  @@map("admin_passwords")
+}
+
+model BlogPassword {
+  id        Int      @id @default(autoincrement())
+  password  String
+  expiresAt DateTime
+  isUsed    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("blog_passwords")
+}
+
+model Extra {
+  id           String   @id
+  vehicleId    String
+  type         String
+  brand        String
+  purchaseDate DateTime
+  cost         Float
+  notes        String?
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@map("extras")
+}
+
+model Chat {
+  id           String    @id @default(uuid())
+  title        String
+  category     String
+  content      String // a description of the chat
+  emoji        String // e.g. an emoji / icon for this room
+  messageCount Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  messages     Message[]
+}
+
+model Message {
+  id         String   @id @default(uuid())
+  chatId     String
+  authorId   String? // optional relation to your User
+  author     User?    @relation(fields: [authorId], references: [id])
+  content    String
+  createdAt  DateTime @default(now())
+  authorName String
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+}
+
+enum CouponCategory {
+  llantas
+  reencauches
+  baterias
+  gasolina
+  aceites
+}
+
+model Coupon {
+  id             String         @id @default(uuid())
+  titleKey       String
+  descriptionKey String
+  discount       String
+  category       CouponCategory
+  validUntil     DateTime
+  code           String
+  color          String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("coupons")
+}
+
+model Income {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  date      DateTime
+  amount    Float
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model MarketTire {
+  id String @id @default(uuid())
+
+  // Core tire identification
+  brand     String // e.g., "Continental"
+  diseno    String // e.g., "HDR2"
+  dimension String // e.g., "295/80R22.5"
+
+  // Analytics data
+  cpk   Float? // Average cost per kilometer
+  cpt   Float? // Average cost per time (monthly)
+  count Int    @default(0) // Number of tires in our database with this reference
+
+  // Manufacturer specs
+  profundidadInicial Float @default(22) // Initial tread depth in mm
+
+  // Historical price data (max 10 entries, updated monthly)
+  prices Json @default("[]") // [{ price: number, date: string, source?: string }]
+
+  // Metadata
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastScraped DateTime?
+
+  // Unique constraint on brand + design + dimension
+  @@unique([brand, diseno, dimension])
+  @@index([brand])
+  @@index([dimension])
+  @@map("market_tires")
+}

@@ -1,59 +1,62 @@
-// src/auth/auth.module.ts
 import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { JwtModule }                 from '@nestjs/jwt';
-import { PassportModule }            from '@nestjs/passport';
-import { MailerModule }              from '@nestjs-modules/mailer';
+import { JwtModule } from '@nestjs/jwt';
+import { PassportModule } from '@nestjs/passport';
+import { MailerModule } from '@nestjs-modules/mailer';
 
-import { AuthService }               from './auth.service';
-import { AuthController }            from './auth.controller';
-import { JwtStrategy }               from './strategies/jwt.strategy';
-import { UsersModule }               from '../users/users.module';
-import { DatabaseModule }            from '../database/database.module';
-import { BlogService }               from '../blogs/blogs.service';
-import { PrismaService }             from '../prisma/prisma.service';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { JwtStrategy } from './strategies/jwt.strategy';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { UsersModule } from '../users/users.module';
+import { DatabaseModule } from '../database/database.module';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Module({
   imports: [
     forwardRef(() => UsersModule),
     DatabaseModule,
     ConfigModule,
-    // Passport registration for "jwt" strategy
+
     PassportModule.register({ defaultStrategy: 'jwt' }),
-    // Async JWT config so we pick up JWT_SECRET from ConfigService
+
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (cs: ConfigService) => ({
-        secret: cs.get<string>('JWT_SECRET', 'supersecret'),
-        signOptions: { expiresIn: '1h' },
+        secret: cs.getOrThrow<string>('JWT_SECRET'), // throws at startup if missing
+        signOptions: {
+          expiresIn: cs.get<string>('JWT_EXPIRES_IN', '7d'),
+        },
       }),
     }),
-    // Mailer for blog-password emails
+
     MailerModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (cs: ConfigService) => ({
         transport: {
-          host: cs.get('SMTP_HOST'),
-          port: cs.get<number>('SMTP_PORT'),
+          host: cs.getOrThrow('SMTP_HOST'),
+          port: cs.get<number>('SMTP_PORT', 587),
           secure: false,
           auth: {
-            user: cs.get('SMTP_USER'),
-            pass: cs.get('SMTP_PASS'),
+            user: cs.getOrThrow('SMTP_USER'),
+            pass: cs.getOrThrow('SMTP_PASS'),
           },
         },
-        defaults: { from: cs.get('SMTP_FROM') },
+        defaults: {
+          from: cs.get('SMTP_FROM', 'noreply@tirepro.com.co'),
+        },
       }),
     }),
   ],
   providers: [
     AuthService,
-    BlogService,
     PrismaService,
-    JwtStrategy,    // ← register your strategy here
+    JwtStrategy,
+    JwtAuthGuard,
   ],
   controllers: [AuthController],
-  exports: [AuthService, PassportModule],
+  exports: [AuthService, JwtAuthGuard, PassportModule, JwtModule],
 })
 export class AuthModule {}

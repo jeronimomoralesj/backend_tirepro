@@ -1,19 +1,34 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
+import { UserRole } from '@prisma/client';
+
+interface JwtPayload {
+  sub: string;
+  email: string;
+  companyId: string;
+  role: UserRole;
+  iat?: number;
+  exp?: number;
+}
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(private configService: ConfigService) {
+  constructor(private readonly configService: ConfigService) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: configService.get<string>('JWT_SECRET'),
+      secretOrKey: configService.getOrThrow<string>('JWT_SECRET'),
     });
   }
 
-  async validate(payload: any) {
+  validate(payload: JwtPayload) {
+    if (!payload?.sub || !payload?.email) {
+      throw new UnauthorizedException('Invalid token payload');
+    }
+
+    // This return value is attached to req.user by Passport
     return {
       userId: payload.sub,
       email: payload.email,
@@ -21,5 +36,4 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       role: payload.role,
     };
   }
-  
 }

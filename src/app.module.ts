@@ -2,9 +2,9 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
-import { DatabaseModule } from './database/database.module';
 import { CompaniesModule } from './companies/companies.module';
 import { VehicleModule } from './vehicles/vehicle.module';
 import { TireModule } from './tires/tire.module';
@@ -14,26 +14,31 @@ import { ComunidadModule } from './comunidad/comunidad.module';
 import { CuponesModule } from './cupones/cupones.module';
 import { IncomeModule } from './income/income.module';
 import { EmailModule } from './email/email.module';
-import { MarketDataModule } from './market-data/market-data.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
+    // Config must be first — all other modules may depend on env vars
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
-    DatabaseModule,
+
+    // Database — single shared PrismaService across the whole app
+    PrismaModule,
+
+    // Feature modules
     AuthModule,
     UsersModule,
-    CompaniesModule, 
+    CompaniesModule,
     VehicleModule,
     TireModule,
+    NotificationsModule,
     BlogModule,
     ExtrasModule,
     ComunidadModule,
     CuponesModule,
     IncomeModule,
     EmailModule,
-    MarketDataModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers:   [AppService],
 })
 export class AppModule {}

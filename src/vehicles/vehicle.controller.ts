@@ -1,115 +1,100 @@
-// src/vehicles/vehicle.controller.ts
-import { Controller, Post, Body, Get, Query, Delete, Param, BadRequestException, NotFoundException, Patch } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Query,
+  Delete,
+  Param,
+  Patch,
+  HttpCode,
+  HttpStatus,
+  UseGuards,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { VehicleService } from './vehicle.service';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
+import { UpdateVehicleDto } from './dto/update-vehicle.dto';
+import { UpdateKilometrajeDto } from './dto/update-kilometraje.dto';
+import { UnionDto } from './dto/union.dto';
 
 @Controller('vehicles')
+@UseGuards(JwtAuthGuard)
+@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class VehicleController {
   constructor(private readonly vehicleService: VehicleService) {}
+
+  // ── Static routes first (before :id param routes) ────────────────────────
 
   @Get('all')
   findAll() {
     return this.vehicleService.findAllVehicles();
   }
 
-  @Post('create')
-  async createVehicle(@Body() createVehicleDto: CreateVehicleDto) {
-    try {
-      const vehicle = await this.vehicleService.createVehicle(createVehicleDto);
-      return { message: 'Vehicle created successfully', vehicle };
-    } catch (error) {
-      throw new BadRequestException(error.message);
-    }
-  }
-  
-  @Get()
-  async getVehicles(@Query('companyId') companyId: string) {
-    if (!companyId) {
-      throw new BadRequestException('companyId is required');
-    }
-    return await this.vehicleService.findVehiclesByCompany(companyId);
-  }
-
-  @Delete(':id')
-  async deleteVehicle(@Param('id') id: string) {
-    try {
-      const deletedVehicle = await this.vehicleService.deleteVehicle(id);
-      return { message: 'Vehicle deleted successfully', vehicle: deletedVehicle };
-    } catch (error) {
-      throw new BadRequestException(error.message);
-    }
-  }
-
   @Get('placa')
-  async getVehicleByPlaca(@Query('placa') placa: string) {
-    if (!placa) {
-      throw new NotFoundException('Placa is required');
-    }
+  getByPlaca(@Query('placa') placa: string) {
     return this.vehicleService.findByPlaca(placa);
   }
 
-  // Update vehicle data (for edit functionality)
-  @Patch(':id')
-  async updateVehicle(
-    @Param('id') id: string,
-    @Body() updateData: {
-      placa?: string;
-      kilometrajeActual?: number;
-      carga?: string;
-      pesoCarga?: number;
-      tipovhc?: string;
-      cliente?: string | null;
-    }
-  ) {
-    try {
-      const vehicle = await this.vehicleService.updateVehicle(id, updateData);
-      return { message: 'Vehicle updated successfully', vehicle };
-    } catch (error) {
-      throw new BadRequestException(error.message);
-    }
+  // ── Create ────────────────────────────────────────────────────────────────
+
+  @Post('create')
+  @HttpCode(HttpStatus.CREATED)
+  createVehicle(@Body() dto: CreateVehicleDto) {
+    return this.vehicleService.createVehicle(dto);
   }
 
-  // Update vehicle kilometraje (specific endpoint)
+  // ── Read ──────────────────────────────────────────────────────────────────
+
+  @Get()
+  getVehicles(@Query('companyId') companyId: string) {
+    if (!companyId) throw new Error('companyId is required');
+    return this.vehicleService.findVehiclesByCompany(companyId);
+  }
+
+  // ── Update ────────────────────────────────────────────────────────────────
+
+  @Patch(':id')
+  updateVehicle(
+    @Param('id') id: string,
+    @Body() dto: UpdateVehicleDto,
+  ) {
+    return this.vehicleService.updateVehicle(id, dto);
+  }
+
   @Patch(':id/kilometraje')
-  async updateKilometraje(@Param('id') vehicleId: string, @Body() body: { kilometrajeActual: number }) {
-    try {
-      const updatedVehicle = await this.vehicleService.updateKilometraje(vehicleId, body.kilometrajeActual);
-      return { message: 'Kilometraje updated successfully', vehicle: updatedVehicle };
-    } catch (error) {
-      throw new BadRequestException(error.message);
-    }
+  updateKilometraje(
+    @Param('id') id: string,
+    @Body() dto: UpdateKilometrajeDto,
+  ) {
+    return this.vehicleService.updateKilometraje(id, dto.kilometrajeActual);
   }
 
   @Patch(':id/union/add')
-  async addUnion(
+  @HttpCode(HttpStatus.OK)
+  addUnion(
     @Param('id') vehicleId: string,
-    @Body('placa') placa: string,
+    @Body() dto: UnionDto,
   ) {
-    if (!placa) {
-      throw new BadRequestException('placa is required');
-    }
-    try {
-      const vehicle = await this.vehicleService.addToUnion(vehicleId, placa);
-      return { message: 'Placa added to union', vehicle };
-    } catch (err) {
-      throw new BadRequestException(err.message);
-    }
+    return this.vehicleService.addToUnion(vehicleId, dto.placa);
   }
 
   @Patch(':id/union/remove')
-  async removeUnion(
+  @HttpCode(HttpStatus.OK)
+  removeUnion(
     @Param('id') vehicleId: string,
-    @Body('placa') placa: string,
+    @Body() dto: UnionDto,
   ) {
-    if (!placa) {
-      throw new BadRequestException('placa is required');
-    }
-    try {
-      const vehicle = await this.vehicleService.removeFromUnion(vehicleId, placa);
-      return { message: 'Placa removed from union', vehicle };
-    } catch (err) {
-      throw new BadRequestException(err.message);
-    }
+    return this.vehicleService.removeFromUnion(vehicleId, dto.placa);
   }
 
+  // ── Delete ────────────────────────────────────────────────────────────────
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  deleteVehicle(@Param('id') id: string) {
+    return this.vehicleService.deleteVehicle(id);
+  }
 }

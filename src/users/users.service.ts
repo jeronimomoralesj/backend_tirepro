@@ -1,260 +1,282 @@
-import { Injectable, BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  UnauthorizedException,
+  Logger,
+} from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
+import { EmailService } from '../email/email.service';
+import { UserRole, Prisma } from '@prisma/client';
 import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcryptjs';
-import { EmailService } from 'src/email/email.service';
 import { randomBytes } from 'crypto';
+
+// ---------------------------------------------------------------------------
+// Reusable select — never leak password hash to callers
+// ---------------------------------------------------------------------------
+
+const USER_PUBLIC_SELECT = {
+  id:                true,
+  email:             true,
+  name:              true,
+  role:              true,
+  companyId:         true,
+  puntos:            true,
+  isVerified:        true,
+  preferredLanguage: true,
+  createdAt:         true,
+  vehicleAccess: {
+    select: {
+      vehicle: { select: { id: true, placa: true } },
+    },
+  },
+} satisfies Prisma.UserSelect;
+
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly emailService: EmailService,
   ) {}
 
-async createUser(createUserDto: CreateUserDto) {
-  const { email, name, password, companyId, role, preferredLanguage } = createUserDto;
+  // ===========================================================================
+  // CREATE USER
+  // ===========================================================================
 
-  const existingUser = await this.prisma.user.findUnique({ where: { email } });
-  if (existingUser) throw new BadRequestException('User with this email already exists');
+  async createUser(dto: CreateUserDto) {
+    const { email, name, password, companyId, role, preferredLanguage } = dto;
 
-  const hashedPassword = await bcrypt.hash(password, 10);
-  const verificationToken = randomBytes(32).toString('hex');
+    const existing = await this.prisma.user.findUnique({
+      where:  { email },
+      select: { id: true },
+    });
+    if (existing) throw new BadRequestException('User with this email already exists');
 
-  const newUser = await this.prisma.$transaction(async (tx) => {
-    const user = await tx.user.create({
+    const resolvedRole: UserRole =
+      role && Object.values(UserRole).includes(role as UserRole)
+        ? (role as UserRole)
+        : UserRole.admin;
+
+    const hashedPassword    = await bcrypt.hash(password, 12);
+    const verificationToken = randomBytes(32).toString('hex');
+
+    const newUser = await this.prisma.user.create({
       data: {
-        email, name, password: hashedPassword,
-        companyId: companyId || '',
-        role: role || 'regular',
-        puntos: 0, plates: [],
-        isVerified: true,
+        email,
+        name,
+        password:          hashedPassword,
+        companyId:         companyId || '',
+        role:              resolvedRole,
+        puntos:            0,
+        isVerified:        true,
         verificationToken,
         preferredLanguage: preferredLanguage || 'es',
       },
-      select: { id: true, email: true, name: true, role: true, companyId: true, puntos: true, plates: true },
+      select: USER_PUBLIC_SELECT,
     });
 
-    if (companyId) {
-      await tx.company.update({
-        where: { id: companyId },
-        data: { userCount: { increment: 1 } },
-      });
-    }
+    
 
-    return user;
-  });
+    return {
+      message: 'User created successfully.',
+      user:    newUser,
+    };
+  }
 
-  // Email is sent AFTER successful transaction only
-  await this.emailService.sendWelcomeEmailEs(email, name);
-
-  return {
-    message: 'User created successfully. Please check your email to verify your account.',
-    user: newUser,
-  };
-}
+  // ===========================================================================
+  // READ
+  // ===========================================================================
 
   async getUserById(userId: string) {
     const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        companyId: true,
-        puntos: true,
-        plates: true
-      }
+      where:  { id: userId },
+      select: USER_PUBLIC_SELECT,
     });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
+    if (!user) throw new NotFoundException('User not found');
     return user;
   }
 
   async getUserByEmail(email: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { email },
+    return this.prisma.user.findUnique({
+      where:  { email },
       select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
+        id:        true,
+        email:     true,
+        name:      true,
+        role:      true,
         companyId: true,
-        puntos: true,
-        plates: true,
-        password: true // Include password for authentication purposes
-      }
+        puntos:    true,
+        password:  true,
+      },
     });
-
-    return user;
-  }
-
-  async updateUser(userId: string, updateData: Partial<{
-    name: string, 
-    companyId: string, 
-    role: string, 
-    puntos: number, 
-    plates: string[]
-  }>) {
-    try {
-      const updatedUser = await this.prisma.user.update({
-        where: { id: userId },
-        data: updateData,
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          role: true,
-          companyId: true,
-          puntos: true,
-          plates: true
-        }
-      });
-
-      return { 
-        message: "User updated successfully", 
-        user: updatedUser 
-      };
-    } catch (error) {
-      throw new BadRequestException('Could not update user');
-    }
-  }
-
-  async deleteUser(userId: string) {
-    try {
-      await this.prisma.user.delete({
-        where: { id: userId }
-      });
-
-      return { 
-        message: "User deleted successfully" 
-      };
-    } catch (error) {
-      throw new NotFoundException('User not found');
-    }
-  }
-
-  async addPlate(userId: string, plate: string) {
-    try {
-      const user = await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          plates: {
-            push: plate
-          }
-        },
-        select: {
-          id: true,
-          plates: true
-        }
-      });
-
-      return { 
-        message: "Plate added successfully", 
-        plates: user.plates 
-      };
-    } catch (error) {
-      throw new BadRequestException('Could not add plate');
-    }
-  }
-
-  async removePlate(userId: string, plate: string) {
-    try {
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId }
-      });
-
-      if (!user) {
-        throw new NotFoundException('User not found');
-      }
-
-      const updatedPlates = user.plates.filter(p => p !== plate);
-
-      const updatedUser = await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          plates: updatedPlates
-        },
-        select: {
-          id: true,
-          plates: true
-        }
-      });
-
-      return { 
-        message: "Plate removed successfully", 
-        plates: updatedUser.plates 
-      };
-    } catch (error) {
-      throw new BadRequestException('Could not remove plate');
-    }
   }
 
   async getUsersByCompany(companyId: string) {
-    if (!companyId) {
-      throw new BadRequestException("CompanyId is required");
-    }
-    const users = await this.prisma.user.findMany({
-      where: { companyId },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        plates: true,
-      },
+    if (!companyId) throw new BadRequestException('companyId is required');
+    return this.prisma.user.findMany({
+      where:   { companyId },
+      select:  USER_PUBLIC_SELECT,
+      orderBy: { name: 'asc' },
     });
-    return users;
   }
 
-async getAllUsers() {
-  return await this.prisma.user.findMany({
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      role: true,
-      companyId: true,
-      plates: true,
-    },
-  });
-}
+  async getAllUsers() {
+    return this.prisma.user.findMany({
+      select:  USER_PUBLIC_SELECT,
+      orderBy: { createdAt: 'desc' },
+    });
+  }
 
-  async changePassword(
+  // ===========================================================================
+  // UPDATE
+  // ===========================================================================
+
+  async updateUser(
     userId: string,
-    oldPassword: string,
-    newPassword: string
+    updateData: Partial<{
+      name:              string;
+      companyId:         string;
+      role:              string;
+      puntos:            number;
+      preferredLanguage: string;
+    }>,
   ) {
-    // 1) fetch the user (including hashed password)
+    const data: Prisma.UserUpdateInput = {};
+    if (updateData.name              !== undefined) data.name              = updateData.name;
+    if (updateData.companyId         !== undefined) data.company           = { connect: { id: updateData.companyId } };
+    if (updateData.puntos            !== undefined) data.puntos            = updateData.puntos;
+    if (updateData.preferredLanguage !== undefined) data.preferredLanguage = updateData.preferredLanguage;
+
+    if (updateData.role !== undefined) {
+      if (!Object.values(UserRole).includes(updateData.role as UserRole)) {
+        throw new BadRequestException(`Invalid role "${updateData.role}". Must be one of: ${Object.values(UserRole).join(', ')}`);
+      }
+      data.role = updateData.role as UserRole;
+    }
+
+    const updatedUser = await this.prisma.user.update({
+      where:  { id: userId },
+      data,
+      select: USER_PUBLIC_SELECT,
+    });
+
+    return { message: 'User updated successfully', user: updatedUser };
+  }
+
+  async deleteUser(userId: string) {
     const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+      where:  { id: userId },
+      select: { id: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    await this.prisma.user.delete({ where: { id: userId } });
+    return { message: 'User deleted successfully' };
+  }
+
+  async changePassword(userId: string, oldPassword: string, newPassword: string) {
+    const user = await this.prisma.user.findUnique({
+      where:  { id: userId },
       select: { password: true },
     });
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
+    if (!user) throw new NotFoundException('User not found');
 
-    // 2) verify old password
     const matches = await bcrypt.compare(oldPassword, user.password);
-    if (!matches) {
-      throw new UnauthorizedException('Old password is incorrect');
-    }
+    if (!matches) throw new UnauthorizedException('Old password is incorrect');
 
-    // 3) hash & save the new one
-    const hashed = await bcrypt.hash(newPassword, 10);
+    const hashed = await bcrypt.hash(newPassword, 12);
     await this.prisma.user.update({
       where: { id: userId },
-      data: { password: hashed },
+      data:  { password: hashed },
     });
 
     return { message: 'Password changed successfully' };
   }
 
-  async findAllUsers() {
-  return this.prisma.user.findMany({
-    select: { id:true, name:true, email:true, role:true, companyId:true, puntos:true, isVerified:true, preferredLanguage:true }
-  });
-}
+  // ===========================================================================
+  // VEHICLE ACCESS
+  // ===========================================================================
+
+  async grantVehicleAccess(userId: string, vehicleId: string) {
+    const [user, vehicle] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } }),
+      this.prisma.vehicle.findUnique({ where: { id: vehicleId }, select: { id: true } }),
+    ]);
+    if (!user)    throw new NotFoundException('User not found');
+    if (!vehicle) throw new NotFoundException('Vehicle not found');
+
+    await this.prisma.userVehicleAccess.upsert({
+      where:  { userId_vehicleId: { userId, vehicleId } },
+      create: { userId, vehicleId },
+      update: {},
+    });
+
+    return { message: 'Vehicle access granted' };
+  }
+
+  async revokeVehicleAccess(userId: string, vehicleId: string) {
+    const access = await this.prisma.userVehicleAccess.findUnique({
+      where: { userId_vehicleId: { userId, vehicleId } },
+    });
+    if (!access) throw new NotFoundException('Access record not found');
+
+    await this.prisma.userVehicleAccess.delete({
+      where: { userId_vehicleId: { userId, vehicleId } },
+    });
+
+    return { message: 'Vehicle access revoked' };
+  }
+
+  async getAccessibleVehicles(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where:  { id: userId },
+      select: {
+        vehicleAccess: {
+          select: {
+            vehicle: {
+              select: {
+                id:                true,
+                placa:             true,
+                tipovhc:           true,
+                kilometrajeActual: true,
+                companyId:         true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    return user.vehicleAccess.map(a => a.vehicle);
+  }
+
+  // ---------------------------------------------------------------------------
+  // LEGACY COMPAT — addPlate / removePlate
+  // ---------------------------------------------------------------------------
+
+  async addPlate(userId: string, placa: string) {
+    const vehicle = await this.prisma.vehicle.findFirst({
+      where:  { placa: placa.toLowerCase().trim() },
+      select: { id: true },
+    });
+    if (!vehicle) throw new NotFoundException(`Vehicle with placa "${placa}" not found`);
+
+    await this.grantVehicleAccess(userId, vehicle.id);
+    return { message: 'Plate access granted', placa };
+  }
+
+  async removePlate(userId: string, placa: string) {
+    const vehicle = await this.prisma.vehicle.findFirst({
+      where:  { placa: placa.toLowerCase().trim() },
+      select: { id: true },
+    });
+    if (!vehicle) throw new NotFoundException(`Vehicle with placa "${placa}" not found`);
+
+    await this.revokeVehicleAccess(userId, vehicle.id);
+    return { message: 'Plate access revoked', placa };
+  }
 }

@@ -1,63 +1,89 @@
-import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  HttpCode,
+  HttpStatus,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
-import { LoginDto } from '../users/dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
+
+interface AuthUser {
+  id:        string;
+  email:     string;
+  name:      string;
+  role:      UserRole;
+  companyId: string;
+  company: {
+    id:           string;
+    name:         string;
+    plan:         string;
+    profileImage: string;
+  } | null;
+}
 
 @Controller('auth')
+@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
 export class AuthController {
-  constructor(
-    private readonly authService: AuthService
-  ) {}
+  constructor(private readonly authService: AuthService) {}
 
   @Post('register')
-  async register(@Body() body: { email: string; name: string; password: string }) {
-    return this.authService.register(body.email, body.name, body.password);
+  @HttpCode(HttpStatus.CREATED)
+  async register(
+    @Body() dto: RegisterDto,
+  ): Promise<{ message: string; userId: string }> {
+    return this.authService.register(dto.email, dto.name, dto.password);
   }
 
   @Post('login')
-  async login(@Body() loginDto: LoginDto) {
-    console.log('Login DTO:', loginDto);
-    return this.authService.login(loginDto.email, loginDto.password);
+  @HttpCode(HttpStatus.OK)
+  async login(
+    @Body() dto: LoginDto,
+  ): Promise<{ access_token: string; user: AuthUser }> {
+    return this.authService.login(dto.email, dto.password);
   }
+
+  // ── Blog password ─────────────────────────────────────────────────────────
 
   @Post('generate-password')
   @HttpCode(HttpStatus.OK)
-  async generatePassword() {
-    try {
-      await this.authService.generateBlogPassword();
-      return { 
-        success: true, 
-        message: 'Contraseña generada y enviada exitosamente a info@tirepro.com.co' 
-      };
-    } catch (error) {
-      return { 
-        success: false, 
-        message: 'Error al generar la contraseña' 
-      };
-    }
+  async generatePassword(): Promise<{ success: boolean; message: string }> {
+    await this.authService.generateBlogPassword();
+    return { success: true, message: 'Contraseña generada y enviada exitosamente.' };
   }
 
   @Post('verify-password')
   @HttpCode(HttpStatus.OK)
-  async verifyPassword(@Body() body: { password: string }) {
-    try {
-      const isValid = await this.authService.verifyBlogPassword(body.password);
-      
-      if (!isValid) {
-        return { 
-          success: false, 
-          message: 'Contraseña inválida o expirada' 
-        };
-      }
-      
-      return { 
-        success: true, 
-        message: 'Contraseña verificada exitosamente' 
-      };
-    } catch (error) {
-      return { 
-        success: false, 
-        message: 'Error al verificar la contraseña' 
-      };
-    }
+  async verifyPassword(
+    @Body() body: { password: string },
+  ): Promise<{ success: boolean; message: string }> {
+    const isValid = await this.authService.verifyBlogPassword(body.password);
+    return isValid
+      ? { success: true,  message: 'Contraseña verificada exitosamente.' }
+      : { success: false, message: 'Contraseña inválida o expirada.' };
+  }
+
+  // ── Distributor password ──────────────────────────────────────────────────
+
+  @Post('generate-distributor-password')
+  @HttpCode(HttpStatus.OK)
+  async generateDistributorPassword(): Promise<{ success: boolean; message: string }> {
+    await this.authService.generateDistributorPassword();
+    return { success: true, message: 'Contraseña de distribuidor generada y enviada.' };
+  }
+
+  @Post('verify-distributor-password')
+  @HttpCode(HttpStatus.OK)
+  async verifyDistributorPassword(
+    @Body() body: { password: string },
+  ): Promise<{ success: boolean; message: string }> {
+    const isValid = await this.authService.verifyDistributorPassword(body.password);
+    return isValid
+      ? { success: true,  message: 'Acceso de distribuidor verificado.' }
+      : { success: false, message: 'Contraseña inválida o expirada.' };
   }
 }

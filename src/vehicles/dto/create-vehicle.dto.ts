@@ -1,11 +1,13 @@
-import { IsString, IsNotEmpty, IsNumber, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumber, IsOptional, Min, MaxLength } from 'class-validator';
 
 export class CreateVehicleDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(20)
   placa: string;
 
   @IsNumber()
+  @Min(0)
   kilometrajeActual: number;
 
   @IsString()
@@ -13,6 +15,7 @@ export class CreateVehicleDto {
   carga: string;
 
   @IsNumber()
+  @Min(0)
   pesoCarga: number;
 
   @IsString()
@@ -23,7 +26,7 @@ export class CreateVehicleDto {
   @IsNotEmpty()
   companyId: string;
 
-  @IsOptional()   
-  @IsString()     
-  cliente?: string; 
+  @IsOptional()
+  @IsString()
+  cliente?: string;
 }

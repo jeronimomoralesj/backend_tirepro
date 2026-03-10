@@ -1,183 +1,150 @@
-import { 
-  Controller, 
-  Post, 
-  Body, 
-  Get, 
-  Query, 
-  BadRequestException, 
-  Patch, 
-  Param, 
-  UseInterceptors, 
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Query,
+  Patch,
+  Param,
+  Delete,
+  UseInterceptors,
   UploadedFile,
-  Delete
+  HttpCode,
+  HttpStatus,
+  ParseUUIDPipe,
+  UsePipes,
+  ValidationPipe,
+  UseGuards,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { EditTireDto, TireService } from './tire.service';
 import { CreateTireDto } from './dto/create-tire.dto';
 import { UpdateInspectionDto } from './dto/update-inspection.dto';
-import * as multer from 'multer';
 import { UpdateVidaDto } from './dto/update-vida.dto';
+import { UpdateEventoDto } from './dto/update-evento.dto';
 
 @Controller('tires')
+@UseGuards(JwtAuthGuard)
+@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class TireController {
   constructor(private readonly tireService: TireService) {}
 
+  // ── Create ────────────────────────────────────────────────────────────────
+
   @Post('create')
-  async createTire(@Body() createTireDto: CreateTireDto) {
-    try {
-      const tire = await this.tireService.createTire(createTireDto);
-      return { message: 'Tire created successfully', tire };
-    } catch (error) {
-      throw new BadRequestException(error.message);
-    }
+  @HttpCode(HttpStatus.CREATED)
+  createTire(@Body() dto: CreateTireDto) {
+    return this.tireService.createTire(dto);
   }
+
+  // ── Read ──────────────────────────────────────────────────────────────────
 
   @Get()
-  async getTires(@Query('companyId') companyId: string) {
-    if (!companyId) {
-      throw new BadRequestException('companyId is required');
-    }
-    return await this.tireService.findTiresByCompany(companyId);
+  getTires(@Query('companyId') companyId: string) {
+    if (!companyId) throw new Error('companyId is required');
+    return this.tireService.findTiresByCompany(companyId);
   }
 
-  @Get('vehicle')
-  async getTiresByVehicle(@Query('vehicleId') vehicleId: string) {
-    if (!vehicleId) {
-      throw new BadRequestException('vehicleId is required');
-    }
-    return await this.tireService.findTiresByVehicle(vehicleId);
-  }
-
-  @Patch(':id/inspection')
-  async updateInspection(
-    @Param('id') tireId: string,
-    @Body() updateInspectionDto: UpdateInspectionDto
-  ) {
-    try {
-      const updatedTire = await this.tireService.updateInspection(tireId, updateInspectionDto);
-      return { message: 'Inspection updated successfully', tire: updatedTire };
-    } catch (error) {
-      throw new BadRequestException(error.message);
-    }
-  }
-
-@Patch(':id/vida')
-async updateVida(
-  @Param('id') tireId: string,
-  @Body() updateVidaDto: UpdateVidaDto
-) {
-  try {
-    const updatedTire = await this.tireService.updateVida(
-      tireId,
-      updateVidaDto.valor,
-      updateVidaDto.banda,
-      updateVidaDto.costo,
-      updateVidaDto.profundidadInicial,
-      updateVidaDto.desechos,
-    );
-    return { message: 'Vida updated successfully', tire: updatedTire };
-  } catch (error) {
-    throw new BadRequestException(error.message);
-  }
-}
-
-  @Patch(':id/eventos')
-async updateEvento(
-  @Param('id') tireId: string,
-  @Body() updateEventoDto: { valor: string }
-) {
-  try {
-    const updatedTire = await this.tireService.updateEvento(tireId, updateEventoDto.valor);
-    return { message: 'Evento agregado exitosamente', tire: updatedTire };
-  } catch (error) {
-    throw new BadRequestException(error.message);
-  }
-}
-
-@Post('update-positions')
-async updatePositions(@Body() body: { placa: string; updates: { [position: string]: string } }) {
-  try {
-    const result = await this.tireService.updatePositions(body.placa, body.updates);
-    return result;
-  } catch (error) {
-    throw new BadRequestException(error.message);
-  }
-}
-
-// Add this to tire.controller.ts
-
-@Get('analyze')
-async analyzeTires(@Query('placa') placa: string) {
-  if (!placa) {
-    throw new BadRequestException('Vehicle placa is required');
-  }
-  try {
-    return await this.tireService.analyzeTires(placa);
-  } catch (error) {
-    throw new BadRequestException(error.message);
-  }
-}
-
-
-@Post('bulk-upload')
-@UseInterceptors(FileInterceptor('file', {
-  storage: multer.memoryStorage()
-}))
-async bulkUpload(
-  @UploadedFile() file: any,          // → accept `any`
-  @Query('companyId') companyId: string
-) {
-  if (!companyId) {
-    throw new BadRequestException('companyId query is required');
-  }
-  try {
-    return await this.tireService.bulkUploadTires(file, companyId);
-  } catch (err) {
-    throw new BadRequestException(err.message);
-  }
-}
-
-@Get('all')
-  async getAllTires() {
+  @Get('all')
+  getAllTires() {
     return this.tireService.findAllTires();
   }
 
-@Delete(':tireId/inspection')
+  @Get('vehicle')
+  getTiresByVehicle(@Query('vehicleId') vehicleId: string) {
+    return this.tireService.findTiresByVehicle(vehicleId);
+  }
+
+  @Get('analyze')
+  analyzeTires(@Query('placa') placa: string) {
+    if (!placa) throw new Error('Vehicle placa is required');
+    return this.tireService.analyzeTires(placa);
+  }
+
+  // ── Bulk upload ───────────────────────────────────────────────────────────
+
+  @Post('bulk-upload')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  bulkUpload(
+    @UploadedFile() file: Express.Multer.File,
+    @Query('companyId') companyId: string,
+  ) {
+    if (!companyId) throw new Error('companyId is required');
+    if (!file?.buffer) throw new Error('No file received');
+    return this.tireService.bulkUploadTires(file, companyId);
+  }
+
+  // ── Assign / unassign ─────────────────────────────────────────────────────
+
+  @Post('assign-vehicle')
+  @HttpCode(HttpStatus.OK)
+  assignVehicle(@Body() body: { vehiclePlaca: string; tireIds: string[] }) {
+    return this.tireService.assignTiresToVehicle(body.vehiclePlaca, body.tireIds);
+  }
+
+  @Post('unassign-vehicle')
+  @HttpCode(HttpStatus.OK)
+  unassignVehicle(@Body() body: { tireIds: string[] }) {
+    return this.tireService.unassignTiresFromVehicle(body.tireIds);
+  }
+
+  @Post('update-positions')
+  @HttpCode(HttpStatus.OK)
+  updatePositions(@Body() body: { placa: string; updates: Record<string, string | string[]> }) {
+    return this.tireService.updatePositions(body.placa, body.updates);
+  }
+
+  // ── Tire mutations ────────────────────────────────────────────────────────
+
+  @Patch(':id/inspection')
+  updateInspection(
+    @Param('id') tireId: string,
+    @Body() dto: UpdateInspectionDto,
+  ) {
+    return this.tireService.updateInspection(tireId, dto);
+  }
+
+  @Patch(':id/vida')
+  updateVida(
+    @Param('id') tireId: string,
+    @Body() dto: UpdateVidaDto,
+  ) {
+    return this.tireService.updateVida(
+      tireId,
+      dto.valor,
+      dto.banda,
+      dto.costo,
+      dto.profundidadInicial,
+      dto.desechos,
+    );
+  }
+
+  @Patch(':id/eventos')
+  updateEvento(
+    @Param('id') tireId: string,
+    @Body() dto: UpdateEventoDto,
+  ) {
+    return this.tireService.updateEvento(tireId, dto.valor);
+  }
+
+  @Patch(':id/edit')
+  editTire(
+    @Param('id') tireId: string,
+    @Body() dto: EditTireDto,
+  ) {
+    return this.tireService.editTire(tireId, dto);
+  }
+
+  // ── Delete ────────────────────────────────────────────────────────────────
+
+  @Delete(':tireId/inspection')
+  @HttpCode(HttpStatus.OK)
   deleteInspection(
     @Param('tireId') tireId: string,
     @Query('fecha') fecha: string,
   ) {
     return this.tireService.removeInspection(tireId, fecha);
   }
-
-@Post('assign-vehicle')
-async assignVehicle(
-  @Body() body: { vehiclePlaca: string; tireIds: string[] }
-) {
-  try {
-    return await this.tireService.assignTiresToVehicle(
-      body.vehiclePlaca,
-      body.tireIds
-    );
-  } catch (error) {
-    throw new BadRequestException(error.message);
-  }
-}
-
-@Post('unassign-vehicle')
-async unassignVehicle(@Body() body: { tireIds: string[] }) {
-  try {
-    return await this.tireService.unassignTiresFromVehicle(body.tireIds);
-  } catch (error) {
-    throw new BadRequestException(error.message);
-  }
-}
-
-@Patch(':id/edit')
-async editTire(
-  @Param('id') tireId: string,
-  @Body() dto: EditTireDto,
-) {
-  return this.tireService.editTire(tireId, dto);
-}
 }
