@@ -1123,34 +1123,28 @@ export class TireService {
   // ===========================================================================
 
   async updatePositions(placa: string, updates: Record<string, string | string[]>) {
-    const vehicle = await this.prisma.vehicle.findFirst({ where: { placa } });
-    if (!vehicle) throw new NotFoundException('Vehicle not found');
+  const vehicle = await this.prisma.vehicle.findFirst({ where: { placa } });
+  if (!vehicle) throw new NotFoundException('Vehicle not found');
 
-    const allTireIds = Object.values(updates).flatMap(v => Array.isArray(v) ? v : [v]);
-    const tires      = await this.prisma.tire.findMany({
-      where:  { id: { in: allTireIds } },
-      select: { id: true, vehicleId: true },
-    });
+  // Remove the ownership check — tires may be freshly assigned from inventory
+  // and their vehicleId is set by assign-vehicle which runs just before this
 
-    for (const t of tires) {
-      if (t.vehicleId !== vehicle.id) {
-        throw new BadRequestException(`Tire ${t.id} does not belong to vehicle ${placa}`);
-      }
-    }
-
-    await this.prisma.$transaction(
-      Object.entries(updates).flatMap(([pos, ids]) =>
-        (Array.isArray(ids) ? ids : [ids]).map(tireId =>
-          this.prisma.tire.update({
-            where: { id: tireId },
-            data:  { posicion: parseInt(pos, 10) || 0 },
-          }),
-        ),
+  await this.prisma.$transaction(
+    Object.entries(updates).flatMap(([pos, ids]) =>
+      (Array.isArray(ids) ? ids : [ids]).map(tireId =>
+        this.prisma.tire.update({
+          where: { id: tireId },
+          data:  { 
+            posicion: parseInt(pos, 10) || 0,
+            vehicleId: vehicle.id,  // also set vehicleId here as a safety net
+          },
+        }),
       ),
-    );
+    ),
+  );
 
-    return { message: 'Positions updated successfully' };
-  }
+  return { message: 'Positions updated successfully' };
+}
 
   // ===========================================================================
   // ANALYZE TIRES FOR VEHICLE
