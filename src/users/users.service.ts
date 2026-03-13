@@ -78,7 +78,9 @@ export class UsersService {
       select: USER_PUBLIC_SELECT,
     });
 
-    
+    this.emailService.sendWelcomeEmailEs(email, name).catch(err =>
+      this.logger.error(`Welcome email failed for ${email}: ${err.message}`),
+    );
 
     return {
       message: 'User created successfully.',

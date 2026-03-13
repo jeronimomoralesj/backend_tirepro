@@ -83,13 +83,15 @@ export class VehicleService {
   }
 
   async findByPlaca(placa: string) {
-    const vehicle = await this.prisma.vehicle.findFirst({
-      where:  { placa },
-      select: VEHICLE_SELECT,
-    });
-    if (!vehicle) throw new NotFoundException(`Vehicle with placa "${placa}" not found`);
-    return vehicle;
-  }
+  const vehicle = await this.prisma.vehicle.findFirst({
+    where: {
+      placa: { equals: placa, mode: 'insensitive' }
+    },
+    select: VEHICLE_SELECT,
+  });
+  if (!vehicle) throw new NotFoundException(`Vehicle with placa "${placa}" not found`);
+  return vehicle;
+}
 
   // ── Update ────────────────────────────────────────────────────────────────
 

@@ -12,6 +12,7 @@ import {
   UseGuards,
   UsePipes,
   ValidationPipe,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { VehicleService } from './vehicle.service';
@@ -33,10 +34,11 @@ export class VehicleController {
     return this.vehicleService.findAllVehicles();
   }
 
-  @Get('placa')
-  getByPlaca(@Query('placa') placa: string) {
-    return this.vehicleService.findByPlaca(placa);
-  }
+  @Get('by-placa')
+getByPlaca(@Query('placa') placa: string) {  // ← 'placa' not 'by-placa'
+  if (!placa) throw new BadRequestException('placa query param is required');
+  return this.vehicleService.findByPlaca(placa);
+}
 
   // ── Create ────────────────────────────────────────────────────────────────
 
