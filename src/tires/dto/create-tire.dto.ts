@@ -1,3 +1,4 @@
+// dto/create-tire.dto.ts
 import {
   IsString,
   IsNotEmpty,
@@ -8,9 +9,27 @@ import {
   IsArray,
   Min,
 } from 'class-validator';
-import { EjeType } from '@prisma/client';
+import type { EjeType, VidaValue } from '@prisma/client';
+
+const EJE_TYPE_VALUES = {
+  direccion: 'direccion',
+  traccion:  'traccion',
+  libre:     'libre',
+  remolque:  'remolque',
+  repuesto:  'repuesto',
+} as const;
+
+const VIDA_VALUES = {
+  nueva:       'nueva',
+  reencauche1: 'reencauche1',
+  reencauche2: 'reencauche2',
+  reencauche3: 'reencauche3',
+  fin:         'fin',
+} as const;
 
 export class CreateTireDto {
+  // ── Identity ───────────────────────────────────────────────────────────────
+
   @IsOptional()
   @IsString()
   placa?: string;
@@ -31,8 +50,12 @@ export class CreateTireDto {
   @IsNotEmpty()
   dimension: string;
 
-  @IsEnum(EjeType, { message: `eje must be one of: ${Object.values(EjeType).join(', ')}` })
+  @IsEnum(EJE_TYPE_VALUES, {
+    message: `eje must be one of: ${Object.values(EJE_TYPE_VALUES).join(', ')}`,
+  })
   eje: EjeType;
+
+  // ── Relations ──────────────────────────────────────────────────────────────
 
   @IsString()
   @IsNotEmpty()
@@ -46,6 +69,8 @@ export class CreateTireDto {
   @Min(0)
   posicion: number;
 
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
+
   @IsOptional()
   @IsNumber()
   @Min(0)
@@ -55,8 +80,14 @@ export class CreateTireDto {
   @IsDateString()
   fechaInstalacion?: string;
 
-  // Historical arrays — validated loosely because they come from
-  // bulk upload / migration paths with variable shapes
+  @IsOptional()
+  @IsEnum(VIDA_VALUES, {
+    message: `vidaActual must be one of: ${Object.values(VIDA_VALUES).join(', ')}`,
+  })
+  vidaActual?: VidaValue;
+
+  // ── Historical arrays ─────────────────────────────────────────────────────
+
   @IsOptional()
   @IsArray()
   vida?: any[];

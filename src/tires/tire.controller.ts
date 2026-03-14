@@ -11,10 +11,10 @@ import {
   UploadedFile,
   HttpCode,
   HttpStatus,
-  ParseUUIDPipe,
   UsePipes,
   ValidationPipe,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -43,7 +43,7 @@ export class TireController {
 
   @Get()
   getTires(@Query('companyId') companyId: string) {
-    if (!companyId) throw new Error('companyId is required');
+    if (!companyId) throw new BadRequestException('companyId is required');
     return this.tireService.findTiresByCompany(companyId);
   }
 
@@ -54,12 +54,13 @@ export class TireController {
 
   @Get('vehicle')
   getTiresByVehicle(@Query('vehicleId') vehicleId: string) {
+    if (!vehicleId) throw new BadRequestException('vehicleId is required');
     return this.tireService.findTiresByVehicle(vehicleId);
   }
 
   @Get('analyze')
   analyzeTires(@Query('placa') placa: string) {
-    if (!placa) throw new Error('Vehicle placa is required');
+    if (!placa) throw new BadRequestException('Vehicle placa is required');
     return this.tireService.analyzeTires(placa);
   }
 
@@ -71,8 +72,8 @@ export class TireController {
     @UploadedFile() file: Express.Multer.File,
     @Query('companyId') companyId: string,
   ) {
-    if (!companyId) throw new Error('companyId is required');
-    if (!file?.buffer) throw new Error('No file received');
+    if (!companyId) throw new BadRequestException('companyId is required');
+    if (!file?.buffer) throw new BadRequestException('No file received');
     return this.tireService.bulkUploadTires(file, companyId);
   }
 
@@ -118,9 +119,13 @@ export class TireController {
       dto.costo,
       dto.profundidadInicial,
       dto.proveedor,
+      // Merge desechos body + imageUrls into the single desechoData param
       dto.desechos
         ? { ...dto.desechos, imageUrls: dto.imageUrls }
         : undefined,
+      dto.bandaMarca,   // ← was missing
+      dto.motivoFin,    // ← was missing
+      dto.notasRetiro,  // ← was missing
     );
   }
 
@@ -148,6 +153,7 @@ export class TireController {
     @Param('tireId') tireId: string,
     @Query('fecha') fecha: string,
   ) {
+    if (!fecha) throw new BadRequestException('fecha query param is required');
     return this.tireService.removeInspection(tireId, fecha);
   }
 }

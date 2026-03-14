@@ -1,3 +1,15 @@
+// =============================================================================
+// TIREPRO — PRISMA SCHEMA
+// =============================================================================
+//
+// MIGRATION SAFETY (800 live tires):
+//   • All new columns are nullable — zero breaking changes to existing rows
+//   • New tables have no required FKs that would block a deploy
+//   • primeraVida and desechos JSON cols are KEPT as read-only legacy
+//   • Run scripts/backfill-vida-snapshots.ts after deploying this schema
+//
+// =============================================================================
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -8,7 +20,7 @@ datasource db {
 }
 
 // =============================================================================
-// ENUMS — Replace all magic strings
+// ENUMS
 // =============================================================================
 
 enum UserRole {
@@ -39,6 +51,15 @@ enum EjeType {
   repuesto
 }
 
+// Strongly-typed vida sequence — replaces magic strings in TireEvento.notas
+enum VidaValue {
+  nueva
+  reencauche1
+  reencauche2
+  reencauche3
+  fin
+}
+
 enum TireEventType {
   montaje
   rotacion
@@ -46,6 +67,16 @@ enum TireEventType {
   retiro
   inspeccion
   reencauche
+}
+
+// How an inspection was created — critical for CV model training data quality:
+// only 'computer_vision' rows should train the depth model;
+// 'manual' rows are ground truth for accuracy measurement.
+enum InspeccionSource {
+  manual
+  bulk_upload
+  computer_vision
+  api
 }
 
 enum NotificationType {
@@ -62,28 +93,40 @@ enum CouponCategory {
   aceites
 }
 
+// Why a vida ended — drives the recommendation engine
+enum MotivoFinVida {
+  reencauche        // normal planned retread
+  desgaste          // worn to legal limit naturally
+  dano_mecanico     // cut, puncture, sidewall damage
+  dano_operacional  // overload, misuse, incorrect mounting
+  accidente         // road incident
+  preventivo        // removed before EOL as a fleet decision
+  otro
+}
+
 // =============================================================================
 // USER & AUTH
 // =============================================================================
 
 model User {
-  id                String    @id @default(uuid())
+  id                String   @id @default(uuid())
   name              String
-  email             String    @unique
+  email             String   @unique
   password          String
   companyId         String
-  role              UserRole  @default(admin)
-  puntos            Int       @default(0)
-  isVerified        Boolean   @default(false)
+  role              UserRole @default(admin)
+  puntos            Int      @default(0)
+  isVerified        Boolean  @default(false)
   verificationToken String?
-  preferredLanguage String    @default("es")
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  preferredLanguage String   @default("es")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
-  company           Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  messages          Message[]
-  incomes           Income[]
-  vehicleAccess     UserVehicleAccess[]
+  company       Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messages      Message[]
+  incomes       Income[]
+  vehicleAccess UserVehicleAccess[]
+  inspecciones  Inspeccion[]        // inspections this user performed
 
   @@index([companyId])
   @@index([email])
@@ -116,16 +159,17 @@ model Company {
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
-  // NOTE: userCount, tireCount, vehicleCount removed — derive via COUNT(*) queries
-  // or refresh from CompanySnapshot. Stale cached integers cause data drift.
+  distributors    DistributorAccess[]  @relation("CompanyDistributors")
+  clients         DistributorAccess[]  @relation("DistributorClients")
+  users           User[]
+  vehicles        Vehicle[]
+  tires           Tire[]
+  notifications   Notification[]
+  snapshots       CompanySnapshot[]
+  vidaSnapshots   TireVidaSnapshot[]
+  recommendations TireRecommendation[]
 
-  distributors  DistributorAccess[] @relation("CompanyDistributors")
-  clients       DistributorAccess[] @relation("DistributorClients")
-  users         User[]
-  vehicles      Vehicle[]
-  tires         Tire[]
-  notifications Notification[]
-  snapshots     CompanySnapshot[]
+  @@index([plan])
 }
 
 model DistributorAccess {
@@ -145,39 +189,82 @@ model DistributorAccess {
 // =============================================================================
 
 model Vehicle {
-  id               String   @id @default(uuid())
-  placa            String
-  kilometrajeActual Int     @default(0)
-  carga            String
-  pesoCarga        Float
-  tipovhc          String
-  companyId        String
-  cliente          String?
-  // union stores axle/position configuration — kept as JSON because it is
-  // truly a variable-structure layout config, not queryable analytics data
-  union            Json     @default("[]")
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id                String   @id @default(uuid())
+  placa             String
+  kilometrajeActual Int      @default(0)
+  carga             String
+  pesoCarga         Float
+  tipovhc           String
+  companyId         String
+  cliente           String?
 
-  company       Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  tires         Tire[]              @relation("VehicleTires")
-  extras        Extra[]
-  notifications Notification[]
-  userAccess    UserVehicleAccess[]
+  // Axle/position layout config — kept as JSON because it is a
+  // variable-structure layout config, not queryable analytics data.
+  // Shape: { ejeId, ejeType, positions: number[] }[]
+  union Json @default("[]")
 
+  // Pressure reference map per position — auto-fills Inspeccion.presionRecomendadaPsi
+  // at write time so technicians don't need to know the spec manually.
+  // Shape: { posicion: number, presionRecomendadaPsi: number }[]
+  presionesRecomendadas Json @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tires              Tire[]              @relation("VehicleTires")
+  extras             Extra[]
+  notifications      Notification[]
+  userAccess         UserVehicleAccess[]
+  vehicleInspections VehicleInspection[]
+
+  @@unique([companyId, placa])
   @@index([companyId])
   @@index([placa])
 }
 
 // =============================================================================
-// TIRE — Core entity, now with cached analytics columns
+// VEHICLE INSPECTION
+// Periodic full-vehicle health record.
+// Correlates vehicle condition (alignment, brakes, load) with tire wear patterns.
+// Feeds ML: bad alignment → irregular tread wear; overload → accelerated CPK.
+// =============================================================================
+
+model VehicleInspection {
+  id           String   @id @default(uuid())
+  vehicleId    String
+  fecha        DateTime
+  realizadoPor String?  // userId or free-text technician name
+
+  kmActual            Int?
+  presionPromedioPsi  Float?   // average pressure across all tires at inspection
+  tiresInspeccionadas Int?     // how many tires were measured this visit
+
+  // Vehicle condition flags — nullable: absent means not checked, not OK
+  alineacionOk    Boolean?
+  balanceoOk      Boolean?
+  freinosOk       Boolean?
+  suspensionOk    Boolean?
+  cargaConformeKg Float?       // actual load at inspection time (kg)
+
+  notas     String?
+  createdAt DateTime @default(now())
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId, fecha])
+  @@map("vehicle_inspections")
+}
+
+// =============================================================================
+// TIRE — Core entity
 // =============================================================================
 
 model Tire {
   id        String  @id @default(uuid())
   companyId String
   vehicleId String?
-  placa     String
+  placa     String  // tire serial / identifier
 
   // Identity
   marca              String
@@ -187,54 +274,65 @@ model Tire {
   posicion           Int     @default(0)
   profundidadInicial Float
 
-  // Lifecycle
-  fechaInstalacion  DateTime?
-  diasAcumulados    Int       @default(0)
-  kilometrosRecorridos Int    @default(0)
+  // Current vida state — denormalized from TireEvento for fast reads
+  vidaActual VidaValue @default(nueva)
+  totalVidas Int       @default(0)  // number of completed vida phases
+
+  // Lifecycle accumulators
+  fechaInstalacion     DateTime?
+  diasAcumulados       Int       @default(0)
+  kilometrosRecorridos Int       @default(0)
 
   // -------------------------------------------------------------------------
-  // CACHED ANALYTICS — updated on every new Inspeccion write
-  // These allow O(1) dashboard reads instead of loading all inspections
+  // CACHED ANALYTICS — recomputed by refreshTireAnalyticsCache on every write.
+  // Dashboard reads are O(1). Never recompute on the read path.
   // -------------------------------------------------------------------------
-  currentCpk           Float?          // latest cost per km
-  currentCpt           Float?          // latest cost per day/month
-  currentProfundidad   Float?          // latest avg tread depth (Int + Cen + Ext / 3)
-  cpkTrend             Float?          // slope over last 5 inspections (negative = improving)
-  projectedKmRemaining Int?            // estimated km until min tread depth
-  projectedDateEOL     DateTime?       // projected end-of-life date
-  healthScore          Int?            // 0–100 composite score (ML hook)
+  currentCpk           Float?
+  currentCpt           Float?
+  currentProfundidad   Float?          // latest avg tread depth ((Int+Cen+Ext) / 3)
+  currentPresionPsi    Float?          // latest recorded pressure
+  cpkTrend             Float?          // linear regression slope over last 5 inspections
+                                       // negative = improving, positive = degrading
+  projectedKmRemaining Int?
+  projectedDateEOL     DateTime?
+  healthScore          Int?            // 0–100 composite (depth 50%, trend 30%, irregularity 20%)
   alertLevel           TireAlertLevel  @default(ok)
-  lastInspeccionDate   DateTime?       // denormalized for fast sorting
+  lastInspeccionDate   DateTime?
 
-  // primeraVida: kept as JSON — it's a snapshot copy of the tire's first-life
-  // inspection history used for comparison. Not used in aggregations.
-  primeraVida Json @default("[]")
-
-  // desechos: retirement metadata — kept as JSON because it's a one-time
-  // write with variable fields and never queried for aggregation.
-  desechos Json?
+  // -------------------------------------------------------------------------
+  // LEGACY JSON — kept read-only after backfill migration. Do not write here.
+  // primeraVida: superseded by TireVidaSnapshot
+  // desechos:    superseded by TireVidaSnapshot (motivoFin = fin)
+  // -------------------------------------------------------------------------
+  primeraVida Json  @default("[]")  // @deprecated
+  desechos    Json?                  // @deprecated
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  vehicle       Vehicle?       @relation("VehicleTires", fields: [vehicleId], references: [id])
-  inspecciones  Inspeccion[]
-  eventos       TireEvento[]
-  costos        TireCosto[]
-  notifications Notification[]
+  company         Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vehicle         Vehicle?             @relation("VehicleTires", fields: [vehicleId], references: [id])
+  inspecciones    Inspeccion[]
+  eventos         TireEvento[]
+  costos          TireCosto[]
+  notifications   Notification[]
+  vidaSnapshots   TireVidaSnapshot[]
+  recommendations TireRecommendation[]
 
   @@index([companyId])
   @@index([vehicleId])
   @@index([marca, dimension])
   @@index([alertLevel])
-  @@index([companyId, alertLevel])       // "show all warnings for company X"
-  @@index([companyId, lastInspeccionDate]) // dashboard sorting
+  @@index([companyId, alertLevel])
+  @@index([companyId, lastInspeccionDate])
+  @@index([companyId, vidaActual])           // fleet breakdown by vida phase
+  @@index([dimension, marca])                // cross-fleet benchmark queries
 }
 
 // =============================================================================
-// INSPECCION — Normalized from Tire.inspecciones JSON
-// This is the most important change: unlocks all analytics queries
+// INSPECCION
+// Every field that could correlate with wear rate or serve as a CV model
+// feature must be a first-class column here — not buried in JSON.
 // =============================================================================
 
 model Inspeccion {
@@ -242,39 +340,291 @@ model Inspeccion {
   tireId String
   fecha  DateTime
 
-  // Tread depth readings
+  // ── Tread depth readings (mm) ─────────────────────────────────────────────
   profundidadInt Float
   profundidadCen Float
   profundidadExt Float
 
-  // Computed metrics (stored so we can aggregate across fleet)
-  cpk              Float?
-  cpkProyectado    Float?
-  cpt              Float?
-  cptProyectado    Float?
-  diasEnUso        Int?
-  mesesEnUso       Float?
-  kilometrosEstimados Int?
-  kmActualVehiculo    Int?     // vehicle odometer at time of inspection
-  kmEfectivos         Int?     // effective km used for CPK calculation
-  kmProyectado        Float?   // projected km until EOL
+  // ── Pressure readings — nullable: not always measured ─────────────────────
+  // Under-inflation is the #1 cause of premature wear on Colombian heavy fleets.
+  // presionDelta is computed at write time (negative = under-inflated).
+  // presionRecomendadaPsi is auto-filled from vehicle.presionesRecomendadas
+  // at write time — technicians don't need to know the spec.
+  presionPsi            Float?   // measured tire pressure (PSI)
+  presionRecomendadaPsi Float?   // target pressure for this position/load
+  presionDelta          Float?   // presionPsi - presionRecomendadaPsi (computed on write)
 
+  // ── Vida phase at this inspection ─────────────────────────────────────────
+  // Denormalized for O(1) analytics slicing without joining TireEvento.
+  // Enables: "avg CPK of Michelin XDE2 in reencauche1" in a single indexed query.
+  vidaAlMomento VidaValue @default(nueva)
+
+  // ── Computed metrics (stored for fleet-wide aggregation) ──────────────────
+  cpk                 Float?
+  cpkProyectado       Float?
+  cpt                 Float?
+  cptProyectado       Float?
+  diasEnUso           Int?
+  mesesEnUso          Float?
+  kilometrosEstimados Int?
+  kmActualVehiculo    Int?     // vehicle odometer at inspection
+  kmEfectivos         Int?     // km used for CPK calculation
+  kmProyectado        Float?   // projected km to legal limit
+
+  // ── Image and provenance ──────────────────────────────────────────────────
   imageUrl String?
+  source   InspeccionSource @default(manual)
+
+  // ── Computer vision model output fields ───────────────────────────────────
+  // Stored alongside the human measurement so model accuracy is trackable
+  // over time as the CV model is retrained and improved.
+  cvProfundidadInt Float?   // model-predicted depth, interior zone (mm)
+  cvProfundidadCen Float?   // model-predicted depth, center zone (mm)
+  cvProfundidadExt Float?   // model-predicted depth, exterior zone (mm)
+  cvConfidence     Float?   // model confidence 0–1
+  cvModelVersion   String?  // which model version produced this prediction
+
+  // ── Who performed this inspection ─────────────────────────────────────────
+  inspeccionadoPorId     String?  // FK to User (null for bulk uploads)
+  inspeccionadoPorNombre String?  // free-text fallback when no user account
 
   createdAt DateTime @default(now())
 
-  tire Tire @relation(fields: [tireId], references: [id], onDelete: Cascade)
+  tire             Tire  @relation(fields: [tireId], references: [id], onDelete: Cascade)
+  inspeccionadoPor User? @relation(fields: [inspeccionadoPorId], references: [id])
 
   @@index([tireId])
   @@index([fecha])
-  @@index([cpk])                // "find all tires with cpk > X"
-  @@index([tireId, fecha])      // most common query: tire history ordered by date
+  @@index([cpk])
+  @@index([tireId, fecha])
   @@index([tireId, createdAt])
+  @@index([vidaAlMomento])                  // fleet analytics by vida phase
+  @@index([tireId, vidaAlMomento])          // per-tire per-vida history
+  @@index([source])                         // CV training data extraction
+  @@index([presionPsi])                     // pressure correlation queries
+  @@index([inspeccionadoPorId])
   @@map("inspecciones")
 }
 
 // =============================================================================
-// TIRE EVENTO — Normalized from Tire.eventos JSON
+// TIRE VIDA SNAPSHOT
+// One row per completed vida phase (nueva → reencauche1 → reencauche2 → fin).
+// Written by updateVida every time a vida transition occurs.
+//
+// This is TirePro's primary ML training asset and the backbone for:
+//   • "Retread or replace?" recommendation engine
+//   • TireBenchmark nightly aggregation (brand/dimension performance)
+//   • Per-company fleet intelligence and TCO reports
+//   • Retread ROI calculation
+//
+// dataSource = 'backfill' marks rows from the migration script so ML pipelines
+// can apply appropriate data-quality filters.
+// =============================================================================
+
+model TireVidaSnapshot {
+  id        String    @id @default(uuid())
+  tireId    String
+  companyId String    // denormalized for fleet-wide aggregation without joining Tire
+
+  vida      VidaValue // which vida phase this snapshot covers
+
+  // ── Tire identity at the start of this vida ───────────────────────────────
+  // Stored here because the tire may be updated later; we need the exact
+  // state that produced these metrics.
+  marca     String
+  diseno    String
+  dimension String
+  eje       EjeType
+  posicion  Int?
+
+  // Retread-specific identity — only for reencauche* vidas
+  bandaNombre String?  // retread band name
+  bandaMarca  String?  // retread band brand (may differ from carcass brand)
+  proveedor   String?  // retread shop or supplier
+
+  // ── Financial ─────────────────────────────────────────────────────────────
+  costoInicial Float   // cost of this vida (new tire price or retread cost)
+  costoTotal   Float   // sum of all TireCosto entries during this vida
+
+  // ── Duration ──────────────────────────────────────────────────────────────
+  fechaInicio  DateTime
+  fechaFin     DateTime
+  diasTotales  Int
+  mesesTotales Float
+
+  // ── Wear metrics ──────────────────────────────────────────────────────────
+  profundidadInicial     Float
+  profundidadFinal       Float
+  mmDesgastados          Float
+  mmDesgastadosPorMes    Float?
+  mmDesgastadosPor1000km Float?
+
+  // Per-zone final depths — center > edges = over-inflation; edges > center = under-inflation
+  profundidadIntFinal Float?
+  profundidadCenFinal Float?
+  profundidadExtFinal Float?
+  desgasteIrregular   Boolean @default(false) // true if max zone delta > 3mm at end
+
+  // ── Distance ──────────────────────────────────────────────────────────────
+  kmTotales         Int
+  kmProyectadoFinal Float?
+
+  // ── CPK / CPT performance ─────────────────────────────────────────────────
+  // Min/max/avg across all inspections in this vida — not just the final value.
+  // Enables detection of performance inflection points for ML training.
+  cpkFinal           Float?
+  cptFinal           Float?
+  cpkProyectadoFinal Float?
+  cptProyectadoFinal Float?
+  cpkMin             Float?
+  cpkMax             Float?
+  cpkAvg             Float?
+
+  // ── Pressure summary ──────────────────────────────────────────────────────
+  presionAvgPsi          Float?
+  presionMinPsi          Float?
+  presionMaxPsi          Float?
+  inspeccionesConPresion Int    @default(0)
+
+  // ── Health at retirement ──────────────────────────────────────────────────
+  healthScoreAtEnd Int?
+  alertLevelAtEnd  TireAlertLevel?
+
+  // ── Inspection history anchors ────────────────────────────────────────────
+  totalInspecciones Int     @default(0)
+  firstInspeccionId String?
+  lastInspeccionId  String?
+
+  // ── Why this vida ended ───────────────────────────────────────────────────
+  motivoFin   MotivoFinVida?
+  notasRetiro String?
+
+  // Desecho fields — only when motivoFin != reencauche (tire scrapped)
+  desechoCausales   String?
+  desechoMilimetros Float?   // mm remaining when scrapped
+  desechoRemanente  Float?   // estimated value lost: cpk × kmPerMm × mmRemaining
+  desechoImageUrls  String[] @default([])
+
+  // 'live' = created by updateVida | 'backfill' = created by migration script
+  dataSource String @default("live")
+
+  createdAt DateTime @default(now())
+
+  tire    Tire    @relation(fields: [tireId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([tireId])
+  @@index([tireId, vida])
+  @@index([companyId])
+  @@index([companyId, vida])
+  @@index([companyId, marca, dimension])
+  @@index([companyId, eje])
+  @@index([cpkFinal])
+  @@index([dimension, marca, vida])
+  @@index([dataSource])
+  @@map("tire_vida_snapshots")
+}
+
+// =============================================================================
+// TIRE BENCHMARK
+// Aggregated performance data by (marca, diseno, dimension).
+// Populated nightly from TireVidaSnapshot.
+//
+// retreadRoiRatio = cpkReencauche1 / cpkNueva
+//   < 1.0 = retreading achieves lower cost per km than buying new (pays off)
+//   > 1.0 = retreading is more expensive per km (consider replacing)
+// =============================================================================
+
+model TireBenchmark {
+  id        String @id @default(uuid())
+  marca     String
+  diseno    String
+  dimension String
+
+  sampleSize   Int
+  companyCount Int    @default(1)
+
+  precioPromedio Float?
+  precioMin      Float?
+  precioMax      Float?
+
+  avgCpk              Float?
+  medianCpk           Float?
+  avgCpt              Float?
+  avgKmPorVida        Float?
+  avgMmDesgaste       Float?
+  avgDesgastePor1000km Float?
+
+  cpkNueva          Float?
+  cpkReencauche1    Float?
+  cpkReencauche2    Float?
+  sampleNueva       Int    @default(0)
+  sampleReencauche1 Int    @default(0)
+  sampleReencauche2 Int    @default(0)
+
+  retreadRoiRatio Float?
+
+  // Pressure correlation (populated when enough data exists)
+  cpkAtOptimalPsi     Float?   // CPK when pressure within ±5 PSI of recommended
+  cpkAtLowPsi         Float?   // CPK when pressure >10 PSI below recommended
+  pressureSensitivity Float?   // % CPK degradation per 10 PSI under-inflation
+
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([marca, diseno, dimension])
+  @@index([marca, dimension])
+  @@index([dimension])
+  @@index([retreadRoiRatio])
+  @@map("tire_benchmarks")
+}
+
+// =============================================================================
+// TIRE RECOMMENDATION
+// Async-generated recommendations — decouples generation from reads.
+// Enables A/B testing of rule-based vs ML model versions.
+// =============================================================================
+
+model TireRecommendation {
+  id        String  @id @default(uuid())
+  tireId    String?
+  companyId String
+
+  // 'replace_now' | 'retread' | 'pressure_adjust' | 'rotate' | 'buy_brand'
+  tipo      String
+  prioridad Int    @default(0)   // 0 = info, 1 = watch, 2 = urgent, 3 = critical
+  titulo    String
+  cuerpo    String
+  accion    String?
+
+  // Machine-readable context for UI rendering without text parsing
+  // e.g. { brandSuggested, estimatedSaving, currentCpk, benchmarkCpk,
+  //         presionActual, presionRecomendada }
+  metaData Json @default("{}")
+
+  modelVersion String?  // 'rule_v1' | 'ml_v2' etc.
+  confidence   Float?   // 0–1
+
+  visto      Boolean   @default(false)
+  descartado Boolean   @default(false)
+  expiresAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tire    Tire?   @relation(fields: [tireId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, visto])
+  @@index([companyId, prioridad])
+  @@index([tireId])
+  @@index([tipo])
+  @@index([expiresAt])
+  @@map("tire_recommendations")
+}
+
+// =============================================================================
+// TIRE EVENTO
 // =============================================================================
 
 model TireEvento {
@@ -283,7 +633,7 @@ model TireEvento {
   tipo     TireEventType
   fecha    DateTime
   notas    String?
-  metadata Json?         // only truly unstructured extras (e.g. mechanic name, workshop)
+  metadata Json?
 
   createdAt DateTime @default(now())
 
@@ -295,61 +645,72 @@ model TireEvento {
 }
 
 // =============================================================================
-// TIRE COSTO — Normalized from Tire.costo JSON
+// TIRE COSTO
+// concepto distinguishes capital cost from maintenance in CPK calculations
 // =============================================================================
 
 model TireCosto {
-  id     String   @id @default(uuid())
-  tireId String
-  valor  Float
-  fecha  DateTime
+  id       String   @id @default(uuid())
+  tireId   String
+  valor    Float
+  fecha    DateTime
+  concepto String?  // 'compra_nueva' | 'reencauche' | 'reparacion' | 'parche'
 
   createdAt DateTime @default(now())
 
   tire Tire @relation(fields: [tireId], references: [id], onDelete: Cascade)
 
   @@index([tireId, fecha])
+  @@index([concepto])
   @@map("tire_costos")
 }
 
 // =============================================================================
-// COMPANY SNAPSHOT — Time-series fleet analytics (refreshed nightly via cron)
-// This is your data-company differentiator: historical fleet intelligence
+// COMPANY SNAPSHOT — Nightly fleet analytics time series
 // =============================================================================
 
 model CompanySnapshot {
   id        String   @id @default(uuid())
   companyId String
-  fecha     DateTime @db.Date // daily granularity
+  fecha     DateTime @db.Date
 
-  // Fleet health
-  totalTires       Int
-  tiresOk          Int
-  tiresWatch       Int
-  tiresWarning     Int
-  tiresCritical    Int
-  avgHealthScore   Float?
+  totalTires     Int
+  tiresOk        Int
+  tiresWatch     Int
+  tiresWarning   Int
+  tiresCritical  Int
+  avgHealthScore Float?
 
-  // CPK / CPT analytics
-  avgCpk           Float?
-  medianCpk        Float?
-  avgCpt           Float?
-  stddevCpk        Float?
+  // Pressure health
+  tiresConPresionData  Int?
+  tiresConBajaPresion  Int?
+  presionPromedioFlota Float?
 
-  // Cost intelligence
-  totalFleetCost         Float?
-  projectedMonthlyCost   Float?
-  avgCostPerVehicle      Float?
+  avgCpk    Float?
+  medianCpk Float?
+  avgCpt    Float?
+  stddevCpk Float?
 
-  // Performance leaders (denormalized for fast dashboards)
-  bestBrand            String?
-  worstBrand           String?
-  bestDiseno           String?
-  avgKmPerTire         Float?
+  // Vida breakdown
+  tiresNueva       Int?
+  tiresReencauche1 Int?
+  tiresReencauche2 Int?
+  tiresReencauche3 Int?
 
-  // Counts
-  totalVehicles    Int
-  activeUsers      Int
+  totalFleetCost       Float?
+  projectedMonthlyCost Float?
+  avgCostPerVehicle    Float?
+
+  bestBrand    String?
+  worstBrand   String?
+  bestDiseno   String?
+  avgKmPerTire Float?
+
+  retreadRoiFlota Float?
+  retreadCount    Int?
+
+  totalVehicles Int
+  activeUsers   Int
 
   createdAt DateTime @default(now())
 
@@ -370,7 +731,7 @@ model Notification {
   message   String
   type      NotificationType
   seen      Boolean          @default(false)
-  createdAt DateTime         @default(now()) // removed duplicate `date` field
+  createdAt DateTime         @default(now())
 
   tireId    String?
   vehicleId String?
@@ -381,13 +742,13 @@ model Notification {
   company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId])
-  @@index([companyId, seen])    // "unread notifications for company X"
+  @@index([companyId, seen])
   @@index([vehicleId])
   @@index([tireId])
 }
 
 // =============================================================================
-// EXTRA (vehicle accessories/maintenance items)
+// EXTRA (vehicle accessories / maintenance items)
 // =============================================================================
 
 model Extra {
@@ -457,14 +818,14 @@ model BlogPassword {
 // =============================================================================
 
 model Chat {
-  id           String    @id @default(uuid())
+  id           String   @id @default(uuid())
   title        String
   category     String
   content      String
   emoji        String
-  messageCount Int       @default(0)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  messageCount Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   messages Message[]
 }
