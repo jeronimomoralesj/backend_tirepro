@@ -2,42 +2,46 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
-  ConflictException,
+  Inject,
 } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { CompanyPlan } from '@prisma/client';
 import { S3Service } from './s3.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { Cache } from 'cache-manager';
 
 const DEFAULT_LOGO =
   'https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png';
 
 const COMPANY_PUBLIC_SELECT = {
-  id: true,
-  name: true,
-  plan: true,
+  id:           true,
+  name:         true,
+  plan:         true,
   profileImage: true,
 } as const;
 
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
+const COMPANY_TTL = 60 * 60 * 1000;
 
 @Injectable()
 export class CompaniesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly s3: S3Service,
+    @Inject(CACHE_MANAGER) private cache: Cache,
   ) {}
+
+  private companyKey(companyId: string) {
+    return `company:${companyId}`;
+  }
+
+  private async invalidateCompanyCache(companyId: string) {
+    await this.cache.del(this.companyKey(companyId));
+  }
 
   // ── Logo ──────────────────────────────────────────────────────────────────
 
   async updateCompanyLogo(companyId: string, imageBase64: string) {
-    // Validate format before hitting the DB or S3
     if (!imageBase64?.startsWith('data:image')) {
       throw new BadRequestException('Invalid image format');
     }
@@ -47,25 +51,23 @@ export class CompaniesService {
       throw new BadRequestException('Invalid base64 payload');
     }
 
-    // Confirm company exists
     const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
+      where:  { id: companyId },
       select: { id: true },
     });
     if (!company) throw new NotFoundException('Company not found');
 
-    // Detect mime type from header (support png, jpeg, webp)
-    const mimeMatch = imageBase64.match(/^data:(image\/\w+);base64,/);
+    const mimeMatch   = imageBase64.match(/^data:(image\/\w+);base64,/);
     const contentType = mimeMatch?.[1] ?? 'image/jpeg';
-
-    const buffer = Buffer.from(base64Data, 'base64');
-    const imageUrl = await this.s3.uploadCompanyLogo(buffer, companyId, contentType);
+    const buffer      = Buffer.from(base64Data, 'base64');
+    const imageUrl    = await this.s3.uploadCompanyLogo(buffer, companyId, contentType);
 
     await this.prisma.company.update({
       where: { id: companyId },
-      data: { profileImage: imageUrl },
+      data:  { profileImage: imageUrl },
     });
 
+    await this.invalidateCompanyCache(companyId); // ← added: logo changed, cached company is stale
     return { message: 'Logo actualizado correctamente', profileImage: imageUrl };
   }
 
@@ -74,18 +76,22 @@ export class CompaniesService {
   async createCompany(dto: CreateCompanyDto) {
     const company = await this.prisma.company.create({
       data: {
-        name: dto.name,
-        plan: (dto.plan as CompanyPlan) ?? CompanyPlan.basic,
+        name:         dto.name,
+        plan:         (dto.plan as CompanyPlan) ?? CompanyPlan.basic,
         profileImage: DEFAULT_LOGO,
       },
     });
 
+    // No cache to invalidate on create — the key doesn't exist yet
     return { message: 'Company registered successfully', companyId: company.id };
   }
 
   // ── Read ──────────────────────────────────────────────────────────────────
 
   async getCompanyById(companyId: string) {
+    const cached = await this.cache.get(this.companyKey(companyId));
+    if (cached) return cached; // ← added: serve from cache on subsequent reads
+
     const company = await this.prisma.company.findUnique({
       where: { id: companyId },
       include: {
@@ -94,7 +100,6 @@ export class CompaniesService {
             distributor: { select: COMPANY_PUBLIC_SELECT },
           },
         },
-        // Live counts — replaces stale userCount/tireCount/vehicleCount fields
         _count: {
           select: { users: true, tires: true, vehicles: true },
         },
@@ -102,10 +107,13 @@ export class CompaniesService {
     });
 
     if (!company) throw new NotFoundException('Company not found');
+
+    await this.cache.set(this.companyKey(companyId), company, COMPANY_TTL); // ← added
     return company;
   }
 
   async getAllCompanies() {
+    // Not cached — this is an admin-only list, called rarely, and spans all companies
     return this.prisma.company.findMany({
       select: {
         ...COMPANY_PUBLIC_SELECT,
@@ -117,16 +125,22 @@ export class CompaniesService {
     });
   }
 
-  async searchCompaniesByName(query: string, excludeCompanyId?: string) {
+  async searchCompaniesByName(
+    query: string,
+    excludeCompanyId?: string,
+    distributorsOnly = false,
+  ) {
     if (!query || query.trim().length < 2) return [];
 
+    // Not cached — search results depend on arbitrary query strings, not worth caching
     return this.prisma.company.findMany({
       where: {
         name: { contains: query.trim(), mode: 'insensitive' },
         ...(excludeCompanyId && { id: { not: excludeCompanyId } }),
+        ...(distributorsOnly && { plan: 'distribuidor' }),
       },
-      select: COMPANY_PUBLIC_SELECT,
-      take: 10,
+      select:  COMPANY_PUBLIC_SELECT,
+      take:    10,
       orderBy: { name: 'asc' },
     });
   }
@@ -134,20 +148,17 @@ export class CompaniesService {
   // ── Distributor access ────────────────────────────────────────────────────
 
   async getConnectedDistributors(companyId: string) {
+    // Not cached — called infrequently, low value to cache
     return this.prisma.distributorAccess.findMany({
-      where: { companyId },
-      include: {
-        distributor: { select: COMPANY_PUBLIC_SELECT },
-      },
+      where:   { companyId },
+      include: { distributor: { select: COMPANY_PUBLIC_SELECT } },
     });
   }
 
   async getClientsForDistributor(distributorCompanyId: string) {
     return this.prisma.distributorAccess.findMany({
-      where: { distributorId: distributorCompanyId },
-      include: {
-        company: { select: COMPANY_PUBLIC_SELECT },
-      },
+      where:   { distributorId: distributorCompanyId },
+      include: { company: { select: COMPANY_PUBLIC_SELECT } },
     });
   }
 
@@ -156,30 +167,35 @@ export class CompaniesService {
       throw new BadRequestException('A company cannot be its own distributor');
     }
 
-    // Fetch both in parallel — single round-trip
     const [company, distributor] = await Promise.all([
       this.prisma.company.findUnique({
-        where: { id: companyId },
+        where:  { id: companyId },
         select: { id: true },
       }),
       this.prisma.company.findUnique({
-        where: { id: distributorId },
+        where:  { id: distributorId },
         select: { id: true, plan: true },
       }),
     ]);
 
-    if (!company) throw new NotFoundException('Company not found');
+    if (!company)     throw new NotFoundException('Company not found');
     if (!distributor) throw new NotFoundException('Distributor not found');
     if (distributor.plan !== CompanyPlan.distribuidor) {
       throw new BadRequestException('Selected company is not a distributor');
     }
 
-    // Upsert is idempotent — no need to catch unique constraint errors
-    return this.prisma.distributorAccess.upsert({
-      where: { companyId_distributorId: { companyId, distributorId } },
+    const result = await this.prisma.distributorAccess.upsert({
+      where:  { companyId_distributorId: { companyId, distributorId } },
       create: { companyId, distributorId },
-      update: {}, // already exists — no-op
+      update: {},
     });
+
+    // Both companies' cached records now have stale distributor lists
+    await Promise.all([
+      this.invalidateCompanyCache(companyId),     // ← added
+      this.invalidateCompanyCache(distributorId), // ← added
+    ]);
+    return result;
   }
 
   async revokeDistributorAccess(companyId: string, distributorId: string) {
@@ -188,8 +204,15 @@ export class CompaniesService {
     });
     if (!existing) throw new NotFoundException('Distributor access not found');
 
-    return this.prisma.distributorAccess.delete({
+    const result = await this.prisma.distributorAccess.delete({
       where: { companyId_distributorId: { companyId, distributorId } },
     });
+
+    // Same reason as grant — both cached records are now stale
+    await Promise.all([
+      this.invalidateCompanyCache(companyId),
+      this.invalidateCompanyCache(distributorId),
+    ]);
+    return result;
   }
 }

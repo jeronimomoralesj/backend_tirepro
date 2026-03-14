@@ -1,9 +1,10 @@
 import { Module, forwardRef } from '@nestjs/common';
+import { CacheModule } from '@nestjs/cache-manager';
 import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
 import { AuthModule } from '../auth/auth.module';
-import { DatabaseModule } from '../database/database.module'; 
-import { PrismaService } from '../database/prisma.service';  
+import { DatabaseModule } from '../database/database.module';
+import { PrismaService } from '../database/prisma.service';
 import { EmailModule } from '../email/email.module';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { EmailService } from '../email/email.service';
@@ -14,8 +15,9 @@ import { EmailService } from '../email/email.service';
     DatabaseModule,
     EmailModule,
     PrismaModule,
+    CacheModule.register(),
   ],
-  providers: [UsersService, PrismaService, EmailService], 
+  providers: [UsersService, PrismaService, EmailService],
   controllers: [UsersController],
   exports: [UsersService],
 })

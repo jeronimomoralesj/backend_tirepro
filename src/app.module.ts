@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { CacheModule } from '@nestjs/cache-manager';
+import { redisStore } from 'cache-manager-ioredis-yet';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
@@ -18,13 +20,22 @@ import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
-    // Config must be first — all other modules may depend on env vars
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
 
-    // Database — single shared PrismaService across the whole app
-    PrismaModule,
+    // ── Global Redis cache — shared across ALL feature modules ────────────────
+    // Feature modules use CacheModule.register() locally just to satisfy DI,
+    // but this global registration is what actually connects to Redis.
+    CacheModule.registerAsync({
+      isGlobal: true,
+      useFactory: async () => ({
+        store: redisStore,
+        host:  process.env.REDIS_HOST ?? '127.0.0.1',
+        port:  parseInt(process.env.REDIS_PORT ?? '6379'),
+        ttl:   2 * 60 * 60 * 60 * 1000,
+      }),
+    }),
 
-    // Feature modules
+    PrismaModule,
     AuthModule,
     UsersModule,
     CompaniesModule,

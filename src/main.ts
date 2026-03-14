@@ -17,55 +17,50 @@ async function bootstrap() {
     logger: ['error', 'warn', 'log'],
   });
 
-  // ── Body size limits ────────────────────────────────────────────────────────
-  // 50mb covers the largest Excel bulk upload we expect.
-  // 600mb was excessive and wastes memory on every request parse.
   app.use(require('express').json({ limit: '50mb' }));
   app.use(require('express').urlencoded({ limit: '50mb', extended: true }));
 
-  // ── Global validation pipe ──────────────────────────────────────────────────
-  // Applied here as a fallback; controllers also declare their own pipes
-  // for tighter per-route control.
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist:            true,   // strip unknown fields
-      forbidNonWhitelisted: true,   // throw on unknown fields
-      transform:            true,   // coerce types (string → number, etc.)
+      whitelist:            true,
+      forbidNonWhitelisted: true,
+      transform:            true,
     }),
   );
 
-  // ── Global prefix ───────────────────────────────────────────────────────────
   app.setGlobalPrefix('api');
 
-  // ── CORS ────────────────────────────────────────────────────────────────────
   app.enableCors({
     origin: (incomingOrigin, callback) => {
-      // Allow requests with no origin (curl, mobile apps, Postman)
       if (!incomingOrigin) return callback(null, true);
-
-      // Always allow localhost in development
       if (
         incomingOrigin.startsWith('http://localhost') ||
         incomingOrigin.startsWith('http://127.0.0.1')
       ) {
         return callback(null, true);
       }
-
       if (ALLOWED_ORIGINS.includes(incomingOrigin)) {
         return callback(null, true);
       }
-
       callback(new Error(`CORS: origin "${incomingOrigin}" not allowed`), false);
     },
-    methods:             'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders:      'Content-Type,Authorization',
-    credentials:         true,
+    methods:              'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    allowedHeaders:       'Content-Type,Authorization',
+    credentials:          true,
     optionsSuccessStatus: HttpStatus.NO_CONTENT,
   });
 
   const port = process.env.PORT ?? 6001;
   await app.listen(port, '0.0.0.0');
   logger.log(`🚀 API running → http://0.0.0.0:${port}/api`);
+
+  // ── Cache connectivity check ──────────────────────────────────────────────
+  const redisHost = process.env.REDIS_HOST;
+  if (redisHost) {
+    logger.log(`🔴 Redis cache → ${redisHost}:${process.env.REDIS_PORT ?? '6379'}`);
+  } else {
+    logger.warn('⚠️  REDIS_HOST not set — cache running in-memory (dev mode)');
+  }
 }
 
 bootstrap().catch(err => {

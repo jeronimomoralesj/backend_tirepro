@@ -117,7 +117,10 @@ export class TireController {
       dto.banda,
       dto.costo,
       dto.profundidadInicial,
-      dto.desechos,
+      dto.proveedor,
+      dto.desechos
+        ? { ...dto.desechos, imageUrls: dto.imageUrls }
+        : undefined,
     );
   }
 

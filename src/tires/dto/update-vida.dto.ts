@@ -6,6 +6,9 @@ import {
   IsEnum,
   ValidateNested,
   Min,
+  IsArray,
+  ArrayMaxSize,
+  IsUrl,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -46,4 +49,14 @@ export class UpdateVidaDto {
   @ValidateNested()
   @Type(() => DesechoDto)
   desechos?: DesechoDto;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(3, { message: 'Maximum 3 images allowed' })
+  @IsString({ each: true })
+  imageUrls?: string[];
+
+  @IsOptional()
+  @IsString()
+  proveedor?: string;
 }

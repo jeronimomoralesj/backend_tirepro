@@ -3,6 +3,7 @@ import {
   BadRequestException,
   NotFoundException,
   Logger,
+  Inject,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { VehicleService } from '../vehicles/vehicle.service';
@@ -12,7 +13,8 @@ import { CreateTireDto } from './dto/create-tire.dto';
 import { UpdateInspectionDto } from './dto/update-inspection.dto';
 import { EjeType, TireAlertLevel, TireEventType, Prisma } from '@prisma/client';
 import * as XLSX from 'xlsx';
-
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { Cache } from 'cache-manager';
 // =============================================================================
 // Domain constants — single source of truth for all business rules
 // =============================================================================
@@ -352,7 +354,18 @@ export class TireService {
     private readonly vehicleService: VehicleService,
     private readonly notificationsService: NotificationsService,
     private readonly s3: S3Service,
+    @Inject(CACHE_MANAGER) private cache: Cache,
   ) {}
+
+  // ── Cache helpers ──────────────────────────────────────────────────────────
+
+  private tireKey(companyId: string) {
+    return `tires:${companyId}`;
+  }
+
+  private async invalidateCompanyCache(companyId: string) {
+    await this.cache.del(this.tireKey(companyId));
+  }
 
   // ===========================================================================
   // CREATE SINGLE TIRE
@@ -375,6 +388,37 @@ export class TireService {
 
     if (!company)              throw new BadRequestException('Invalid companyId');
     if (vehicleId && !vehicle) throw new BadRequestException('Invalid vehicleId');
+
+    // ── Duplicate check ───────────────────────────────────────────────────────
+if (placa?.trim()) {
+  const normalizedPlaca = placa.trim().toLowerCase();
+  const existing = await this.prisma.tire.findFirst({
+    where: { placa: normalizedPlaca, companyId },
+    include: {
+      vehicle: { select: { placa: true, tipovhc: true } },
+      inspecciones: { orderBy: { fecha: 'desc' }, take: 1 },
+    },
+  });
+
+  if (existing) {
+    return {
+      duplicate: true,
+      existingTire: {
+        id:        existing.id,
+        placa:     existing.placa,
+        marca:     existing.marca,
+        diseno:    existing.diseno,
+        dimension: existing.dimension,
+        eje:       existing.eje,
+        posicion:  existing.posicion,
+        vehicle:   existing.vehicle
+          ? { placa: existing.vehicle.placa, tipovhc: existing.vehicle.tipovhc }
+          : null,
+        suggestedPlaca: normalizedPlaca + '*',
+      },
+    };
+  }
+}
 
     const finalPlaca  = placa?.trim() ? placa.trim().toLowerCase() : generateTireId().toLowerCase();
     const instalacion = fechaInstalacion ? new Date(fechaInstalacion) : new Date();
@@ -453,6 +497,7 @@ export class TireService {
     ]);
 
     // Populate all cached analytics columns after children are written
+    await this.invalidateCompanyCache(dto.companyId);
     return this.refreshTireAnalyticsCache(newTire.id);
   }
 
@@ -681,15 +726,16 @@ export class TireService {
 
         // ── Branch B: new tire ────────────────────────────────────────────────
         } else {
-          const alreadyExists = await this.prisma.tire.findFirst({ where: { placa: tirePlaca } });
+          let finalTirePlaca = tirePlaca;
+          const alreadyExists = await this.prisma.tire.findFirst({ where: { placa: tirePlaca, companyId } });
           if (alreadyExists) {
-            errors.push(`Row ${rowNum}: Tire ID "${tirePlaca}" already exists. Skipped.`);
-            continue;
+            finalTirePlaca = tirePlaca + '*';
+            warnings.push(`Row ${rowNum}: ID "${tirePlaca}" duplicado — guardado como "${finalTirePlaca}"`);
           }
 
           const newTire = await this.prisma.tire.create({
             data: {
-              placa:                tirePlaca,
+              placa: finalTirePlaca,
               marca,
               diseno,
               dimension,
@@ -764,7 +810,7 @@ export class TireService {
                 profundidadInicial,
               );
             } catch (e: any) {
-              errors.push(`Row ${rowNum}: Reencauche failed for "${tirePlaca}" — ${e.message}`);
+              errors.push(`Row ${rowNum}: Reencauche failed for "${finalTirePlaca}" — ${e.message}`);
             }
           }
 
@@ -776,7 +822,7 @@ export class TireService {
         errors.push(`Row ${rowNum}: Unexpected error — ${err.message}`);
       }
     }
-
+    await this.invalidateCompanyCache(companyId);
     return {
       message:  `Carga completada. ${processedIds.size} llantas procesadas. ${warnings.length} advertencias. ${errors.length} errores.`,
       success:  processedIds.size,
@@ -791,16 +837,21 @@ export class TireService {
   // ===========================================================================
 
   async findTiresByCompany(companyId: string) {
-    return this.prisma.tire.findMany({
-      where:   { companyId },
-      include: {
-        inspecciones: { orderBy: { fecha: 'desc' } },
-        costos:       { orderBy: { fecha: 'asc'  } },
-        eventos:      { orderBy: { fecha: 'asc'  } },
-      },
-      orderBy: { lastInspeccionDate: 'desc' },
-    });
-  }
+  const cached = await this.cache.get(this.tireKey(companyId));
+  if (cached) return cached;
+
+  const tires = await this.prisma.tire.findMany({
+    where: { companyId },
+    include: {
+      inspecciones: { orderBy: { fecha: 'desc' } },
+      costos: true,
+      eventos: true,
+    },
+  });
+
+  await this.cache.set(this.tireKey(companyId), tires, 60 * 60 * 1000); // ← 1 hour
+  return tires;
+}
 
   async findTiresByVehicle(vehicleId: string) {
     if (!vehicleId) throw new BadRequestException('vehicleId is required');
@@ -949,7 +1000,7 @@ export class TireService {
         companyId: updatedTire.companyId,
       });
     }
-
+    await this.invalidateCompanyCache(tire.companyId);
     return updatedTire;
   }
 
@@ -963,7 +1014,8 @@ export class TireService {
     banda?: string,
     costo?: number,
     profundidadInicial?: number | string,
-    desechoData?: { causales: string; milimetrosDesechados: number },
+    proveedor?: string,
+    desechoData?: { causales: string; milimetrosDesechados: number; imageUrls?: string[] },
   ) {
     if (!newValor) throw new BadRequestException(`El campo 'valor' es obligatorio`);
 
@@ -1024,7 +1076,7 @@ export class TireService {
         tipo:     TireEventType.montaje,
         fecha:    now,
         notas:    normalizedValor,
-        metadata: toJson({ vidaValor: normalizedValor }),
+        metadata: toJson({ vidaValor: normalizedValor, proveedor: proveedor ?? null }),
       },
     });
 
@@ -1065,6 +1117,25 @@ export class TireService {
         throw new BadRequestException('Información de desecho incompleta');
       }
 
+      let finalImageUrls: string[] = [];
+      if (Array.isArray(desechoData.imageUrls) && desechoData.imageUrls.length > 0) {
+        finalImageUrls = await Promise.all(
+          desechoData.imageUrls.slice(0, 3).map(async (img, idx) => {
+            if (img.startsWith('data:')) {
+              const [header, b64] = img.split(',');
+              const mime = header.match(/data:(image\/\w+);/)?.[1] ?? 'image/jpeg';
+              return this.s3.uploadDesechoImage(
+                Buffer.from(b64, 'base64'),
+                tireId,
+                idx,
+                mime,
+              );
+            }
+            return img;
+          }),
+        );
+      }
+
       updateData.vehicle = { disconnect: true };
 
       const lastInsp    = tire.inspecciones[0];
@@ -1079,6 +1150,7 @@ export class TireService {
         milimetrosDesechados: desechoData.milimetrosDesechados,
         remanente:            Number((cpkActual * kmPerMm * desechoData.milimetrosDesechados).toFixed(2)),
         fecha:                now.toISOString(),
+        imageUrls:            finalImageUrls,
       });
     }
 
@@ -1089,6 +1161,7 @@ export class TireService {
     });
 
     await this.notificationsService.deleteByTire(tireId);
+    await this.invalidateCompanyCache(tire.companyId);
     return finalTire;
   }
 
@@ -1097,52 +1170,55 @@ export class TireService {
   // ===========================================================================
 
   async updateEvento(tireId: string, newValor: string) {
-    const tire = await this.prisma.tire.findUnique({
-      where:  { id: tireId },
-      select: { id: true },
-    });
-    if (!tire) throw new NotFoundException('Tire not found');
+  const tire = await this.prisma.tire.findUnique({
+    where:  { id: tireId },
+    select: { id: true, companyId: true },
+  });
+  if (!tire) throw new NotFoundException('Tire not found');
 
-    await this.prisma.tireEvento.create({
-      data: {
-        tireId,
-        tipo:  TireEventType.inspeccion,
-        fecha: new Date(),
-        notas: newValor,
-      },
-    });
+  await this.prisma.tireEvento.create({
+    data: {
+      tireId,
+      tipo:  TireEventType.inspeccion,
+      fecha: new Date(),
+      notas: newValor,
+    },
+  });
 
-    return this.prisma.tire.findUnique({
-      where:   { id: tireId },
-      include: { eventos: { orderBy: { fecha: 'asc' } } },
-    });
-  }
+  await this.invalidateCompanyCache(tire.companyId);
+
+  return this.prisma.tire.findUnique({
+    where:   { id: tireId },
+    include: { eventos: { orderBy: { fecha: 'asc' } } },
+  });
+}
 
   // ===========================================================================
   // UPDATE POSITIONS
   // ===========================================================================
 
   async updatePositions(placa: string, updates: Record<string, string | string[]>) {
-  const vehicle = await this.prisma.vehicle.findFirst({ where: { placa } });
+  const vehicle = await this.prisma.vehicle.findFirst({
+    where:  { placa },
+    select: { id: true, companyId: true },
+  });
   if (!vehicle) throw new NotFoundException('Vehicle not found');
-
-  // Remove the ownership check — tires may be freshly assigned from inventory
-  // and their vehicleId is set by assign-vehicle which runs just before this
 
   await this.prisma.$transaction(
     Object.entries(updates).flatMap(([pos, ids]) =>
       (Array.isArray(ids) ? ids : [ids]).map(tireId =>
         this.prisma.tire.update({
           where: { id: tireId },
-          data:  { 
-            posicion: parseInt(pos, 10) || 0,
-            vehicleId: vehicle.id,  // also set vehicleId here as a safety net
+          data:  {
+            posicion:  parseInt(pos, 10) || 0,
+            vehicleId: vehicle.id,
           },
         }),
       ),
     ),
   );
 
+  await this.invalidateCompanyCache(vehicle.companyId); // ← add this
   return { message: 'Positions updated successfully' };
 }
 
@@ -1171,42 +1247,59 @@ export class TireService {
   // ===========================================================================
 
   async removeInspection(tireId: string, fecha: string) {
-    const insp = await this.prisma.inspeccion.findFirst({
-      where:  { tireId, fecha: new Date(fecha) },
-      select: { id: true },
-    });
-    if (!insp) throw new NotFoundException('Inspection not found');
+  const insp = await this.prisma.inspeccion.findFirst({
+    where:  { tireId, fecha: new Date(fecha) },
+    select: { id: true },
+  });
+  if (!insp) throw new NotFoundException('Inspection not found');
 
-    await this.prisma.inspeccion.delete({ where: { id: insp.id } });
-    await this.refreshTireAnalyticsCache(tireId);
+  // ← add this
+  const { companyId } = await this.prisma.tire.findUniqueOrThrow({
+    where:  { id: tireId },
+    select: { companyId: true },
+  });
 
-    return { message: 'Inspección eliminada' };
-  }
+  await this.prisma.inspeccion.delete({ where: { id: insp.id } });
+  await this.refreshTireAnalyticsCache(tireId);
+  await this.invalidateCompanyCache(companyId); // ← add this
+  return { message: 'Inspección eliminada' };
+}
 
   // ===========================================================================
   // ASSIGN / UNASSIGN TIRES
   // ===========================================================================
 
   async assignTiresToVehicle(vehiclePlaca: string, tireIds: string[]) {
-    const vehicle = await this.prisma.vehicle.findFirst({ where: { placa: vehiclePlaca } });
-    if (!vehicle) throw new NotFoundException('Vehicle not found');
+  const vehicle = await this.prisma.vehicle.findFirst({
+    where:  { placa: vehiclePlaca },
+    select: { id: true, companyId: true }, // ← add companyId to select
+  });
+  if (!vehicle) throw new NotFoundException('Vehicle not found');
 
-    await this.prisma.tire.updateMany({
-      where: { id: { in: tireIds } },
-      data:  { vehicleId: vehicle.id },
-    });
+  await this.prisma.tire.updateMany({
+    where: { id: { in: tireIds } },
+    data:  { vehicleId: vehicle.id },
+  });
 
-    return { message: 'Tires assigned successfully', count: tireIds.length };
-  }
+  await this.invalidateCompanyCache(vehicle.companyId); // ← add this
+  return { message: 'Tires assigned successfully', count: tireIds.length };
+}
 
   async unassignTiresFromVehicle(tireIds: string[]) {
-    await this.prisma.tire.updateMany({
-      where: { id: { in: tireIds } },
-      data:  { vehicleId: null, posicion: 0 },
-    });
+  // ← add this lookup to get companyId before we nullify vehicleId
+  const sample = await this.prisma.tire.findFirst({
+    where:  { id: { in: tireIds } },
+    select: { companyId: true },
+  });
 
-    return { message: 'Tires unassigned successfully', count: tireIds.length };
-  }
+  await this.prisma.tire.updateMany({
+    where: { id: { in: tireIds } },
+    data:  { vehicleId: null, posicion: 0 },
+  });
+
+  if (sample) await this.invalidateCompanyCache(sample.companyId); // ← add this
+  return { message: 'Tires unassigned successfully', count: tireIds.length };
+}
 
   // ===========================================================================
   // EDIT TIRE
@@ -1328,6 +1421,7 @@ export class TireService {
     }
 
     // ── 5. Refresh full analytics cache ───────────────────────────────────────
+    await this.invalidateCompanyCache(tire.companyId);
     return this.refreshTireAnalyticsCache(tireId);
   }
 

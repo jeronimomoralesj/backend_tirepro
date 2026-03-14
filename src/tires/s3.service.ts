@@ -52,4 +52,16 @@ export class S3Service {
 
     return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
   }
+
+  async uploadDesechoImage(
+  buffer: Buffer,
+  tireId: string,
+  index: number,
+  contentType: string,
+): Promise<string> {
+  const ext = contentType.split('/')[1] ?? 'jpg';
+  const key = `tire-desechos/${tireId}-${index}-${Date.now()}.${ext}`;
+  return this.upload(buffer, key, contentType);
+}
+
 }

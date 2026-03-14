@@ -24,22 +24,27 @@ import { UpdateCompanyLogoDto } from './dto/update-company-logo.dto';
 export class CompaniesController {
   constructor(private readonly companiesService: CompaniesService) {}
 
+  // ── Search ────────────────────────────────────────────────────────────────
+
+  @Get('search/by-name')
+searchByName(
+  @Query('q') query: string,
+  @Query('exclude') excludeCompanyId?: string,
+  @Query('distributorsOnly') distributorsOnly?: string,
+) {
+  return this.companiesService.searchCompaniesByName(
+    query,
+    excludeCompanyId,
+    distributorsOnly === 'true',
+  );
+}
+
   // ── Authenticated / "me" routes  (must come before :param routes) ─────────
 
   @UseGuards(JwtAuthGuard)
   @Get('me/clients')
   getMyClients(@Req() req: any) {
     return this.companiesService.getClientsForDistributor(req.user.companyId);
-  }
-
-  // ── Search ────────────────────────────────────────────────────────────────
-
-  @Get('search/by-name')
-  searchByName(
-    @Query('q') query: string,
-    @Query('exclude') excludeCompanyId?: string,
-  ) {
-    return this.companiesService.searchCompaniesByName(query, excludeCompanyId);
   }
 
   // ── Admin list ────────────────────────────────────────────────────────────
@@ -96,4 +101,5 @@ export class CompaniesController {
   ) {
     return this.companiesService.revokeDistributorAccess(companyId, distributorId);
   }
+
 }
