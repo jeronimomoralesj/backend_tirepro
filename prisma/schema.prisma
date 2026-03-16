@@ -168,6 +168,7 @@ model Company {
   snapshots       CompanySnapshot[]
   vidaSnapshots   TireVidaSnapshot[]
   recommendations TireRecommendation[]
+  inventoryBuckets TireInventoryBucket[]
 
   @@index([plan])
 }
@@ -307,6 +308,15 @@ model Tire {
   primeraVida Json  @default("[]")  // @deprecated
   desechos    Json?                  // @deprecated
 
+  inventoryTag   String?   
+  inventoryBucketId String?
+  inventoryBucket   TireInventoryBucket? @relation(fields: [inventoryBucketId], references: [id])
+
+  lastVehicleId      String?
+  lastVehiclePlaca   String?
+  lastPosicion       Int?
+  inventoryEnteredAt DateTime?   
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -327,6 +337,8 @@ model Tire {
   @@index([companyId, lastInspeccionDate])
   @@index([companyId, vidaActual])           // fleet breakdown by vida phase
   @@index([dimension, marca])                // cross-fleet benchmark queries
+  @@index([companyId, inventoryBucketId])
+  @@index([companyId, inventoryEnteredAt])
 }
 
 // =============================================================================
@@ -882,4 +894,28 @@ model Income {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, date])
+}
+
+
+// =============================================================================
+// Inventory
+// =============================================================================
+
+model TireInventoryBucket {
+  id             String   @id @default(uuid())
+  companyId      String
+  nombre         String
+  color          String?
+  icono          String?
+  excluirDeFlota Boolean  @default(false)
+  orden          Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tires   Tire[]
+
+  @@unique([companyId, nombre])
+  @@index([companyId])
+  @@map("tire_inventory_buckets")
 }

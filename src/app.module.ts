@@ -17,6 +17,7 @@ import { CuponesModule } from './cupones/cupones.module';
 import { IncomeModule } from './income/income.module';
 import { EmailModule } from './email/email.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { InventoryBucketsModule } from './tires/inventory-bucket.module';
 
 @Module({
   imports: [
@@ -31,7 +32,7 @@ import { NotificationsModule } from './notifications/notifications.module';
         store: redisStore,
         host:  process.env.REDIS_HOST ?? '127.0.0.1',
         port:  parseInt(process.env.REDIS_PORT ?? '6379'),
-        ttl:   2 * 60 * 60 * 60 * 1000,
+        ttl:   60 * 60,
       }),
     }),
 
@@ -48,6 +49,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     CuponesModule,
     IncomeModule,
     EmailModule,
+    InventoryBucketsModule,
   ],
   controllers: [AppController],
   providers:   [AppService],

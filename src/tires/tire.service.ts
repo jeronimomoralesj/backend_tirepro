@@ -41,9 +41,9 @@ const C = {
   PREMIUM_TIRE_THRESHOLD:      2_100_000,
   LIMITE_LEGAL_MM:             2,
   // Pressure thresholds
-  PRESSURE_UNDER_WARN_PSI:     10,   // >10 PSI below recommended = warning
-  PRESSURE_UNDER_CRIT_PSI:     20,   // >20 PSI below recommended = critical
-  PRESSURE_HEALTH_PENALTY_PER_5PSI: 4, // health score penalty per 5 PSI under
+  PRESSURE_UNDER_WARN_PSI:     10,
+  PRESSURE_UNDER_CRIT_PSI:     20,
+  PRESSURE_HEALTH_PENALTY_PER_5PSI: 4,
   PRESSURE_MAX_HEALTH_PENALTY: 20,
 } as const;
 
@@ -195,6 +195,9 @@ function isVidaValue(s: string | null | undefined): s is VidaValue {
 
 /**
  * Core CPK / CPT calculation — single source of truth for all write paths.
+ *
+ * IMPORTANT: `cost` and `km` must be scoped to the current vida phase only.
+ * Use `resolveVidaCostAndKm()` to derive them before calling this function.
  */
 function calcCpkMetrics(
   totalCost: number,
@@ -222,6 +225,95 @@ function calcCpkMetrics(
   const cptProyectado   = projectedMonths > 0 ? totalCost / projectedMonths : 0;
 
   return { cpk, cpt, cpkProyectado, cptProyectado, projectedKm, projectedMonths };
+}
+
+// =============================================================================
+// NEW: Per-vida cost and km helpers
+// =============================================================================
+
+/**
+ * Returns the date at which a given vida phase began for a tire,
+ * based on its TireEvento history.
+ *
+ * Falls back to `installationDate` when no matching evento exists
+ * (e.g. for tires uploaded before the vida-transition eventos were tracked).
+ */
+function resolveVidaStartDate(
+  eventos: { fecha: Date | string; notas?: string | null }[],
+  vida: VidaValue,
+  installationDate: Date,
+): Date {
+  const evt = [...eventos]
+    .filter(e => e.notas === vida)
+    .sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime())
+    .at(0);
+  return evt ? new Date(evt.fecha) : installationDate;
+}
+
+/**
+ * Given a tire's full cost list and the start date of the current vida phase,
+ * returns only the costs that belong to this vida phase.
+ *
+ * A cost belongs to the current vida if its fecha >= vidaStartDate.
+ */
+function costsForVida(
+  costos: { valor: number; fecha: Date | string }[],
+  vidaStartDate: Date,
+): { valor: number; fecha: Date | string }[] {
+  return costos.filter(c => new Date(c.fecha) >= vidaStartDate);
+}
+
+/**
+ * Returns { costForVida, kmForVida } scoped to the current vida phase.
+ *
+ * kmForVida  = current accumulated tire km  MINUS  km at the start of this vida.
+ *              The km at vida start is taken from the first inspection of this vida
+ *              (kilometrosEstimados), falling back to 0 when no prior inspection exists.
+ *
+ * costForVida = sum of TireCosto entries dated on or after vidaStartDate.
+ *               If no cost exists in the vida window we fall back to the single
+ *               most-recent cost (covers tires that had their cost recorded once at
+ *               installation and never again).
+ */
+function resolveVidaCostAndKm(params: {
+  costos:               { valor: number; fecha: Date | string }[];
+  inspecciones:         { fecha: Date | string; kilometrosEstimados?: number | null }[];
+  eventos:              { fecha: Date | string; notas?: string | null }[];
+  vidaActual:           VidaValue;
+  currentKm:            number;  // tire.kilometrosRecorridos at the moment of the write
+  installationDate:     Date;
+}): { costForVida: number; kmForVida: number } {
+  const { costos, inspecciones, eventos, vidaActual, currentKm, installationDate } = params;
+
+  const vidaStart = resolveVidaStartDate(eventos, vidaActual, installationDate);
+
+  // ── Cost for this vida ───────────────────────────────────────────────────
+  const vidaCostos = costsForVida(costos, vidaStart);
+  let costForVida: number;
+
+  if (vidaCostos.length > 0) {
+    costForVida = vidaCostos.reduce((s, c) => s + c.valor, 0);
+  } else {
+    // Fallback: use the most recent cost entry (tire registered with a single cost)
+    const sorted = [...costos].sort(
+      (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime(),
+    );
+    costForVida = sorted.at(0)?.valor ?? 0;
+  }
+
+  // ── KM for this vida ─────────────────────────────────────────────────────
+  // Find the km value at the moment this vida started (first inspection of this vida).
+  const vidaInsps = inspecciones
+    .filter(i => new Date(i.fecha) >= vidaStart)
+    .sort((a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime());
+
+  // km recorded by the first inspection of this vida (= km at vida start)
+  const kmAtVidaStart = vidaInsps.at(0)?.kilometrosEstimados ?? 0;
+
+  // km accumulated within this vida = current total minus vida-start km
+  const kmForVida = Math.max(currentKm - kmAtVidaStart, 0);
+
+  return { costForVida, kmForVida };
 }
 
 /**
@@ -255,7 +347,6 @@ function calcHealthScore(
 
   let base = Math.round(depthScore * 0.5 + trendScore * 0.3 + irregScore * 0.2);
 
-  // Pressure penalty — only when both values are present
   if (presionPsi != null && presionRecomendadaPsi != null) {
     const deficit = presionRecomendadaPsi - presionPsi;
     if (deficit > 0) {
@@ -294,10 +385,6 @@ function deriveAlertLevel(healthScore: number, minDepth: number): TireAlertLevel
   return TireAlertLevel.ok;
 }
 
-/**
- * Resolve presionRecomendadaPsi from vehicle config for a given position.
- * Returns null when no config exists — pressure field stays optional.
- */
 function resolvePresionRecomendada(
   vehicle: any,
   posicion: number,
@@ -309,10 +396,6 @@ function resolvePresionRecomendada(
   return configs.find(c => c.posicion === posicion)?.presionRecomendadaPsi ?? null;
 }
 
-/**
- * Build the full TireVidaSnapshot data payload from a completed vida window.
- * Pure function — no DB calls, fully testable.
- */
 function buildVidaSnapshotPayload(params: {
   tire:         any;
   vida:         VidaValue;
@@ -348,7 +431,6 @@ function buildVidaSnapshotPayload(params: {
   const mesesTotales = diasTotales / 30;
   const kmTotales    = lastInsp?.kmEfectivos ?? lastInsp?.kilometrosEstimados ?? 0;
 
-  // profundidadInicial for this vida = depth at first inspection of this vida
   const profundidadInicial = firstInsp
     ? (firstInsp.profundidadInt + firstInsp.profundidadCen + firstInsp.profundidadExt) / 3
     : tire.profundidadInicial;
@@ -383,7 +465,6 @@ function buildVidaSnapshotPayload(params: {
   const presionMin  = presionData.length ? Math.min(...presionData) : null;
   const presionMax  = presionData.length ? Math.max(...presionData) : null;
 
-  // Desecho remanente: estimated value left on table
   let desechoRemanente: number | null = null;
   const desechoMilimetros = desechoData?.milimetrosDesechados ?? null;
   if (desechoMilimetros != null && lastInsp?.cpk && kmTotales > 0 && mmDesgastados > 0) {
@@ -477,7 +558,6 @@ const HEADER_MAP_A: Record<string, string> = {
   'tipovhc':              'tipovhc',
   'tipo de vehiculo':     'tipovhc',
   'tipo vhc':             'tipovhc',
-  // New optional pressure column
   'presion psi':          'presion_psi',
   'presión psi':          'presion_psi',
   'presion':              'presion_psi',
@@ -545,8 +625,6 @@ export class TireService {
     @Inject(CACHE_MANAGER) private cache: Cache,
   ) {}
 
-  // ── Cache helpers ──────────────────────────────────────────────────────────
-
   // ── Cache key helpers ─────────────────────────────────────────────────────
 
   private tireKey(companyId: string) {
@@ -561,12 +639,9 @@ export class TireService {
     return `benchmark:${marca}:${diseno}:${dimension}`;
   }
 
-  // TTLs in milliseconds
-  private static readonly TTL_COMPANY    = 60 * 60 * 1000;       // 1 hour  — full fleet list
-  private static readonly TTL_VEHICLE    = 10 * 60 * 1000;        // 10 min  — per-vehicle list (changes on inspection)
-  private static readonly TTL_BENCHMARK  = 24 * 60 * 60 * 1000;  // 24 hours — price benchmarks change nightly at most
-
-  // ── Cache invalidation ────────────────────────────────────────────────────
+  private static readonly TTL_COMPANY    = 60 * 60 * 1000;
+  private static readonly TTL_VEHICLE    = 10 * 60 * 1000;
+  private static readonly TTL_BENCHMARK  = 24 * 60 * 60 * 1000;
 
   private async invalidateCompanyCache(companyId: string) {
     await this.cache.del(this.tireKey(companyId));
@@ -576,9 +651,6 @@ export class TireService {
     await this.cache.del(this.vehicleKey(vehicleId));
   }
 
-  // ── Resolve current vida for a tire from its TireEvento history ──────────
-  // Returns the most recent VidaValue found in eventos, defaulting to 'nueva'.
-
   private resolveCurrentVida(eventos: any[]): VidaValue {
     const vidaEvts = eventos
       .filter(e => isVidaValue(e.notas))
@@ -587,18 +659,9 @@ export class TireService {
     return isVidaValue(last?.notas) ? (last!.notas as VidaValue) : VidaValue.nueva;
   }
 
-  // ── Find the date a given vida began ─────────────────────────────────────
-
   private resolveVidaStartDate(eventos: any[], vida: VidaValue, fallback: Date): Date {
-    const evt = [...eventos]
-      .filter(e => e.notas === vida)
-      .sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime())
-      .at(0);
-    return evt ? new Date(evt.fecha) : fallback;
+    return resolveVidaStartDate(eventos, vida, fallback);
   }
-
-  // ── Fetch TireBenchmark price for a given tire spec ──────────────────────
-  // Falls back to hardcoded constant when no benchmark row exists yet.
 
   private async fetchFallbackPrice(
     marca: string,
@@ -618,14 +681,10 @@ export class TireService {
       await this.cache.set(cacheKey, price, TireService.TTL_BENCHMARK);
       return price;
     } catch (_) {
-      // Table may not exist yet on first deploy — cache the constant so
-      // subsequent rows in the same upload don't retry the DB either.
       await this.cache.set(cacheKey, C.FALLBACK_TIRE_PRICE, TireService.TTL_BENCHMARK);
       return C.FALLBACK_TIRE_PRICE;
     }
   }
-
-  // ── Sum all cost entries for a tire ──────────────────────────────────────
 
   private async sumCostoById(tireId: string): Promise<number> {
     const result = await this.prisma.tireCosto.aggregate({
@@ -656,7 +715,6 @@ export class TireService {
     if (!company)              throw new BadRequestException('Invalid companyId');
     if (vehicleId && !vehicle) throw new BadRequestException('Invalid vehicleId');
 
-    // ── Duplicate check ───────────────────────────────────────────────────────
     if (placa?.trim()) {
       const normalizedPlaca = placa.trim().toLowerCase();
       const existing = await this.prisma.tire.findFirst({
@@ -690,7 +748,6 @@ export class TireService {
     const finalPlaca  = placa?.trim() ? placa.trim().toLowerCase() : generateTireId().toLowerCase();
     const instalacion = fechaInstalacion ? new Date(fechaInstalacion) : new Date();
 
-    // ── Determine initial vida from incoming eventos (if any) ─────────────────
     const incomingVidaEvt = Array.isArray(eventos)
       ? [...eventos]
           .filter(e => isVidaValue(e.notas))
@@ -718,15 +775,12 @@ export class TireService {
         alertLevel:           TireAlertLevel.ok,
         vidaActual:           initialVida,
         totalVidas:           0,
-        // Legacy JSON kept for backwards compat
         primeraVida:          toJson(Array.isArray(primeraVida) ? primeraVida : []),
         desechos:             desechos ?? null,
       },
     });
 
-    // ── Write child records in parallel ───────────────────────────────────────
     await Promise.all([
-      // Inspecciones — now includes vidaAlMomento and source
       Array.isArray(inspecciones) && inspecciones.length
         ? this.prisma.inspeccion.createMany({
             data: inspecciones.map((insp: InspectionRow) => ({
@@ -752,7 +806,6 @@ export class TireService {
           })
         : Promise.resolve(),
 
-      // Eventos
       Array.isArray(eventos) && eventos.length
         ? this.prisma.tireEvento.createMany({
             data: eventos.map((e: any) => ({
@@ -765,7 +818,6 @@ export class TireService {
           })
         : Promise.resolve(),
 
-      // Costos — new: include concepto when provided
       Array.isArray(costo) && costo.length
         ? this.prisma.tireCosto.createMany({
             data: costo.map((c: any) => ({
@@ -803,9 +855,6 @@ export class TireService {
     const processedIds = new Set<string>();
     const errors:   string[] = [];
     const warnings: string[] = [];
-
-    // Collect all tireIds that were written so we can batch-refresh analytics
-    // at the end instead of calling refreshTireAnalyticsCache per row (N+1 fix).
     const tireIdsToRefresh = new Set<string>();
 
     let lastTipoVHC = '';
@@ -857,7 +906,6 @@ export class TireService {
         const hasInsp  = profInt > 0 || profCen > 0 || profExt > 0;
         const minDepth = hasInsp ? calcMinDepth(profInt, profCen, profExt) : 0;
 
-        // Optional pressure from spreadsheet
         const presionRaw = safeFloat(get(row, 'presion_psi'), 0);
         const presionPsi = presionRaw > 0 ? presionRaw : null;
 
@@ -950,7 +998,6 @@ export class TireService {
         }
         const mesesEnUso = diasEnUso / 30;
 
-        // Resolve presion recomendada from vehicle config
         const presionRecomendada = vehicle
           ? resolvePresionRecomendada(vehicle, posicion)
           : null;
@@ -958,7 +1005,6 @@ export class TireService {
           ? presionPsi - presionRecomendada
           : null;
 
-        // Determine vidaAlMomento for the inspection
         const vidaAlMomento: VidaValue = isVidaValue(vidaValor)
           ? (vidaValor as VidaValue)
           : VidaValue.nueva;
@@ -976,11 +1022,35 @@ export class TireService {
         // ── Branch A: existing tire — append inspection ────────────────────────
         if (existing) {
           if (hasInsp) {
-            const priorKm   = existing.kilometrosRecorridos || 0;
-            const inspKm    = Math.max(kmEstimados, priorKm);
-            const totalCost = await this.sumCostoById(existing.id);
-            const metrics   = calcCpkMetrics(
-              totalCost, inspKm, mesesEnUso,
+            // -----------------------------------------------------------------
+            // FIX: Use only the cost and km that belong to the current vida
+            // phase, not the tire's full accumulated totals.
+            // -----------------------------------------------------------------
+            const existingWithRelations = await this.prisma.tire.findUnique({
+              where:   { id: existing.id },
+              include: {
+                costos:       { orderBy: { fecha: 'asc' } },
+                inspecciones: { orderBy: { fecha: 'asc' }, select: { fecha: true, kilometrosEstimados: true } },
+                eventos:      { orderBy: { fecha: 'asc' }, select: { fecha: true, notas: true } },
+              },
+            });
+
+            const vidaActual = existingWithRelations?.vidaActual ?? VidaValue.nueva;
+            const installDate = existingWithRelations?.fechaInstalacion ?? new Date();
+
+            const { costForVida, kmForVida } = resolveVidaCostAndKm({
+              costos:           existingWithRelations?.costos       ?? [],
+              inspecciones:     existingWithRelations?.inspecciones ?? [],
+              eventos:          existingWithRelations?.eventos      ?? [],
+              vidaActual,
+              currentKm:        kmEstimados,
+              installationDate: installDate,
+            });
+
+            const metrics = calcCpkMetrics(
+              costForVida,
+              kmForVida,
+              mesesEnUso,
               existing.profundidadInicial || profundidadInicial,
               minDepth,
             );
@@ -998,22 +1068,22 @@ export class TireService {
                 cptProyectado:        metrics.cptProyectado,
                 diasEnUso,
                 mesesEnUso,
-                kilometrosEstimados:  inspKm,
+                kilometrosEstimados:  kmEstimados,
                 kmActualVehiculo:     kmVehiculo || 0,
-                kmEfectivos:          inspKm,
+                kmEfectivos:          kmEstimados,
                 kmProyectado:         metrics.projectedKm,
                 imageUrl:             get(row, 'imageurl') || null,
                 presionPsi,
                 presionRecomendadaPsi: presionRecomendada,
                 presionDelta,
-                vidaAlMomento:        existing.vidaActual ?? VidaValue.nueva,
+                vidaAlMomento:        vidaActual,
                 source:               InspeccionSource.bulk_upload,
               },
             });
 
             await this.prisma.tire.update({
               where: { id: existing.id },
-              data:  { kilometrosRecorridos: inspKm, diasAcumulados: diasEnUso },
+              data:  { kilometrosRecorridos: kmEstimados, diasAcumulados: diasEnUso },
             });
 
             tireIdsToRefresh.add(existing.id);
@@ -1070,6 +1140,7 @@ export class TireService {
           }
 
           if (hasInsp) {
+            // For a brand-new tire, the full cost IS the vida cost — no prior vidas exist.
             const metrics = calcCpkMetrics(
               costoCell, kmEstimados, mesesEnUso, profundidadInicial, minDepth,
             );
@@ -1123,8 +1194,6 @@ export class TireService {
       }
     }
 
-    // Batch-refresh analytics — one round trip per tire, but sequential to
-    // avoid overwhelming the DB connection pool on large uploads.
     for (const tireId of tireIdsToRefresh) {
       try {
         await this.refreshTireAnalyticsCache(tireId);
@@ -1133,8 +1202,6 @@ export class TireService {
       }
     }
 
-    // Invalidate company cache once at the end (not per-row).
-    // Vehicle caches are invalidated per vehicle touched — collect unique vehicleIds.
     const vehicleIds = new Set<string>();
     for (const tireId of tireIdsToRefresh) {
       try {
@@ -1201,8 +1268,6 @@ export class TireService {
   }
 
   async findAllTires() {
-    // findAllTires is an admin/internal endpoint — no company scope so we
-    // use a single global key. Short TTL because this crosses all companies.
     const cacheKey = 'tires:all';
     const cached   = await this.cache.get(cacheKey);
     if (cached) return cached;
@@ -1211,7 +1276,7 @@ export class TireService {
       include: { inspecciones: { orderBy: { fecha: 'desc' }, take: 1 } },
     });
 
-    await this.cache.set(cacheKey, tires, TireService.TTL_VEHICLE); // 10 min
+    await this.cache.set(cacheKey, tires, TireService.TTL_VEHICLE);
     return tires;
   }
 
@@ -1228,7 +1293,8 @@ export class TireService {
       where:   { id: tireId },
       include: {
         costos:       { orderBy: { fecha: 'asc'  } },
-        inspecciones: { orderBy: { fecha: 'desc' }, take: 5 },
+        inspecciones: { orderBy: { fecha: 'asc'  } },  // asc — needed for vida-start km lookup
+        eventos:      { orderBy: { fecha: 'asc'  } },
         vehicle:      true,
       },
     });
@@ -1240,7 +1306,7 @@ export class TireService {
     const odometerSent = newVehicleKm > 0;
     const priorTireKm  = tire.kilometrosRecorridos || 0;
 
-    // ── KM delta — three fallback strategies ──────────────────────────────────
+    // ── KM delta ──────────────────────────────────────────────────────────────
     let kilometrosRecorridos: number;
     const kmDelta = dto.kmDelta ?? 0;
 
@@ -1248,7 +1314,7 @@ export class TireService {
       kilometrosRecorridos = priorTireKm + kmDelta;
     } else if (odometerSent && tire.inspecciones.length > 0) {
       const lastKnownVehicleKm =
-        tire.inspecciones[0].kmActualVehiculo ?? vehicle.kilometrajeActual ?? 0;
+        tire.inspecciones[tire.inspecciones.length - 1].kmActualVehiculo ?? vehicle.kilometrajeActual ?? 0;
       kilometrosRecorridos = priorTireKm + Math.max(newVehicleKm - lastKnownVehicleKm, 0);
     } else {
       kilometrosRecorridos = priorTireKm;
@@ -1267,9 +1333,24 @@ export class TireService {
       ? kilometrosRecorridos
       : Math.round(mesesEnUso * C.KM_POR_MES);
 
-    const totalCost = tire.costos.reduce((s, c) => s + c.valor, 0);
-    const metrics   = calcCpkMetrics(
-      totalCost, effectiveKm, mesesEnUso, tire.profundidadInicial, minDepth,
+    // -------------------------------------------------------------------------
+    // FIX: Compute CPK using only the cost and km from the current vida phase.
+    // -------------------------------------------------------------------------
+    const { costForVida, kmForVida } = resolveVidaCostAndKm({
+      costos:           tire.costos,
+      inspecciones:     tire.inspecciones,
+      eventos:          tire.eventos,
+      vidaActual:       tire.vidaActual ?? VidaValue.nueva,
+      currentKm:        effectiveKm,
+      installationDate: tire.fechaInstalacion ?? now,
+    });
+
+    const metrics = calcCpkMetrics(
+      costForVida,
+      kmForVida,
+      mesesEnUso,
+      tire.profundidadInicial,
+      minDepth,
     );
 
     // ── Pressure fields ────────────────────────────────────────────────────────
@@ -1282,14 +1363,11 @@ export class TireService {
       ? presionPsi - presionRecomendada
       : null;
 
-    // ── Source ────────────────────────────────────────────────────────────────
     const source: InspeccionSource = dto.source ?? InspeccionSource.manual;
 
-    // ── Inspector ─────────────────────────────────────────────────────────────
     const inspeccionadoPorId:     string | null = dto.inspeccionadoPorId     ?? null;
     const inspeccionadoPorNombre: string | null = dto.inspeccionadoPorNombre ?? null;
 
-    // ── Optional image upload to S3 ───────────────────────────────────────────
     let finalImageUrl = dto.imageUrl ?? null;
     if (dto.imageUrl?.startsWith('data:')) {
       const [header, b64] = dto.imageUrl.split(',');
@@ -1299,7 +1377,6 @@ export class TireService {
       );
     }
 
-    // ── CV model output (optional — populated by CV pipeline, not by frontend) ─
     const cvProfundidadInt: number | null = dto.cvProfundidadInt ?? null;
     const cvProfundidadCen: number | null = dto.cvProfundidadCen ?? null;
     const cvProfundidadExt: number | null = dto.cvProfundidadExt ?? null;
@@ -1324,7 +1401,6 @@ export class TireService {
         kmEfectivos:           effectiveKm,
         kmProyectado:          metrics.projectedKm,
         imageUrl:              finalImageUrl,
-        // New fields — all nullable so existing frontend calls are unaffected
         presionPsi,
         presionRecomendadaPsi: presionRecomendada,
         presionDelta,
@@ -1383,10 +1459,6 @@ export class TireService {
 
   // ===========================================================================
   // UPDATE VIDA
-  // This is the most structurally changed method.
-  // On every vida transition it now writes a TireVidaSnapshot capturing the
-  // complete performance record of the vida that just ended.
-  // The return shape is identical to the original so the frontend is unaffected.
   // ===========================================================================
 
   async updateVida(
@@ -1424,7 +1496,6 @@ export class TireService {
       }
     }
 
-    // Load full tire data needed to build the snapshot
     const tire = await this.prisma.tire.findUnique({
       where:   { id: tireId },
       include: {
@@ -1435,7 +1506,6 @@ export class TireService {
     });
     if (!tire) throw new NotFoundException('Tire not found');
 
-    // ── Enforce forward-only vida sequence ────────────────────────────────────
     const currentVida  = tire.vidaActual ?? this.resolveCurrentVida(tire.eventos);
     const currentIndex = VIDA_SEQUENCE.indexOf(currentVida);
 
@@ -1447,14 +1517,12 @@ export class TireService {
 
     const now = new Date();
 
-    // ── Find the start of the current vida ────────────────────────────────────
     const fechaInicioCurrentVida = this.resolveVidaStartDate(
       tire.eventos,
       currentVida,
       tire.fechaInstalacion ?? tire.createdAt,
     );
 
-    // ── Collect inspections and costs that belong to the current vida ─────────
     const vidaInsps  = tire.inspecciones.filter(
       (i: any) => new Date(i.fecha) >= fechaInicioCurrentVida,
     );
@@ -1462,7 +1530,6 @@ export class TireService {
       (c: any) => new Date(c.fecha) >= fechaInicioCurrentVida,
     );
 
-    // ── Upload desecho images if retiring the tire ─────────────────────────────
     let finalDesechoImageUrls: string[] = [];
     if (normalizedValor === VidaValue.fin && desechoData?.imageUrls?.length) {
       finalDesechoImageUrls = await Promise.all(
@@ -1477,16 +1544,12 @@ export class TireService {
       );
     }
 
-    // ── Determine motivoFin ───────────────────────────────────────────────────
-    // Use the override from the DTO if provided, otherwise derive from the
-    // transition type: reencauche* → MotivoFinVida.reencauche, fin → desgaste.
     const motivoFin: MotivoFinVida | undefined =
       motivoFinOverride
       ?? (normalizedValor.startsWith('reencauche') ? MotivoFinVida.reencauche :
           normalizedValor === VidaValue.fin        ? MotivoFinVida.desgaste   :
           undefined);
 
-    // ── Write TireVidaSnapshot for the vida that is ending ───────────────────
     const snapshotPayload = buildVidaSnapshotPayload({
       tire,
       vida:        currentVida,
@@ -1512,7 +1575,42 @@ export class TireService {
       },
     });
 
-    // ── Build Tire update payload ─────────────────────────────────────────────
+    // ── Auto-inspection on reencauche vida start ──────────────────────────────
+    if (normalizedValor.startsWith('reencauche') && parsedProfundidad !== null) {
+      // The new vida starts fresh — only the reencauche cost counts at this point.
+      const reencaucheCost = typeof costo === 'number' && costo > 0 ? costo : C.REENCAUCHE_COST;
+
+      const metrics = calcCpkMetrics(
+        reencaucheCost,
+        0, // km = 0 at the very start of a new vida
+        0, // months = 0 at the very start
+        parsedProfundidad,
+        parsedProfundidad, // no wear yet
+      );
+
+      await this.prisma.inspeccion.create({
+        data: {
+          tireId,
+          fecha:               now,
+          profundidadInt:      parsedProfundidad,
+          profundidadCen:      parsedProfundidad,
+          profundidadExt:      parsedProfundidad,
+          cpk:                 metrics.cpk,
+          cpkProyectado:       metrics.cpkProyectado,
+          cpt:                 metrics.cpt,
+          cptProyectado:       metrics.cptProyectado,
+          diasEnUso:           0,
+          mesesEnUso:          0,
+          kilometrosEstimados: tire.kilometrosRecorridos || 0,
+          kmActualVehiculo:    (tire as any).vehicle?.kilometrajeActual ?? 0,
+          kmEfectivos:         0, // km in THIS vida = 0 at start
+          kmProyectado:        metrics.projectedKm,
+          vidaAlMomento:       normalizedValor,
+          source:              InspeccionSource.manual,
+        },
+      });
+    }
+
     const updateData: Prisma.TireUpdateInput = {
       vidaActual: normalizedValor,
       totalVidas: { increment: 1 },
@@ -1524,7 +1622,6 @@ export class TireService {
 
     if (banda?.trim()) updateData.diseno = banda.trim();
 
-    // ── Add cost entry for reencauche ─────────────────────────────────────────
     if (normalizedValor.startsWith('reencauche')) {
       const costoValue = typeof costo === 'number' && costo > 0
         ? costo
@@ -1537,7 +1634,6 @@ export class TireService {
       }
     }
 
-    // ── Write vida transition as TireEvento ───────────────────────────────────
     await this.prisma.tireEvento.create({
       data: {
         tireId,
@@ -1552,9 +1648,6 @@ export class TireService {
       },
     });
 
-    // ── Legacy primeraVida JSON write (reencauche1 only) ─────────────────────
-    // Kept for backwards compat so any frontend reads of tire.primeraVida still
-    // get data. The authoritative record is now TireVidaSnapshot.
     if (normalizedValor === VidaValue.reencauche1) {
       const lastInsp   = tire.inspecciones.at(-1);
       const costoVal   = typeof costo === 'number' && costo > 0
@@ -1569,7 +1662,6 @@ export class TireService {
       }]);
     }
 
-    // ── Fin: detach from vehicle + write legacy desechos JSON ─────────────────
     if (normalizedValor === VidaValue.fin) {
       if (!desechoData?.causales || desechoData.milimetrosDesechados === undefined) {
         throw new BadRequestException('Información de desecho incompleta');
@@ -1577,7 +1669,12 @@ export class TireService {
 
       updateData.vehicle = { disconnect: true };
 
-      // Legacy write so existing reads of tire.desechos remain functional
+      updateData.inventoryBucket = { disconnect: true };
+      updateData.lastVehicleId      = null;
+      updateData.lastVehiclePlaca   = null;
+      updateData.lastPosicion       = null;
+      updateData.inventoryEnteredAt = null;
+
       updateData.desechos = toJson({
         causales:             desechoData.causales,
         milimetrosDesechados: desechoData.milimetrosDesechados,
@@ -1669,7 +1766,6 @@ export class TireService {
     const vehicle = await this.prisma.vehicle.findFirst({ where: { placa: vehiclePlaca } });
     if (!vehicle) throw new NotFoundException(`Vehicle ${vehiclePlaca} not found`);
 
-    // analyzeTires is a computed view — cache the analysis result per vehicle
     const cacheKey = `analysis:${vehicle.id}`;
     const cached   = await this.cache.get(cacheKey);
     if (cached) return cached;
@@ -1684,7 +1780,7 @@ export class TireService {
     if (!tires.length) throw new NotFoundException(`No tires for vehicle ${vehiclePlaca}`);
 
     const result = { vehicle, tires: tires.map(t => this.buildTireAnalysis(t)) };
-    await this.cache.set(cacheKey, result, TireService.TTL_VEHICLE); // 10 min
+    await this.cache.set(cacheKey, result, TireService.TTL_VEHICLE);
     return result;
   }
 
@@ -1736,16 +1832,31 @@ export class TireService {
   }
 
   async unassignTiresFromVehicle(tireIds: string[]) {
-    const sample = await this.prisma.tire.findFirst({
-      where:  { id: { in: tireIds } },
-      select: { companyId: true, vehicleId: true },
+    const tiresBeforeUnassign = await this.prisma.tire.findMany({
+      where:   { id: { in: tireIds } },
+      select:  { id: true, vehicleId: true, posicion: true, companyId: true,
+                vehicle: { select: { placa: true } } },
     });
 
-    await this.prisma.tire.updateMany({
-      where: { id: { in: tireIds } },
-      data:  { vehicleId: null, posicion: 0 },
-    });
+    const now = new Date();
 
+    await this.prisma.$transaction(
+      tiresBeforeUnassign.map((t) =>
+        this.prisma.tire.update({
+          where: { id: t.id },
+          data: {
+            vehicleId:          null,
+            posicion:           0,
+            lastVehicleId:      t.vehicleId   ?? null,
+            lastVehiclePlaca:   t.vehicle?.placa ?? null,
+            lastPosicion:       t.posicion    ?? 0,
+            inventoryEnteredAt: now,
+          },
+        }),
+      ),
+    );
+
+    const sample = tiresBeforeUnassign[0];
     if (sample) {
       await this.invalidateCompanyCache(sample.companyId);
       if (sample.vehicleId) {
@@ -1880,8 +1991,6 @@ export class TireService {
 
   // ===========================================================================
   // ANALYTICS CACHE REFRESH
-  // Called after every write that changes inspection data.
-  // All cached columns are populated here so dashboard reads are O(1).
   // ===========================================================================
 
   async refreshTireAnalyticsCache(tireId: string) {
@@ -1921,12 +2030,18 @@ export class TireService {
     const minDepth = calcMinDepth(pInt, pCen, pExt);
     const avgDepth = (pInt + pCen + pExt) / 3;
 
-    const last5    = inspecciones.slice(-5);
+    // -------------------------------------------------------------------------
+    // For the CPK trend we use only inspections of the current vida phase.
+    // The vidaAlMomento column on Inspeccion lets us filter without joining eventos.
+    // -------------------------------------------------------------------------
+    const vidaActual        = tire.vidaActual ?? VidaValue.nueva;
+    const vidaInspecciones  = inspecciones.filter(i => i.vidaAlMomento === vidaActual);
+
+    const last5    = vidaInspecciones.slice(-5);
     const cpkTrend = calcCpkTrend(
       last5.map(i => i.cpk ?? 0).filter(v => v > 0),
     );
 
-    // Health score now incorporates pressure penalty
     const healthScore = calcHealthScore(
       tire.profundidadInicial,
       minDepth,
@@ -1968,8 +2083,6 @@ export class TireService {
 
   // ===========================================================================
   // PRIVATE: BUILD TIRE ANALYSIS
-  // Used by analyzeTires() and notification generation.
-  // Reads cached columns when available — no recomputation on read path.
   // ===========================================================================
 
   private buildTireAnalysis(tire: any): TireAnalysis {
@@ -1999,8 +2112,12 @@ export class TireService {
 
     const profundidadActual = (pInt + pCen + pExt) / 3;
     const minDepth          = calcMinDepth(pInt, pCen, pExt);
-    const cpkTrend          = calcCpkTrend(
-      sorted.slice(0, 5).map(i => i.cpk ?? 0).filter(Boolean),
+
+    // Use only current-vida inspections for the trend
+    const vidaActual     = tire.vidaActual ?? VidaValue.nueva;
+    const vidaSorted     = sorted.filter(i => i.vidaAlMomento === vidaActual);
+    const cpkTrend       = calcCpkTrend(
+      vidaSorted.slice(0, 5).map(i => i.cpk ?? 0).filter(Boolean),
     );
 
     const healthScore = tire.healthScore
@@ -2017,7 +2134,6 @@ export class TireService {
     );
     const cpk = latest.cpk ?? 0;
 
-    // Pressure under-inflation indicator
     const presionDeficit = (latest.presionPsi != null && latest.presionRecomendadaPsi != null)
       ? latest.presionRecomendadaPsi - latest.presionPsi
       : 0;
