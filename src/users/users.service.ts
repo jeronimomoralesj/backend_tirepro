@@ -223,8 +223,7 @@ export class UsersService {
 
   async updateNotificationPrefs(
     userId: string,
-    notifChannel: string | null,
-    notifContact: string | null,
+    body: { notifChannel?: string | null; notifContact?: string | null; saturnVUnlocked?: boolean },
   ) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -232,10 +231,15 @@ export class UsersService {
     });
     if (!user) throw new NotFoundException('User not found');
 
+    const data: Record<string, any> = {};
+    if (body.notifChannel !== undefined) data.notifChannel = body.notifChannel;
+    if (body.notifContact !== undefined) data.notifContact = body.notifContact;
+    if (body.saturnVUnlocked !== undefined) data.saturnVUnlocked = body.saturnVUnlocked;
+
     const updated = await this.prisma.user.update({
       where: { id: userId },
-      data: { notifChannel, notifContact },
-      select: { id: true, notifChannel: true, notifContact: true },
+      data,
+      select: { id: true, notifChannel: true, notifContact: true, saturnVUnlocked: true },
     });
 
     await this.invalidateUserCache(userId, user.companyId);
@@ -245,7 +249,7 @@ export class UsersService {
   async getNotificationPrefs(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, notifChannel: true, notifContact: true },
+      select: { id: true, notifChannel: true, notifContact: true, saturnVUnlocked: true },
     });
     if (!user) throw new NotFoundException('User not found');
     return user;

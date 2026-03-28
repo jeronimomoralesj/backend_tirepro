@@ -108,9 +108,9 @@ export class UsersController {
   @UseGuards(JwtAuthGuard)
   updateNotificationPrefs(
     @Param('id') userId: string,
-    @Body() body: { notifChannel: string | null; notifContact: string | null },
+    @Body() body: { notifChannel?: string | null; notifContact?: string | null; saturnVUnlocked?: boolean },
   ) {
-    return this.usersService.updateNotificationPrefs(userId, body.notifChannel, body.notifContact);
+    return this.usersService.updateNotificationPrefs(userId, body);
   }
 
   @Get(':id/notification-prefs')
