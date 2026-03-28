@@ -15,13 +15,13 @@ export class EmailService implements OnModuleInit {
     this.emailUser = this.configService.get<string>('EMAIL_USER') || '';
     this.emailPassword = this.configService.get<string>('EMAIL_PASSWORD') || '';
 
-    console.log('📧 Initializing email service...');
-    console.log('EMAIL_USER:', this.emailUser || '❌ MISSING');
-    console.log('EMAIL_PASSWORD:', this.emailPassword ? `✅ SET (${this.emailPassword.length} characters)` : '❌ MISSING');
+    
+    // credentials verified at startup — no logging of secrets
+    
 
     if (!this.emailUser || !this.emailPassword) {
-      console.error('❌ EMAIL CREDENTIALS ARE MISSING!');
-      console.error('Make sure EMAIL_USER and EMAIL_PASSWORD are set in your .env file');
+      
+      
       throw new Error('Email credentials not configured');
     }
 
@@ -36,9 +36,9 @@ export class EmailService implements OnModuleInit {
     // Verify transporter configuration
     this.transporter.verify((error, success) => {
       if (error) {
-        console.error('❌ Email transporter verification failed:', error);
+        
       } else {
-        console.log('✅ Email transporter is ready to send emails');
+        
       }
     });
   }
@@ -57,11 +57,11 @@ export class EmailService implements OnModuleInit {
 
     try {
       const info = await this.transporter.sendMail(mailOptions);
-      console.log(`✅ Email sent to ${to}. MessageId: ${info.messageId}`);
+      
       return { message: 'Email sent successfully' };
     } catch (error) {
-      console.error('❌ Error sending email:', error.message);
-      console.error('Full error:', error);
+      
+      
       throw new InternalServerErrorException('Failed to send email');
     }
   }
@@ -652,5 +652,147 @@ async sendWelcomeEmail(to: string, name: string) {
       <p>Saludos,<br/><strong>Equipo TirePro</strong></p>
     `;
     return this.sendEmail(to, `Invitación a ${companyName} en TirePro`, htmlContent);
+  }
+
+  // ── Purchase proposal notification ──────────────────────────────────────────
+
+  async sendPurchaseProposalNotification(
+    distributorEmail: string,
+    clientName: string,
+    itemSummary: string,
+    urgency: string,
+  ) {
+    const html = `
+      <div style="font-family: 'Inter', sans-serif; line-height: 1.6; color: #0A183A; max-width: 600px; margin: 0 auto; background-color: #f8f8f8; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #0A183A; border-top-left-radius: 12px; border-top-right-radius: 12px;">
+          <tr>
+            <td style="padding: 30px; text-align: center;">
+              <h1 style="color: #ffffff; font-size: 22px; margin: 0;">Nueva Solicitud de Compra</h1>
+            </td>
+          </tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; padding: 30px;">
+          <tr>
+            <td style="padding: 24px;">
+              <p style="font-size: 16px; margin-bottom: 16px; color: #0A183A;">
+                <strong>${clientName}</strong> ha enviado una solicitud de compra.
+              </p>
+              <div style="background: #f0f7ff; border-left: 4px solid #1E76B6; padding: 16px; border-radius: 8px; margin-bottom: 16px;">
+                <p style="font-size: 14px; color: #173D68; margin: 0 0 8px 0;"><strong>Resumen:</strong> ${itemSummary}</p>
+                <p style="font-size: 14px; color: #173D68; margin: 0;"><strong>Urgencia:</strong> ${urgency}</p>
+              </div>
+              <p style="font-size: 14px; color: #64748b; margin-bottom: 24px;">
+                Ingresa a TirePro para revisar los detalles y enviar tu cotizacion.
+              </p>
+              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center">
+                    <a href="https://tirepro.com.co/dashboard/pedidosDist" style="font-size: 16px; color: #ffffff; text-decoration: none; border-radius: 8px; background-color: #348CCB; padding: 14px 28px; border: 1px solid #1E76B6; display: inline-block; font-weight: bold;">
+                      Ver Solicitud
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #173D68; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
+          <tr>
+            <td style="padding: 20px; text-align: center;">
+              <p style="font-size: 12px; color: #ffffff; margin: 0;">&copy; ${new Date().getFullYear()} TirePro. Todos los derechos reservados.</p>
+            </td>
+          </tr>
+        </table>
+      </div>
+    `;
+
+    return this.sendEmail(distributorEmail, 'Nueva Solicitud de Compra — TirePro', html);
+  }
+
+  // ── Driver alert message (plain text for WhatsApp/SMS) ──────────────────────
+
+  generateDriverAlertMessage(
+    vehiclePlaca: string,
+    tirePlaca: string,
+    tirePosition: number,
+    issue: string,
+    action: string,
+    confirmLink: string,
+  ): string {
+    return [
+      `⚠️ Alerta TirePro`,
+      `🚛 Vehículo: ${vehiclePlaca}`,
+      `🔧 Llanta: ${tirePlaca} (Posición ${tirePosition})`,
+      ``,
+      `Problema: ${issue}`,
+      ``,
+      `Acción requerida:`,
+      action,
+      ``,
+      `✅ Cuando hayas completado la acción, confirma aquí:`,
+      confirmLink,
+      ``,
+      `Si tienes dudas, contacta a tu supervisor.`,
+    ].join('\n');
+  }
+
+  // ── Driver alert email (wraps plain text in HTML template) ──────────────────
+
+  async sendDriverAlertEmail(
+    driverEmail: string,
+    driverName: string,
+    messageText: string,
+  ) {
+    // Extract confirm link from message text
+    const linkMatch = messageText.match(/https?:\/\/[^\s]+/);
+    const confirmLink = linkMatch ? linkMatch[0] : 'https://tirepro.com.co';
+
+    // Escape HTML and convert newlines to <br>
+    const bodyHtml = messageText
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>');
+
+    const html = `
+      <div style="font-family: 'Inter', sans-serif; line-height: 1.6; color: #0A183A; max-width: 600px; margin: 0 auto; background-color: #f8f8f8; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #0A183A; border-top-left-radius: 12px; border-top-right-radius: 12px;">
+          <tr>
+            <td style="padding: 30px; text-align: center;">
+              <h1 style="color: #ffffff; font-size: 22px; margin: 0;">Alerta TirePro</h1>
+              <p style="color: rgba(255,255,255,0.6); font-size: 14px; margin: 8px 0 0 0;">Accion Requerida</p>
+            </td>
+          </tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; padding: 30px;">
+          <tr>
+            <td style="padding: 24px;">
+              <p style="font-size: 16px; margin-bottom: 20px; color: #0A183A;">Hola <strong>${driverName}</strong>,</p>
+              <div style="background: #fffbeb; border-left: 4px solid #f97316; padding: 16px; border-radius: 8px; margin-bottom: 24px; font-size: 14px; color: #173D68; white-space: pre-line;">
+                ${bodyHtml}
+              </div>
+              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center">
+                    <a href="${confirmLink}" style="font-size: 16px; color: #ffffff; text-decoration: none; border-radius: 8px; background-color: #22c55e; padding: 14px 28px; border: 1px solid #16a34a; display: inline-block; font-weight: bold;">
+                      Confirmar Accion
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #173D68; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
+          <tr>
+            <td style="padding: 20px; text-align: center;">
+              <p style="font-size: 12px; color: #ffffff; margin: 0;">&copy; ${new Date().getFullYear()} TirePro. Todos los derechos reservados.</p>
+            </td>
+          </tr>
+        </table>
+      </div>
+    `;
+
+    return this.sendEmail(driverEmail, '⚠️ Alerta TirePro — Acción Requerida', html);
   }
 }

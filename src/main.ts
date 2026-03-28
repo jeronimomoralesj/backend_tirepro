@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, HttpStatus, Logger } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import helmet from 'helmet';
 
 const logger = new Logger('Bootstrap');
 
@@ -17,8 +18,30 @@ async function bootstrap() {
     logger: ['error', 'warn', 'log'],
   });
 
-  app.use(require('express').json({ limit: '50mb' }));
-  app.use(require('express').urlencoded({ limit: '50mb', extended: true }));
+  // ── Security headers ────────────────────────────────────────────────────
+  app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+  }));
+
+  // ── Request logging (4xx/5xx) ───────────────────────────────────────────
+  app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      const duration = Date.now() - start;
+      if (res.statusCode >= 400) {
+        Logger.warn(
+          `${req.method} ${req.url} ${res.statusCode} ${duration}ms — IP: ${req.ip}`,
+          'HTTP',
+        );
+      }
+    });
+    next();
+  });
+
+  // ── Body size limits ────────────────────────────────────────────────────
+  app.use(require('express').json({ limit: '10mb' }));
+  app.use(require('express').urlencoded({ limit: '10mb', extended: true }));
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -52,14 +75,14 @@ async function bootstrap() {
 
   const port = process.env.PORT ?? 6001;
   await app.listen(port, '0.0.0.0');
-  logger.log(`🚀 API running → http://0.0.0.0:${port}/api`);
+  logger.log(`API running → http://0.0.0.0:${port}/api`);
 
   // ── Cache connectivity check ──────────────────────────────────────────────
   const redisHost = process.env.REDIS_HOST;
-  if (redisHost) {
-    logger.log(`🔴 Redis cache → ${redisHost}:${process.env.REDIS_PORT ?? '6379'}`);
+  if (redisHost && process.env.NODE_ENV === 'production') {
+    logger.log(`Redis cache → ${redisHost}:${process.env.REDIS_PORT ?? '6379'}`);
   } else {
-    logger.warn('⚠️  REDIS_HOST not set — cache running in-memory (dev mode)');
+    logger.log('Cache running in-memory (set NODE_ENV=production for Redis)');
   }
 }
 

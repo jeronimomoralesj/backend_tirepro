@@ -7,6 +7,7 @@ import {
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
@@ -31,6 +32,7 @@ interface AuthUser {
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  @Throttle({ short: { limit: 5, ttl: 300000 } }) // 5 registrations per 5 min
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   async register(
@@ -39,6 +41,7 @@ export class AuthController {
     return this.authService.register(dto.email, dto.name, dto.password);
   }
 
+  @Throttle({ short: { limit: 3, ttl: 60000 } }) // 3 login attempts per minute
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(

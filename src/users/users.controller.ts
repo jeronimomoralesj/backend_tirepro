@@ -63,7 +63,6 @@ export class UsersController {
           await this.emailService.sendWelcomeEmailEs(user.email, user.name);
         }
       } catch (err: any) {
-        console.error(`Failed to send welcome email to ${user.email}: ${err.message}`);
       }
     });
 
@@ -104,6 +103,21 @@ export class UsersController {
   // ===========================================================================
   // Update
   // ===========================================================================
+
+  @Patch(':id/notification-prefs')
+  @UseGuards(JwtAuthGuard)
+  updateNotificationPrefs(
+    @Param('id') userId: string,
+    @Body() body: { notifChannel: string | null; notifContact: string | null },
+  ) {
+    return this.usersService.updateNotificationPrefs(userId, body.notifChannel, body.notifContact);
+  }
+
+  @Get(':id/notification-prefs')
+  @UseGuards(JwtAuthGuard)
+  getNotificationPrefs(@Param('id') userId: string) {
+    return this.usersService.getNotificationPrefs(userId);
+  }
 
   @Patch(':id/change-password')
   @UseGuards(JwtAuthGuard)

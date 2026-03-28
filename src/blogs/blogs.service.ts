@@ -33,13 +33,6 @@ export class BlogService {
     const smtpUser = this.configService.get<string>('SMTP_USER');
     const smtpPass = this.configService.get<string>('SMTP_PASS');
 
-    console.log('SMTP Configuration:', {
-      host: smtpHost,
-      port: smtpPort,
-      user: smtpUser ? `${smtpUser.substring(0, 3)}***` : 'NOT_SET',
-      passwordSet: !!smtpPass
-    });
-
     this.transporter = nodemailer.createTransport({
       host: smtpHost,
       port: smtpPort,
@@ -67,10 +60,7 @@ export class BlogService {
   private async testConnection() {
     try {
       await this.transporter.verify();
-      console.log('✅ SMTP connection verified successfully');
     } catch (error) {
-      console.error('❌ SMTP connection failed:', error.message);
-      console.error('Full error:', error);
     }
   }
 
@@ -138,14 +128,11 @@ export class BlogService {
         },
       });
 
-      console.log('🔐 Password generated, attempting to send email...');
       
       // Send email with retry logic
       await this.sendPasswordEmailWithRetry(password);
       
-      console.log('✅ Password email sent successfully');
     } catch (error) {
-      console.error('❌ Error in generatePassword:', error);
       throw new BadRequestException(`Error generating password: ${error.message}`);
     }
   }
@@ -189,11 +176,9 @@ export class BlogService {
   private async sendPasswordEmailWithRetry(password: string, maxRetries = 3): Promise<void> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        console.log(`📧 Email attempt ${attempt}/${maxRetries}`);
         await this.sendPasswordEmail(password);
         return; // Success, exit retry loop
       } catch (error) {
-        console.error(`❌ Email attempt ${attempt} failed:`, error.message);
         
         if (attempt === maxRetries) {
           throw error; // Last attempt failed, throw error
@@ -201,7 +186,6 @@ export class BlogService {
         
         // Wait before retrying (exponential backoff)
         const delay = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
-        console.log(`⏳ Waiting ${delay}ms before retry...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -248,18 +232,8 @@ export class BlogService {
     };
 
     try {
-      console.log('📤 Sending email to:', mailOptions.to);
-      const info = await this.transporter.sendMail(mailOptions);
-      console.log('✅ Email sent successfully:', info.messageId);
-      console.log('📋 Response:', info.response);
+      await this.transporter.sendMail(mailOptions);
     } catch (error) {
-      console.error('❌ Detailed email error:', {
-        message: error.message,
-        code: error.code,
-        command: error.command,
-        response: error.response,
-        responseCode: error.responseCode,
-      });
       throw error;
     }
   }

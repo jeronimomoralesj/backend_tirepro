@@ -15,14 +15,26 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyScopeGuard } from '../auth/guards/company-scope.guard';
 import { VehicleService } from './vehicle.service';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 import { UpdateKilometrajeDto } from './dto/update-kilometraje.dto';
 import { UnionDto } from './dto/union.dto';
+import { DriverDto } from './dto/driver.dto';
+import { IsArray, ArrayMaxSize, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+
+class UpdateDriversDto {
+  @IsArray()
+  @ArrayMaxSize(3)
+  @ValidateNested({ each: true })
+  @Type(() => DriverDto)
+  drivers: DriverDto[];
+}
 
 @Controller('vehicles')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, CompanyScopeGuard)
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class VehicleController {
   constructor(private readonly vehicleService: VehicleService) {}
@@ -39,6 +51,7 @@ getByPlaca(@Query('placa') placa: string) {  // ← 'placa' not 'by-placa'
   if (!placa) throw new BadRequestException('placa query param is required');
   return this.vehicleService.findByPlaca(placa);
 }
+
 
   // ── Create ────────────────────────────────────────────────────────────────
 
@@ -90,6 +103,21 @@ getByPlaca(@Query('placa') placa: string) {  // ← 'placa' not 'by-placa'
     @Body() dto: UnionDto,
   ) {
     return this.vehicleService.removeFromUnion(vehicleId, dto.placa);
+  }
+
+  // ── Drivers ──────────────────────────────────────────────────────────────
+
+  @Get(':id/drivers')
+  getDrivers(@Param('id') id: string) {
+    return this.vehicleService.getDriversForVehicle(id);
+  }
+
+  @Patch(':id/drivers')
+  updateDrivers(
+    @Param('id') id: string,
+    @Body() dto: UpdateDriversDto,
+  ) {
+    return this.vehicleService.updateDrivers(id, dto.drivers);
   }
 
   // ── Delete ────────────────────────────────────────────────────────────────

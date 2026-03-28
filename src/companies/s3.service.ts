@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, BadRequestException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 
@@ -22,11 +22,25 @@ export class S3Service {
     });
   }
 
+  private validateImage(buffer: Buffer): void {
+    const isJpeg = buffer[0] === 0xFF && buffer[1] === 0xD8;
+    const isPng  = buffer[0] === 0x89 && buffer[1] === 0x50;
+    const isWebp = buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP';
+
+    if (!isJpeg && !isPng && !isWebp) {
+      throw new BadRequestException('Invalid image format. Only JPEG, PNG, and WebP are allowed.');
+    }
+    if (buffer.length > 5 * 1024 * 1024) {
+      throw new BadRequestException('Image too large. Maximum size is 5MB.');
+    }
+  }
+
   async uploadCompanyLogo(
     buffer: Buffer,
     companyId: string,
     contentType: string,
   ): Promise<string> {
+    this.validateImage(buffer);
     const ext = contentType.split('/')[1] ?? 'jpg';
     const key = `profilepics/${companyId}-${Date.now()}.${ext}`;
 

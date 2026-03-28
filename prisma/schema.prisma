@@ -67,6 +67,16 @@ enum TireEventType {
   retiro
   inspeccion
   reencauche
+  regrabado
+}
+
+// Tire tread design — determines valid axle positions and wear expectations
+enum TireDesignType {
+  direccional
+  traccion
+  toda_posicion
+  mixto
+  regional
 }
 
 // How an inspection was created — critical for CV model training data quality:
@@ -119,6 +129,11 @@ model User {
   isVerified        Boolean  @default(false)
   verificationToken String?
   preferredLanguage String   @default("es")
+
+  // Notification preferences — how this user wants to receive alerts
+  notifChannel  String?   // 'email' | 'whatsapp' | 'none'  (null = not configured)
+  notifContact  String?   // email address or phone number depending on channel
+
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -159,6 +174,12 @@ model Company {
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
+  // Distributor-only: attention email for receiving purchase proposals
+  emailAtencion  String?
+
+  // Agent automation configuration
+  agentSettings  Json    @default("{\"agentEnabled\":false,\"alertMode\":\"display_only\",\"purchaseMode\":\"manual\"}")
+
   distributors    DistributorAccess[]  @relation("CompanyDistributors")
   clients         DistributorAccess[]  @relation("DistributorClients")
   users           User[]
@@ -169,6 +190,8 @@ model Company {
   vidaSnapshots   TireVidaSnapshot[]
   recommendations TireRecommendation[]
   inventoryBuckets TireInventoryBucket[]
+  orders          PurchaseOrder[] @relation("CompanyOrders")
+  receivedOrders  PurchaseOrder[] @relation("DistributorOrders")
 
   @@index([plan])
 }
@@ -199,14 +222,13 @@ model Vehicle {
   companyId         String
   cliente           String?
 
-  // Axle/position layout config — kept as JSON because it is a
-  // variable-structure layout config, not queryable analytics data.
-  // Shape: { ejeId, ejeType, positions: number[] }[]
-  union Json @default("[]")
+  // NUEVO 🔽
+  tipoOperacion String? // formato: "90-10" (pavimento-trocha)
 
-  // Pressure reference map per position — auto-fills Inspeccion.presionRecomendadaPsi
-  // at write time so technicians don't need to know the spec manually.
-  // Shape: { posicion: number, presionRecomendadaPsi: number }[]
+  // NUEVO 🔽
+  configuracion String? // formato: "4-4", "6-4", "2-2-2"
+
+  union Json @default("[]")
   presionesRecomendadas Json @default("[]")
 
   createdAt DateTime @default(now())
@@ -218,10 +240,34 @@ model Vehicle {
   notifications      Notification[]
   userAccess         UserVehicleAccess[]
   vehicleInspections VehicleInspection[]
+  drivers            VehicleDriver[]
 
   @@unique([companyId, placa])
   @@index([companyId])
   @@index([placa])
+
+  // NUEVOS ÍNDICES 🔽
+  @@index([tipoOperacion])
+  @@index([configuracion])
+}
+
+// =============================================================================
+// VEHICLE DRIVER
+// Up to 3 drivers per vehicle — used for messaging when tire issues are detected.
+// =============================================================================
+
+model VehicleDriver {
+  id        String   @id @default(uuid())
+  vehicleId String
+  nombre    String
+  telefono  String
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId])
+  @@map("vehicle_drivers")
 }
 
 // =============================================================================
@@ -272,8 +318,15 @@ model Tire {
   diseno             String
   dimension          String
   eje                EjeType
+  tipoDiseno         TireDesignType?   // tread design (direccional/traccion/toda_posicion/mixto/regional)
   posicion           Int     @default(0)
   profundidadInicial Float
+
+  // Dual (gemela) tire pairing — for twin configurations on the same axle side
+  dualPartnerId      String?           // FK to the paired tire (mutual relationship)
+
+  // Regrooving eligibility
+  isRegrabable       Boolean @default(false)
 
   // Current vida state — denormalized from TireEvento for fast reads
   vidaActual VidaValue @default(nueva)
@@ -299,6 +352,16 @@ model Tire {
   healthScore          Int?            // 0–100 composite (depth 50%, trend 30%, irregularity 20%)
   alertLevel           TireAlertLevel  @default(ok)
   lastInspeccionDate   DateTime?
+
+  // ── Projected state (updated daily by cron, never by inspections) ────────
+  // These estimate the tire's CURRENT condition based on degradation rate.
+  // Inspections overwrite these on every write.
+  projectedProfundidad     Float?
+  projectedAlertLevel      TireAlertLevel?
+  projectedHealthScore     Int?
+  projectedDaysToLimit     Int?
+  degradationRateMmPerDay  Float?
+  projectionUpdatedAt      DateTime?
 
   // -------------------------------------------------------------------------
   // LEGACY JSON — kept read-only after backfill migration. Do not write here.
@@ -636,6 +699,42 @@ model TireRecommendation {
 }
 
 // =============================================================================
+// PURCHASE ORDER
+// Fleet → Distributor solicitud/cotización workflow.
+// =============================================================================
+
+model PurchaseOrder {
+  id              String   @id @default(uuid())
+  companyId       String
+  distributorId   String
+  status          String   @default("solicitud_enviada")
+  // solicitud_enviada | cotizacion_recibida | aceptada | rechazada | completada
+
+  items           Json     // [{ tireId?, marca, dimension, cantidad, tipo: 'nueva'|'reencauche', vehiclePlaca?, urgency }]
+  totalEstimado   Float?
+  notas           String?
+
+  cotizacion       Json?      // [{ itemIndex, precioUnitario, disponible, tiempoEntrega, notas }]
+  totalCotizado    Float?
+  cotizacionFecha  DateTime?
+  cotizacionNotas  String?
+
+  resolvedAt       DateTime?
+  resolvedBy       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company     Company @relation("CompanyOrders", fields: [companyId], references: [id])
+  distributor Company @relation("DistributorOrders", fields: [distributorId], references: [id])
+
+  @@index([companyId, status])
+  @@index([distributorId, status])
+  @@index([createdAt])
+  @@map("purchase_orders")
+}
+
+// =============================================================================
 // TIRE EVENTO
 // =============================================================================
 
@@ -749,12 +848,35 @@ model Notification {
   vehicleId String?
   companyId String?
 
+  // What action resolves this notification
+  actionType    String?   // 'rotate' | 'adjust_pressure' | 'retread' | 'replace' | 'inspect' | 'remove_from_service'
+  actionPayload Json?     // { tireId, fromPosition?, toPosition?, targetPsi?, etc }
+  actionLabel   String?   // "Rotar posición 1 ↔ 3" (human-readable)
+
+  // Execution tracking
+  executed      Boolean   @default(false)
+  executedAt    DateTime?
+  executedBy    String?   // userId or 'agent' or 'driver'
+
+  // Driver notification tracking
+  sentToDriver      Boolean   @default(false)
+  sentToDriverAt    DateTime?
+  driverConfirmed   Boolean   @default(false)
+  driverConfirmedAt DateTime?
+
+  // Grouping for UI
+  groupKey   String?   // vehicleId for grouping by vehicle
+  priority   Int       @default(0)  // higher = more urgent
+
   tire    Tire?    @relation(fields: [tireId], references: [id], onDelete: SetNull)
   vehicle Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
   company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId])
   @@index([companyId, seen])
+  @@index([companyId, executed])
+  @@index([companyId, priority])
+  @@index([groupKey])
   @@index([vehicleId])
   @@index([tireId])
 }
@@ -918,4 +1040,99 @@ model TireInventoryBucket {
   @@unique([companyId, nombre])
   @@index([companyId])
   @@map("tire_inventory_buckets")
+}
+
+// =============================================================================
+// TIRE MASTER CATALOG
+// 2,592 SKUs from the Colombian & Latin American market.
+// Used by the analysis engine to:
+//   • Validate application match (tire design vs axle)
+//   • Look up recommended PSI, expected km, retreadability
+//   • Provide CPK benchmarks and replacement suggestions
+//   • Auto-fill tire specs when a new tire is registered
+// =============================================================================
+
+model TireMasterCatalog {
+  id             String   @id @default(uuid())
+
+  // Identity
+  marca          String
+  modelo         String   // design/band name
+  dimension      String
+  skuRef         String   @unique  // unique SKU reference
+
+  // Dimensional breakdown
+  anchoMm        Float?   // tire width in mm
+  perfil         String?  // aspect ratio (e.g., "70", "80", "R")
+  rin            String?  // rim size (e.g., "22.5", "20")
+
+  // Application
+  posicion       String?  // D=Steer, T=Drive, AP=AllPosition, R=Trailer
+  ejeTirePro     EjeType? // mapped axle type for TirePro
+  terreno        String?  // Carretera, Mixto, Urbano, Off-Road
+  pctPavimento   Int      @default(100)  // % paved road suitability
+  pctDestapado   Int      @default(0)    // % unpaved road suitability
+
+  // Performance specs
+  rtdMm          Float?   // initial tread depth (mm)
+  indiceCarga    String?  // load index
+  indiceVelocidad String? // speed rating
+  psiRecomendado Float?   // recommended pressure (PSI)
+  pesoKg         Float?   // tire weight
+
+  // Expected life
+  kmEstimadosReales   Int?    // realistic km estimate for Colombia
+  kmEstimadosFabrica  Int?    // manufacturer's km estimate
+
+  // Retread info
+  reencauchable       Boolean @default(false)
+  vidasReencauche     Int     @default(0) // max number of retreads
+
+  // Financial
+  precioCop           Float?  // retail price in COP
+  cpkEstimado         Float?  // computed: precioCop / kmEstimadosReales
+
+  // Classification
+  segmento            String? // "Tractomula | Bus_Interurbano"
+  tipo                String? // Radial, Convencional
+  construccion        String? // Acero, Nylon, etc.
+
+  // Notes & source
+  notasColombia       String? @db.Text
+  fuente              String?
+  url                 String?
+
+  // ─── CROWDSOURCE INTELLIGENCE ────────────────────────────────────
+  // Populated when SKU is created/enriched from user-submitted tire data.
+  // fuente = "crowdsource" marks these entries.
+  crowdSampleSize         Int       @default(0)    // total tires contributing data
+  crowdCompanyCount       Int       @default(0)    // distinct companies (privacy: ≥3 to publish)
+  crowdAvgPrice           Float?    // trimmed mean price COP
+  crowdMedianPrice        Float?    // median price COP
+  crowdStddevPrice        Float?    // price stddev — measures market spread
+  crowdP25Price           Float?    // 25th percentile
+  crowdP75Price           Float?    // 75th percentile
+  crowdAvgInitialDepth    Float?    // trimmed mean initial depth mm
+  crowdMedianInitialDepth Float?    // median initial depth mm
+  crowdStddevDepth        Float?    // depth stddev
+  crowdAvgKm              Int?      // average km per vida from real data
+  crowdMedianKm           Int?      // median km per vida
+  crowdAvgCpk             Float?    // average CPK across all contributing tires
+  crowdMedianCpk          Float?    // median CPK
+  crowdAvgWearRate        Float?    // mm per 1000km average wear rate
+  crowdConfidence         Float?    // 0–1 confidence score based on sample size + spread
+  crowdLastUpdated        DateTime? // last time crowd stats were recalculated
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([marca, dimension])
+  @@index([dimension])
+  @@index([marca, modelo])
+  @@index([ejeTirePro])
+  @@index([terreno])
+  @@index([dimension, ejeTirePro])
+  @@index([cpkEstimado])
+  @@index([fuente])
+  @@map("tire_master_catalog")
 }

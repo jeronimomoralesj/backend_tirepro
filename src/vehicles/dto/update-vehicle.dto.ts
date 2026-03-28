@@ -1,4 +1,4 @@
-import { IsString, IsNumber, IsOptional, Min, MaxLength } from 'class-validator';
+import { IsString, IsNumber, IsOptional, IsUUID, Min, MaxLength } from 'class-validator';
 
 export class UpdateVehicleDto {
   @IsOptional()
@@ -27,4 +27,16 @@ export class UpdateVehicleDto {
   @IsOptional()
   @IsString()
   cliente?: string | null;
+
+  @IsOptional()
+  @IsString()
+  tipoOperacion?: string | null;
+
+  @IsOptional()
+  @IsString()
+  configuracion?: string | null;
+
+  @IsOptional()
+  @IsUUID()
+  companyId?: string;
 }

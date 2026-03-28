@@ -219,6 +219,40 @@ export class UsersService {
     return { message: 'User updated successfully', user: updatedUser };
   }
 
+  // ── Notification preferences ────────────────────────────────────────────
+
+  async updateNotificationPrefs(
+    userId: string,
+    notifChannel: string | null,
+    notifContact: string | null,
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, companyId: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { notifChannel, notifContact },
+      select: { id: true, notifChannel: true, notifContact: true },
+    });
+
+    await this.invalidateUserCache(userId, user.companyId);
+    return updated;
+  }
+
+  async getNotificationPrefs(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, notifChannel: true, notifContact: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  // ── Delete ──────────────────────────────────────────────────────────────────
+
   async deleteUser(userId: string) {
     const user = await this.prisma.user.findUnique({
       where:  { id: userId },

@@ -79,6 +79,7 @@ export class CompaniesService {
         name:         dto.name,
         plan:         (dto.plan as CompanyPlan) ?? CompanyPlan.basic,
         profileImage: DEFAULT_LOGO,
+        ...(dto.emailAtencion && { emailAtencion: dto.emailAtencion }),
       },
     });
 
@@ -215,4 +216,64 @@ export class CompaniesService {
     ]);
     return result;
   }
+
+  // ── Agent settings & email ───────────────────────────────────────────────
+
+  async updateAgentSettings(companyId: string, settings: Record<string, any>) {
+    const company = await this.prisma.company.findUnique({ where: { id: companyId }, select: { id: true } });
+    if (!company) throw new NotFoundException('Company not found');
+
+    const updated = await this.prisma.company.update({
+      where: { id: companyId },
+      data: { agentSettings: settings },
+    });
+
+    await this.invalidateCompanyCache(companyId);
+    return updated;
+  }
+
+  async updateEmailAtencion(companyId: string, email: string) {
+    const company = await this.prisma.company.findUnique({ where: { id: companyId }, select: { id: true } });
+    if (!company) throw new NotFoundException('Company not found');
+
+    const updated = await this.prisma.company.update({
+      where: { id: companyId },
+      data: { emailAtencion: email },
+    });
+
+    await this.invalidateCompanyCache(companyId);
+    return updated;
+  }
+
+  async getAgentSettings(companyId: string) {
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: { agentSettings: true, emailAtencion: true },
+    });
+    if (!company) throw new NotFoundException('Company not found');
+    return company;
+  }
+
+  // ── Delete ──────────────────────────────────────────────────────────────────
+
+  async deleteCompany(companyId: string) {
+  const company = await this.prisma.company.findUnique({
+    where:  { id: companyId },
+    select: { id: true, _count: { select: { tires: true, vehicles: true, users: true } } },
+  });
+  if (!company) throw new NotFoundException('Company not found');
+
+  // Safety check — refuse to delete if it still owns data
+  const { tires, vehicles, users } = company._count;
+  if (tires > 0 || vehicles > 0 || users > 0) {
+    throw new BadRequestException(
+      `Company still has ${tires} tires, ${vehicles} vehicles, ${users} users. ` +
+      `Reassign all data before deleting.`
+    );
+  }
+
+  await this.prisma.company.delete({ where: { id: companyId } });
+  await this.invalidateCompanyCache(companyId);
+  return { message: 'Company deleted successfully' };
+}
 }

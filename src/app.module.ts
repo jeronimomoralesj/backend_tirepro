@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { CacheModule } from '@nestjs/cache-manager';
-import { redisStore } from 'cache-manager-ioredis-yet';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ScheduleModule } from '@nestjs/schedule';
+import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
@@ -18,23 +20,45 @@ import { IncomeModule } from './income/income.module';
 import { EmailModule } from './email/email.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { InventoryBucketsModule } from './tires/inventory-bucket.module';
+import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
+import { CatalogModule } from './catalog/catalog.module';
+import { WhatsappModule } from './whatsapp/whatsapp.module';
+import { CompanyScopeGuard } from './auth/guards/company-scope.guard';
+import { PrismaService } from './prisma/prisma.service';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
+    ScheduleModule.forRoot(),
 
-    // ── Global Redis cache — shared across ALL feature modules ────────────────
-    // Feature modules use CacheModule.register() locally just to satisfy DI,
-    // but this global registration is what actually connects to Redis.
+    // ── Global cache — Redis in production, in-memory locally ──────────────
+    // isGlobal: true means every module gets this same cache instance.
+    // No feature module should import CacheModule.register() separately.
     CacheModule.registerAsync({
       isGlobal: true,
-      useFactory: async () => ({
-        store: redisStore,
-        host:  process.env.REDIS_HOST ?? '127.0.0.1',
-        port:  parseInt(process.env.REDIS_PORT ?? '6379'),
-        ttl:   60 * 60,
-      }),
+      useFactory: async () => {
+        const redisHost = process.env.REDIS_HOST;
+        // Only use Redis if explicitly in production
+        if (redisHost && process.env.NODE_ENV === 'production') {
+          const { redisStore } = await import('cache-manager-ioredis-yet');
+          return {
+            store: redisStore,
+            host: redisHost,
+            port: parseInt(process.env.REDIS_PORT ?? '6379'),
+            ttl: 60 * 60,
+          };
+        }
+        // Local dev: in-memory cache (no external dependency, starts instantly)
+        return { ttl: 300 };
+      },
     }),
+
+    // ── Rate limiting ────────────────────────────────────────────────────────
+    ThrottlerModule.forRoot([
+      { name: 'short',  ttl: 1000,    limit: 10   },  // 10 req/sec
+      { name: 'medium', ttl: 60000,   limit: 100  },  // 100 req/min
+      { name: 'long',   ttl: 3600000, limit: 1000 },  // 1000 req/hr
+    ]),
 
     PrismaModule,
     AuthModule,
@@ -50,8 +74,16 @@ import { InventoryBucketsModule } from './tires/inventory-bucket.module';
     IncomeModule,
     EmailModule,
     InventoryBucketsModule,
+    PurchaseOrdersModule,
+    CatalogModule,
+    WhatsappModule,
   ],
   controllers: [AppController],
-  providers:   [AppService],
+  providers:   [
+    AppService,
+    PrismaService,
+    CompanyScopeGuard,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
 })
 export class AppModule {}

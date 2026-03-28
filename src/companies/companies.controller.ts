@@ -39,6 +39,13 @@ searchByName(
   );
 }
 
+
+@Delete(':companyId')
+@HttpCode(HttpStatus.OK)
+deleteCompany(@Param('companyId') companyId: string) {
+  return this.companiesService.deleteCompany(companyId);
+}
+
   // ── Authenticated / "me" routes  (must come before :param routes) ─────────
 
   @UseGuards(JwtAuthGuard)
@@ -60,6 +67,26 @@ searchByName(
   @HttpCode(HttpStatus.CREATED)
   register(@Body() dto: CreateCompanyDto) {
     return this.companiesService.createCompany(dto);
+  }
+
+  // ── Agent settings & email (must be before :companyId catch-all) ─────────
+
+  @UseGuards(JwtAuthGuard)
+  @Get(':companyId/agent-settings')
+  getAgentSettings(@Param('companyId') id: string) {
+    return this.companiesService.getAgentSettings(id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':companyId/agent-settings')
+  updateAgentSettings(@Param('companyId') id: string, @Body() body: Record<string, any>) {
+    return this.companiesService.updateAgentSettings(id, body);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':companyId/email-atencion')
+  updateEmailAtencion(@Param('companyId') id: string, @Body() body: { email: string }) {
+    return this.companiesService.updateEmailAtencion(id, body.email);
   }
 
   // ── Single company  ───────────────────────────────────────────────────────

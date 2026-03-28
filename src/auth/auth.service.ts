@@ -3,6 +3,7 @@ import {
   BadRequestException,
   UnauthorizedException,
   InternalServerErrorException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { JwtService } from '@nestjs/jwt';
@@ -50,6 +51,8 @@ const DUMMY_HASH =
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
@@ -236,7 +239,7 @@ export class AuthService {
         `,
       });
     } catch (err) {
-      console.error('[AuthService] Failed to send distributor password email:', err);
+      this.logger.error('Failed to send distributor password email: ' + err.message);
       throw new InternalServerErrorException(
         'Error al enviar el correo con la contraseña',
       );
@@ -263,7 +266,7 @@ export class AuthService {
 
       return false;
     } catch (err) {
-      console.error('[AuthService] verifyDistributorPassword error:', err);
+      this.logger.error('verifyDistributorPassword error: ' + err.message);
       return false;
     }
   }
@@ -314,7 +317,7 @@ export class AuthService {
         `,
       });
     } catch (err) {
-      console.error('[AuthService] Failed to send blog password email:', err);
+      this.logger.error('Failed to send blog password email: ' + err.message);
       throw new InternalServerErrorException(
         'Error al enviar el correo con la contraseña',
       );
@@ -341,7 +344,7 @@ export class AuthService {
 
       return false;
     } catch (err) {
-      console.error('[AuthService] verifyBlogPassword error:', err);
+      this.logger.error('verifyBlogPassword error: ' + err.message);
       return false;
     }
   }

@@ -1,5 +1,4 @@
 import { Module, forwardRef } from '@nestjs/common';
-import { CacheModule } from '@nestjs/cache-manager';
 import { UsersService } from './users.service';
 import { UsersController } from './users.controller';
 import { AuthModule } from '../auth/auth.module';
@@ -15,7 +14,6 @@ import { EmailService } from '../email/email.service';
     DatabaseModule,
     EmailModule,
     PrismaModule,
-    CacheModule.register(),
   ],
   providers: [UsersService, PrismaService, EmailService],
   controllers: [UsersController],

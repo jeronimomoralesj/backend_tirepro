@@ -12,4 +12,8 @@ export class CreateCompanyDto {
     message: `plan must be one of: ${Object.values(CompanyPlan).join(', ')}`,
   })
   plan?: CompanyPlan = CompanyPlan.basic;
+
+  @IsOptional()
+  @IsString()
+  emailAtencion?: string;
 }

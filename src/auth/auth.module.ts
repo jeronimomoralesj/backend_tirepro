@@ -8,6 +8,7 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { CompanyScopeGuard } from './guards/company-scope.guard';
 import { UsersModule } from '../users/users.module';
 import { DatabaseModule } from '../database/database.module';
 import { PrismaService } from '../prisma/prisma.service';
@@ -55,8 +56,9 @@ import { PrismaService } from '../prisma/prisma.service';
     PrismaService,
     JwtStrategy,
     JwtAuthGuard,
+    CompanyScopeGuard,
   ],
   controllers: [AuthController],
-  exports: [AuthService, JwtAuthGuard, PassportModule, JwtModule],
+  exports: [AuthService, JwtAuthGuard, CompanyScopeGuard, PassportModule, JwtModule],
 })
 export class AuthModule {}

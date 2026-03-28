@@ -19,17 +19,22 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyScopeGuard } from '../auth/guards/company-scope.guard';
 import { EditTireDto, TireService } from './tire.service';
+import { TireProjectionService } from './tire-projection.service';
 import { CreateTireDto } from './dto/create-tire.dto';
 import { UpdateInspectionDto } from './dto/update-inspection.dto';
 import { UpdateVidaDto } from './dto/update-vida.dto';
 import { UpdateEventoDto } from './dto/update-evento.dto';
 
 @Controller('tires')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, CompanyScopeGuard)
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class TireController {
-  constructor(private readonly tireService: TireService) {}
+  constructor(
+    private readonly tireService: TireService,
+    private readonly tireProjectionService: TireProjectionService,
+  ) {}
 
   // ── Create ────────────────────────────────────────────────────────────────
 
@@ -62,6 +67,14 @@ export class TireController {
   analyzeTires(@Query('placa') placa: string) {
     if (!placa) throw new BadRequestException('Vehicle placa is required');
     return this.tireService.analyzeTires(placa);
+  }
+
+  // ── Projections ─────────────────────────────────────────────────────────
+
+  @Post('projections/update')
+  async updateProjections() {
+    await this.tireProjectionService.updateAllProjections();
+    return { message: 'Projections updated' };
   }
 
   // ── Bulk upload ───────────────────────────────────────────────────────────

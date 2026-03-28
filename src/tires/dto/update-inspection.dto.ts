@@ -117,4 +117,16 @@ export class UpdateInspectionDto {
   @IsOptional()
   @IsString()
   cvModelVersion?: string;
+  @IsOptional()
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  forceKm?: number;
+
+  @IsOptional()
+  @IsString()
+  fechaInstalacion?: string;
+
 }
