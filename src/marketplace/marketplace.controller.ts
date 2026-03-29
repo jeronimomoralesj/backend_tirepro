@@ -1,12 +1,18 @@
 import {
   Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards,
+  UseInterceptors, UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { MarketplaceService } from './marketplace.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { S3Service } from '../companies/s3.service';
 
 @Controller('marketplace')
 export class MarketplaceController {
-  constructor(private readonly svc: MarketplaceService) {}
+  constructor(
+    private readonly svc: MarketplaceService,
+    private readonly s3: S3Service,
+  ) {}
 
   // ===========================================================================
   // BID REQUESTS — Pro company
@@ -186,5 +192,41 @@ export class MarketplaceController {
     @Body() body: { distributorId: string },
   ) {
     return this.svc.deleteListing(id, body.distributorId);
+  }
+
+  // ===========================================================================
+  // IMAGE UPLOAD
+  // ===========================================================================
+
+  @Post('upload')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('image'))
+  async uploadImage(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: { distributorId: string },
+  ) {
+    if (!file) throw new Error('No file provided');
+    const url = await this.s3.uploadMarketplaceImage(
+      file.buffer, body.distributorId, file.mimetype,
+    );
+    return { url };
+  }
+
+  // ===========================================================================
+  // REVIEWS
+  // ===========================================================================
+
+  @Get('listings/:id/reviews')
+  getReviews(@Param('id') id: string) {
+    return this.svc.getListingReviews(id);
+  }
+
+  @Post('listings/:id/reviews')
+  @UseGuards(JwtAuthGuard)
+  createReview(
+    @Param('id') listingId: string,
+    @Body() body: { userId: string; rating: number; comment?: string },
+  ) {
+    return this.svc.createReview({ listingId, ...body });
   }
 }

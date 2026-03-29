@@ -160,6 +160,7 @@ model User {
   incomes       Income[]
   vehicleAccess UserVehicleAccess[]
   inspecciones  Inspeccion[]        // inspections this user performed
+  reviews       DistributorReview[]
 
   @@index([companyId])
   @@index([email])
@@ -1282,4 +1283,22 @@ model DistributorListing {
   @@index([marca, dimension, isActive])
   @@index([precioCop])
   @@map("distributor_listings")
+
+  reviews DistributorReview[]
+}
+
+model DistributorReview {
+  id            String   @id @default(uuid())
+  listingId     String
+  userId        String
+  rating        Int      // 1-5 stars
+  comment       String?  @db.Text
+  createdAt     DateTime @default(now())
+
+  listing       DistributorListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  user          User               @relation(fields: [userId], references: [id])
+
+  @@unique([listingId, userId])  // one review per user per listing
+  @@index([listingId])
+  @@map("distributor_reviews")
 }

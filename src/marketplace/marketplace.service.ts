@@ -233,7 +233,7 @@ export class MarketplaceService {
     page?: number;
     limit?: number;
   }) {
-    const where: any = { isActive: true, cantidadDisponible: { gt: 0 } };
+    const where: any = { isActive: true };
 
     if (filters.dimension) where.dimension = filters.dimension;
     if (filters.marca) where.marca = { contains: filters.marca, mode: 'insensitive' };
@@ -287,6 +287,8 @@ export class MarketplaceService {
               crowdAvgPrice: true, psiRecomendado: true, rtdMm: true,
             },
           },
+          _count: { select: { reviews: true } },
+          reviews: { select: { rating: true }, take: 100 },
         },
       }),
       this.prisma.distributorListing.count({ where }),
@@ -356,7 +358,7 @@ export class MarketplaceService {
         cantidadDisponible: data.cantidadDisponible ?? 0,
         tiempoEntrega: data.tiempoEntrega ?? null,
         descripcion: data.descripcion ?? null,
-        imageUrls: data.imageUrls ?? null,
+        imageUrls: (data.imageUrls ?? undefined) as any,
         coverIndex: data.coverIndex ?? 0,
       },
     });
@@ -402,19 +404,19 @@ export class MarketplaceService {
   async getMarketplaceFilters() {
     const [dimensions, marcas, distributorIds] = await Promise.all([
       this.prisma.distributorListing.findMany({
-        where: { isActive: true, cantidadDisponible: { gt: 0 } },
+        where: { isActive: true },
         select: { dimension: true },
         distinct: ['dimension'],
         orderBy: { dimension: 'asc' },
       }),
       this.prisma.distributorListing.findMany({
-        where: { isActive: true, cantidadDisponible: { gt: 0 } },
+        where: { isActive: true },
         select: { marca: true },
         distinct: ['marca'],
         orderBy: { marca: 'asc' },
       }),
       this.prisma.distributorListing.findMany({
-        where: { isActive: true, cantidadDisponible: { gt: 0 } },
+        where: { isActive: true },
         select: { distributorId: true },
         distinct: ['distributorId'],
       }),
@@ -460,6 +462,34 @@ export class MarketplaceService {
     cobertura: string[]; tipoEntrega: string;
   }>) {
     return this.prisma.company.update({ where: { id: distributorId }, data });
+  }
+
+  // ===========================================================================
+  // REVIEWS
+  // ===========================================================================
+
+  async createReview(data: { listingId: string; userId: string; rating: number; comment?: string }) {
+    if (data.rating < 1 || data.rating > 5) throw new BadRequestException('Rating must be 1-5');
+
+    return this.prisma.distributorReview.upsert({
+      where: { listingId_userId: { listingId: data.listingId, userId: data.userId } },
+      create: { listingId: data.listingId, userId: data.userId, rating: data.rating, comment: data.comment ?? null },
+      update: { rating: data.rating, comment: data.comment ?? null },
+    });
+  }
+
+  async getListingReviews(listingId: string) {
+    const reviews = await this.prisma.distributorReview.findMany({
+      where: { listingId },
+      orderBy: { createdAt: 'desc' },
+      include: { user: { select: { name: true } } },
+    });
+
+    const avg = reviews.length > 0
+      ? reviews.reduce((s, r) => s + r.rating, 0) / reviews.length
+      : 0;
+
+    return { reviews, average: Math.round(avg * 10) / 10, count: reviews.length };
   }
 
   // ===========================================================================

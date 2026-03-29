@@ -2,11 +2,13 @@ import { Module } from '@nestjs/common';
 import { MarketplaceController } from './marketplace.controller';
 import { MarketplaceService } from './marketplace.service';
 import { PrismaModule } from '../prisma/prisma.module';
+import { S3Service } from '../companies/s3.service';
+import { ConfigModule } from '@nestjs/config';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, ConfigModule],
   controllers: [MarketplaceController],
-  providers: [MarketplaceService],
+  providers: [MarketplaceService, S3Service],
   exports: [MarketplaceService],
 })
 export class MarketplaceModule {}
