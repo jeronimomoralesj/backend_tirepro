@@ -702,21 +702,98 @@ export class MarketplaceService {
     });
   }
 
-  async updateOrderStatus(orderId: string, distributorId: string, status: string) {
-    const order = await this.prisma.marketplaceOrder.findUnique({ where: { id: orderId } });
+  async updateOrderStatus(orderId: string, distributorId: string, status: string, cancelReason?: string) {
+    const order = await this.prisma.marketplaceOrder.findUnique({
+      where: { id: orderId },
+      include: { listing: { select: { marca: true, modelo: true, dimension: true } } },
+    });
     if (!order) throw new NotFoundException('Order not found');
     if (order.distributorId !== distributorId) throw new BadRequestException('Not your order');
-    return this.prisma.marketplaceOrder.update({ where: { id: orderId }, data: { status } });
+
+    const updated = await this.prisma.marketplaceOrder.update({
+      where: { id: orderId },
+      data: { status, ...(cancelReason ? { notas: `[CANCELADO] ${cancelReason}${order.notas ? ` | Original: ${order.notas}` : ''}` } : {}) },
+    });
+
+    // Send cancellation email to buyer
+    if (status === 'cancelado' && order.buyerEmail) {
+      try {
+        const dist = await this.prisma.company.findUnique({ where: { id: distributorId }, select: { name: true } });
+        const fmtCOP = (n: number) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n);
+        await this.email.sendEmail(order.buyerEmail, `Pedido cancelado — ${order.listing.marca} ${order.listing.modelo}`, `
+          <div style="font-family:system-ui;max-width:600px;margin:0 auto">
+            <div style="background:linear-gradient(135deg,#991b1b,#ef4444);color:white;padding:30px;border-radius:12px 12px 0 0">
+              <h1 style="margin:0;font-size:20px">Pedido Cancelado</h1>
+              <p style="margin:4px 0 0;opacity:0.7;font-size:13px">TirePro Marketplace</p>
+            </div>
+            <div style="padding:24px;background:white;border:1px solid #e5e5e5;border-top:0;border-radius:0 0 12px 12px">
+              <p style="margin:0 0 16px;color:#333">Hola <strong>${order.buyerName}</strong>,</p>
+              <p style="margin:0 0 16px;color:#555;font-size:14px">Lamentamos informarte que tu pedido ha sido cancelado por el distribuidor.</p>
+              <div style="background:#fef2f2;padding:16px;border-radius:8px;margin-bottom:16px;border-left:4px solid #ef4444">
+                <p style="margin:0 0 4px;font-weight:700;color:#991b1b;font-size:13px">Motivo de cancelacion:</p>
+                <p style="margin:0;color:#7f1d1d;font-size:13px">${cancelReason ?? 'No especificado'}</p>
+              </div>
+              <div style="background:#f5f5f7;padding:16px;border-radius:8px;margin-bottom:16px">
+                <p style="margin:0 0 8px;font-weight:700;color:#0A183A">${order.listing.marca} ${order.listing.modelo}</p>
+                <p style="margin:0 0 4px;font-size:13px;color:#666">${order.listing.dimension} · Cantidad: ${order.quantity}</p>
+                <p style="margin:0;font-size:13px;color:#666">Total: ${fmtCOP(order.totalCop)}</p>
+              </div>
+              <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Distribuidor:</strong> ${dist?.name ?? 'Distribuidor'}</p>
+              <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Pedido:</strong> #${orderId.slice(0, 8).toUpperCase()}</p>
+              <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
+              <p style="margin:0 0 8px;font-size:14px;color:#333">Puedes buscar este producto con otros distribuidores en el marketplace:</p>
+              <a href="https://tirepro.com.co/marketplace" style="display:inline-block;padding:10px 24px;border-radius:8px;background:#1E76B6;color:white;font-size:13px;font-weight:700;text-decoration:none">Ver Marketplace</a>
+              <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
+              <p style="margin:0;font-size:12px;color:#999">TirePro Marketplace — tirepro.com.co</p>
+            </div>
+          </div>
+        `);
+      } catch (err) {
+        this.logger.warn(`Failed to send cancellation email: ${err}`);
+      }
+    }
+
+    // Send confirmation email when status changes to confirmado
+    if (status === 'confirmado' && order.buyerEmail) {
+      try {
+        const dist = await this.prisma.company.findUnique({ where: { id: distributorId }, select: { name: true, telefono: true } });
+        await this.email.sendEmail(order.buyerEmail, `Pedido confirmado — ${order.listing.marca} ${order.listing.modelo}`, `
+          <div style="font-family:system-ui;max-width:600px;margin:0 auto">
+            <div style="background:linear-gradient(135deg,#0A183A,#1E76B6);color:white;padding:30px;border-radius:12px 12px 0 0">
+              <h1 style="margin:0;font-size:20px">Pedido Confirmado por Distribuidor</h1>
+            </div>
+            <div style="padding:24px;background:white;border:1px solid #e5e5e5;border-top:0;border-radius:0 0 12px 12px">
+              <p style="margin:0 0 16px;color:#333">Hola <strong>${order.buyerName}</strong>,</p>
+              <p style="margin:0 0 16px;color:#555;font-size:14px">${dist?.name ?? 'El distribuidor'} ha confirmado tu pedido. Se comunicaran contigo para coordinar la entrega.</p>
+              <div style="background:#f0f7ff;padding:16px;border-radius:8px">
+                <p style="margin:0 0 4px;font-weight:700;color:#0A183A">${order.listing.marca} ${order.listing.modelo} · ${order.listing.dimension}</p>
+                <p style="margin:0;font-size:13px;color:#666">Pedido #${orderId.slice(0, 8).toUpperCase()}</p>
+                ${dist?.telefono ? `<p style="margin:8px 0 0;font-size:13px;color:#1E76B6;font-weight:700">Telefono: ${dist.telefono}</p>` : ''}
+              </div>
+            </div>
+          </div>
+        `);
+      } catch (err) { this.logger.warn(`Failed to send confirmation email: ${err}`); }
+    }
+
+    return updated;
   }
 
   async getDistributorSalesStats(distributorId: string) {
-    const [orders, totalRevenue, totalSold, byListing, byMonth] = await Promise.all([
-      this.prisma.marketplaceOrder.count({ where: { distributorId } }),
-      this.prisma.marketplaceOrder.aggregate({ where: { distributorId }, _sum: { totalCop: true } }),
-      this.prisma.marketplaceOrder.aggregate({ where: { distributorId }, _sum: { quantity: true } }),
+    const notCanceled = { distributorId, status: { not: 'cancelado' } };
+    const [orders, totalRevenue, totalSold, avgResponseTime, byListing, byMonth] = await Promise.all([
+      this.prisma.marketplaceOrder.count({ where: notCanceled }),
+      this.prisma.marketplaceOrder.aggregate({ where: notCanceled, _sum: { totalCop: true } }),
+      this.prisma.marketplaceOrder.aggregate({ where: notCanceled, _sum: { quantity: true } }),
+      // Average response time (created → first status change)
+      this.prisma.$queryRaw`
+        SELECT AVG(EXTRACT(EPOCH FROM ("updatedAt" - "createdAt")) / 3600)::float as avg_hours
+        FROM marketplace_orders
+        WHERE "distributorId" = ${distributorId} AND status != 'pendiente'
+      `.then((r: any) => r[0]?.avg_hours ?? null).catch(() => null),
       this.prisma.marketplaceOrder.groupBy({
         by: ['listingId'],
-        where: { distributorId },
+        where: notCanceled,
         _sum: { quantity: true, totalCop: true },
         _count: true,
         orderBy: { _sum: { totalCop: 'desc' } },
@@ -728,7 +805,7 @@ export class MarketplaceService {
                SUM("totalCop")::float as revenue,
                SUM("quantity")::int as units
         FROM marketplace_orders
-        WHERE "distributorId" = ${distributorId}
+        WHERE "distributorId" = ${distributorId} AND status != 'cancelado'
         GROUP BY month ORDER BY month DESC LIMIT 12
       ` as Promise<any[]>,
     ]);
@@ -747,6 +824,7 @@ export class MarketplaceService {
       totalOrders: orders,
       totalRevenue: totalRevenue._sum.totalCop ?? 0,
       totalUnitsSold: totalSold._sum.quantity ?? 0,
+      avgResponseTimeHours: avgResponseTime != null ? Math.round(avgResponseTime * 10) / 10 : null,
       topListings: byListing.map((l) => ({
         listing: listingMap.get(l.listingId) ?? { marca: '?', modelo: '?', dimension: '?' },
         orders: l._count,

@@ -269,9 +269,9 @@ export class MarketplaceController {
   @UseGuards(JwtAuthGuard)
   updateOrderStatus(
     @Param('id') id: string,
-    @Body() body: { distributorId: string; status: string },
+    @Body() body: { distributorId: string; status: string; cancelReason?: string },
   ) {
-    return this.svc.updateOrderStatus(id, body.distributorId, body.status);
+    return this.svc.updateOrderStatus(id, body.distributorId, body.status, body.cancelReason);
   }
 
   @Get('sales/distributor')
