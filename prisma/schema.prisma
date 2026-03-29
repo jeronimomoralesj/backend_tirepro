@@ -1272,6 +1272,7 @@ model DistributorListing {
   descripcion         String?  @db.Text
   imageUrls           Json?    // ["url1","url2",...] max 5
   coverIndex          Int      @default(0)  // which image is the cover
+  imageQualityScore   Int      @default(0)   // 0-100, higher = better quality listing
   isActive            Boolean  @default(true)
 
   createdAt           DateTime @default(now())

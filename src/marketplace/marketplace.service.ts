@@ -13,6 +13,70 @@ export class MarketplaceService {
   ) {}
 
   // ===========================================================================
+  // IMAGE QUALITY SCORING
+  // ===========================================================================
+
+  async scoreImageQuality(imageUrls: string[] | null): Promise<number> {
+    if (!imageUrls || imageUrls.length === 0) return 0;
+
+    let score = 0;
+
+    // 1. Has images at all (+20)
+    score += 20;
+
+    // 2. Multiple images show effort (+5 each, max +15)
+    score += Math.min(imageUrls.length - 1, 3) * 5;
+
+    // 3. Images from our S3 (verified uploads, not random URLs) (+15)
+    const s3Count = imageUrls.filter((u) => u.includes('s3.') || u.includes('amazonaws.com')).length;
+    if (s3Count > 0) score += 15;
+
+    // 4. Check first image quality via HEAD request
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(imageUrls[0], { method: 'HEAD', signal: controller.signal });
+      clearTimeout(timeout);
+
+      if (res.ok) {
+        const contentType = res.headers.get('content-type') ?? '';
+        const contentLength = parseInt(res.headers.get('content-length') ?? '0', 10);
+
+        // Proper image type (+5)
+        if (contentType.startsWith('image/')) score += 5;
+
+        // File size heuristics:
+        // < 10KB = probably a thumbnail/placeholder (-10)
+        // 10-50KB = low quality (+5)
+        // 50-500KB = good quality (+15)
+        // 500KB-2MB = high quality photo (+20)
+        // > 2MB = uncompressed, possibly cluttered (+10)
+        if (contentLength < 10000) score -= 10;
+        else if (contentLength < 50000) score += 5;
+        else if (contentLength < 500000) score += 15;
+        else if (contentLength < 2000000) score += 20;
+        else score += 10;
+
+        // PNG/WebP usually cleaner product shots than JPEG with lots of compression artifacts
+        if (contentType.includes('png') || contentType.includes('webp')) score += 5;
+      }
+    } catch {
+      // Can't check = neutral
+    }
+
+    // 5. URL pattern analysis — detect likely clean product images vs cluttered marketing
+    const firstUrl = imageUrls[0].toLowerCase();
+    // Clean product image indicators
+    if (firstUrl.includes('product') || firstUrl.includes('tire') || firstUrl.includes('llanta')) score += 5;
+    // Marketing/cluttered indicators (banners, promo, logos)
+    if (firstUrl.includes('banner') || firstUrl.includes('promo') || firstUrl.includes('logo') || firstUrl.includes('flyer')) score -= 10;
+    // Very long query strings often = CDN marketing images with overlays
+    if (firstUrl.split('?')[1]?.length > 200) score -= 5;
+
+    return Math.max(0, Math.min(100, score));
+  }
+
+  // ===========================================================================
   // BID REQUESTS — Pro company side
   // ===========================================================================
 
@@ -265,12 +329,13 @@ export class MarketplaceService {
       ];
     }
 
-    const orderBy: any = {};
+    let orderBy: any;
     switch (filters.sortBy) {
-      case 'price_asc': orderBy.precioCop = 'asc'; break;
-      case 'price_desc': orderBy.precioCop = 'desc'; break;
-      case 'newest': orderBy.createdAt = 'desc'; break;
-      default: orderBy.precioCop = 'asc';
+      case 'price_asc': orderBy = { precioCop: 'asc' }; break;
+      case 'price_desc': orderBy = { precioCop: 'desc' }; break;
+      case 'newest': orderBy = { createdAt: 'desc' }; break;
+      // Default: relevance = image quality first, then newest
+      default: orderBy = [{ imageQualityScore: 'desc' }, { createdAt: 'desc' }];
     }
 
     const page = filters.page ?? 1;
@@ -346,6 +411,8 @@ export class MarketplaceService {
       }
     }
 
+    const imageQualityScore = await this.scoreImageQuality(data.imageUrls ?? null);
+
     return this.prisma.distributorListing.create({
       data: {
         distributorId: data.distributorId,
@@ -364,6 +431,7 @@ export class MarketplaceService {
         descripcion: data.descripcion ?? null,
         imageUrls: (data.imageUrls ?? undefined) as any,
         coverIndex: data.coverIndex ?? 0,
+        imageQualityScore,
       },
     });
   }
@@ -785,6 +853,26 @@ export class MarketplaceService {
     listings.sort((a, b) => (orderMap.get(a.id) ?? 999) - (orderMap.get(b.id) ?? 999));
 
     return { type: 'popular' as const, listings };
+  }
+
+  async rescoreAllListings() {
+    const listings = await this.prisma.distributorListing.findMany({
+      where: { isActive: true },
+      select: { id: true, imageUrls: true },
+    });
+
+    let updated = 0;
+    for (const listing of listings) {
+      const score = await this.scoreImageQuality(listing.imageUrls as string[] | null);
+      await this.prisma.distributorListing.update({
+        where: { id: listing.id },
+        data: { imageQualityScore: score },
+      });
+      updated++;
+    }
+
+    this.logger.log(`Rescored ${updated} listings`);
+    return { updated };
   }
 
   async getListingSalesCount(listingId: string): Promise<number> {
