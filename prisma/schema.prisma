@@ -160,7 +160,8 @@ model User {
   incomes       Income[]
   vehicleAccess UserVehicleAccess[]
   inspecciones  Inspeccion[]        // inspections this user performed
-  reviews       DistributorReview[]
+  reviews           DistributorReview[]
+  marketplaceOrders MarketplaceOrder[]
 
   @@index([companyId])
   @@index([email])
@@ -226,6 +227,7 @@ model Company {
   bidInvitations    BidInvitation[]      @relation("BidInvitations")
   bidResponses      BidResponse[]        @relation("BidResponses")
   listings          DistributorListing[] @relation("DistributorListings")
+  marketplaceOrders MarketplaceOrder[]   @relation("MarketplaceOrders")
 
   @@index([plan])
 }
@@ -1285,6 +1287,7 @@ model DistributorListing {
   @@map("distributor_listings")
 
   reviews DistributorReview[]
+  orders  MarketplaceOrder[]
 }
 
 model DistributorReview {
@@ -1301,4 +1304,38 @@ model DistributorReview {
   @@unique([listingId, userId])  // one review per user per listing
   @@index([listingId])
   @@map("distributor_reviews")
+}
+
+model MarketplaceOrder {
+  id              String   @id @default(uuid())
+  listingId       String
+  distributorId   String
+  quantity        Int      @default(1)
+  totalCop        Float
+
+  // Buyer info (logged in user OR guest)
+  userId          String?
+  buyerName       String
+  buyerEmail      String
+  buyerPhone      String?
+  buyerAddress    String?
+  buyerCity       String?
+  buyerCompany    String?
+
+  // Status
+  status          String   @default("pendiente")  // pendiente | confirmado | enviado | entregado | cancelado
+  notas           String?  @db.Text
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  listing         DistributorListing @relation(fields: [listingId], references: [id])
+  distributor     Company            @relation("MarketplaceOrders", fields: [distributorId], references: [id])
+  user            User?              @relation(fields: [userId], references: [id])
+
+  @@index([distributorId, status])
+  @@index([userId])
+  @@index([buyerEmail])
+  @@index([createdAt])
+  @@map("marketplace_orders")
 }

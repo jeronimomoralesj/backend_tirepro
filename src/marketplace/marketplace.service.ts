@@ -1,12 +1,16 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { BidRequestStatus, BidResponseStatus } from '@prisma/client';
+import { EmailService } from '../email/email.service';
 
 @Injectable()
 export class MarketplaceService {
   private readonly logger = new Logger(MarketplaceService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly email: EmailService,
+  ) {}
 
   // ===========================================================================
   // BID REQUESTS — Pro company side
@@ -490,6 +494,137 @@ export class MarketplaceService {
       : 0;
 
     return { reviews, average: Math.round(avg * 10) / 10, count: reviews.length };
+  }
+
+  // ===========================================================================
+  // SINGLE LISTING (product detail)
+  // ===========================================================================
+
+  async getListingById(id: string) {
+    const listing = await this.prisma.distributorListing.findUnique({
+      where: { id },
+      include: {
+        distributor: { select: { id: true, name: true, profileImage: true, ciudad: true, telefono: true, emailAtencion: true, tipoEntrega: true, cobertura: true } },
+        catalog: { select: { id: true, skuRef: true, terreno: true, reencauchable: true, kmEstimadosReales: true, cpkEstimado: true, crowdAvgCpk: true, psiRecomendado: true, rtdMm: true } },
+        reviews: { include: { user: { select: { name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },
+        _count: { select: { reviews: true } },
+      },
+    });
+    if (!listing) throw new NotFoundException('Listing not found');
+    return listing;
+  }
+
+  // ===========================================================================
+  // MARKETPLACE ORDERS
+  // ===========================================================================
+
+  async createOrder(data: {
+    listingId: string;
+    quantity: number;
+    userId?: string;
+    buyerName: string;
+    buyerEmail: string;
+    buyerPhone?: string;
+    buyerAddress?: string;
+    buyerCity?: string;
+    buyerCompany?: string;
+    notas?: string;
+  }) {
+    const listing = await this.prisma.distributorListing.findUnique({
+      where: { id: data.listingId },
+      include: { distributor: { select: { id: true, name: true, emailAtencion: true } } },
+    });
+    if (!listing) throw new NotFoundException('Listing not found');
+
+    const totalCop = listing.precioCop * data.quantity;
+
+    const order = await this.prisma.marketplaceOrder.create({
+      data: {
+        listingId: data.listingId,
+        distributorId: listing.distributorId,
+        quantity: data.quantity,
+        totalCop,
+        userId: data.userId ?? null,
+        buyerName: data.buyerName,
+        buyerEmail: data.buyerEmail,
+        buyerPhone: data.buyerPhone ?? null,
+        buyerAddress: data.buyerAddress ?? null,
+        buyerCity: data.buyerCity ?? null,
+        buyerCompany: data.buyerCompany ?? null,
+        notas: data.notas ?? null,
+      },
+      include: { listing: true },
+    });
+
+    // Send confirmation email to buyer
+    try {
+      const fmtCOP = (n: number) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n);
+      await this.email.sendEmail(data.buyerEmail, `Pedido confirmado — ${listing.marca} ${listing.modelo}`, `
+        <div style="font-family:system-ui;max-width:600px;margin:0 auto">
+          <div style="background:linear-gradient(135deg,#0A183A,#1E76B6);color:white;padding:30px;border-radius:12px 12px 0 0">
+            <h1 style="margin:0;font-size:20px">Pedido Confirmado</h1>
+            <p style="margin:4px 0 0;opacity:0.7;font-size:13px">TirePro Marketplace</p>
+          </div>
+          <div style="padding:24px;background:white;border:1px solid #e5e5e5;border-top:0;border-radius:0 0 12px 12px">
+            <p style="margin:0 0 16px;color:#333">Hola <strong>${data.buyerName}</strong>,</p>
+            <p style="margin:0 0 20px;color:#555;font-size:14px">Tu pedido ha sido recibido. El distribuidor se comunicara contigo para coordinar la entrega.</p>
+            <div style="background:#f5f5f7;padding:16px;border-radius:8px;margin-bottom:20px">
+              <p style="margin:0 0 8px;font-weight:700;color:#0A183A">${listing.marca} ${listing.modelo}</p>
+              <p style="margin:0 0 4px;font-size:13px;color:#666">${listing.dimension}</p>
+              <p style="margin:0 0 4px;font-size:13px;color:#666">Cantidad: ${data.quantity}</p>
+              <p style="margin:12px 0 0;font-size:18px;font-weight:800;color:#0A183A">${fmtCOP(totalCop)}</p>
+            </div>
+            <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Distribuidor:</strong> ${listing.distributor.name}</p>
+            <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Pedido:</strong> #${order.id.slice(0, 8).toUpperCase()}</p>
+            ${data.buyerAddress ? `<p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Entrega:</strong> ${data.buyerAddress}${data.buyerCity ? ', ' + data.buyerCity : ''}</p>` : ''}
+            <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
+            <p style="margin:0;font-size:12px;color:#999">Este email fue enviado por TirePro Marketplace — tirepro.com.co</p>
+          </div>
+        </div>
+      `);
+    } catch (err) {
+      this.logger.warn(`Failed to send order confirmation: ${err}`);
+    }
+
+    // Notify distributor
+    try {
+      const distEmail = listing.distributor.emailAtencion;
+      if (distEmail) {
+        const fmtCOP = (n: number) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n);
+        await this.email.sendEmail(distEmail, `Nuevo pedido — ${listing.marca} ${listing.modelo}`, `
+          <div style="font-family:system-ui;max-width:600px;margin:0 auto">
+            <div style="background:linear-gradient(135deg,#0A183A,#1E76B6);color:white;padding:30px;border-radius:12px 12px 0 0">
+              <h1 style="margin:0;font-size:20px">Nuevo Pedido del Marketplace</h1>
+            </div>
+            <div style="padding:24px;background:white;border:1px solid #e5e5e5;border-top:0;border-radius:0 0 12px 12px">
+              <div style="background:#f5f5f7;padding:16px;border-radius:8px;margin-bottom:16px">
+                <p style="margin:0 0 8px;font-weight:700;color:#0A183A">${listing.marca} ${listing.modelo} · ${listing.dimension}</p>
+                <p style="margin:0;font-size:13px;color:#666">Cantidad: ${data.quantity} · Total: ${fmtCOP(totalCop)}</p>
+              </div>
+              <p style="margin:0 0 8px;font-size:14px;font-weight:700;color:#0A183A">Datos del comprador:</p>
+              <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Nombre:</strong> ${data.buyerName}</p>
+              <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Email:</strong> ${data.buyerEmail}</p>
+              ${data.buyerPhone ? `<p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Telefono:</strong> ${data.buyerPhone}</p>` : ''}
+              ${data.buyerAddress ? `<p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Direccion:</strong> ${data.buyerAddress}${data.buyerCity ? ', ' + data.buyerCity : ''}</p>` : ''}
+              ${data.buyerCompany ? `<p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Empresa:</strong> ${data.buyerCompany}</p>` : ''}
+              ${data.notas ? `<p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Notas:</strong> ${data.notas}</p>` : ''}
+            </div>
+          </div>
+        `);
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to send distributor notification: ${err}`);
+    }
+
+    return order;
+  }
+
+  async getDistributorOrders(distributorId: string) {
+    return this.prisma.marketplaceOrder.findMany({
+      where: { distributorId },
+      orderBy: { createdAt: 'desc' },
+      include: { listing: { select: { marca: true, modelo: true, dimension: true } } },
+    });
   }
 
   // ===========================================================================

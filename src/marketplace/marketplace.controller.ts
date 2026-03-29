@@ -229,4 +229,39 @@ export class MarketplaceController {
   ) {
     return this.svc.createReview({ listingId, ...body });
   }
+
+  // ===========================================================================
+  // SINGLE LISTING (product detail)
+  // ===========================================================================
+
+  @Get('product/:id')
+  getProduct(@Param('id') id: string) {
+    return this.svc.getListingById(id);
+  }
+
+  // ===========================================================================
+  // MARKETPLACE ORDERS
+  // ===========================================================================
+
+  @Post('orders')
+  createOrder(@Body() body: {
+    listingId: string;
+    quantity: number;
+    userId?: string;
+    buyerName: string;
+    buyerEmail: string;
+    buyerPhone?: string;
+    buyerAddress?: string;
+    buyerCity?: string;
+    buyerCompany?: string;
+    notas?: string;
+  }) {
+    return this.svc.createOrder(body);
+  }
+
+  @Get('orders/distributor')
+  @UseGuards(JwtAuthGuard)
+  getDistributorOrders(@Query('distributorId') distributorId: string) {
+    return this.svc.getDistributorOrders(distributorId);
+  }
 }
