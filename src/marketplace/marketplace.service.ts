@@ -717,6 +717,7 @@ export class MarketplaceService {
 
     // Send cancellation email to buyer
     if (status === 'cancelado' && order.buyerEmail) {
+      this.logger.log(`Sending cancellation email to ${order.buyerEmail} for order ${orderId}, reason: ${cancelReason}`);
       try {
         const dist = await this.prisma.company.findUnique({ where: { id: distributorId }, select: { name: true } });
         const fmtCOP = (n: number) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n);
@@ -748,8 +749,9 @@ export class MarketplaceService {
             </div>
           </div>
         `);
+        this.logger.log(`Cancellation email sent successfully to ${order.buyerEmail}`);
       } catch (err) {
-        this.logger.warn(`Failed to send cancellation email: ${err}`);
+        this.logger.error(`Failed to send cancellation email to ${order.buyerEmail}: ${err?.message ?? err}`);
       }
     }
 
