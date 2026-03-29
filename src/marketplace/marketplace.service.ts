@@ -225,6 +225,7 @@ export class MarketplaceService {
     eje?: string;
     tipo?: string;
     distributorId?: string;
+    ciudad?: string;
     minPrice?: number;
     maxPrice?: number;
     search?: string;
@@ -239,6 +240,13 @@ export class MarketplaceService {
     if (filters.eje) where.eje = filters.eje;
     if (filters.tipo) where.tipo = filters.tipo;
     if (filters.distributorId) where.distributorId = filters.distributorId;
+
+    // City coverage filter — only show listings from distributors that cover this city
+    if (filters.ciudad) {
+      where.distributor = {
+        cobertura: { array_contains: [filters.ciudad] },
+      };
+    }
     if (filters.minPrice || filters.maxPrice) {
       where.precioCop = {};
       if (filters.minPrice) where.precioCop.gte = filters.minPrice;
@@ -304,6 +312,7 @@ export class MarketplaceService {
     modelo: string;
     dimension: string;
     eje?: string;
+    tipo?: string;
     precioCop: number;
     precioPromo?: number;
     promoHasta?: string;
@@ -311,7 +320,8 @@ export class MarketplaceService {
     cantidadDisponible?: number;
     tiempoEntrega?: string;
     descripcion?: string;
-    imageUrl?: string;
+    imageUrls?: string[];
+    coverIndex?: number;
   }) {
     // Auto-link to catalog by marca+modelo+dimension
     if (!data.catalogId && data.marca && data.modelo && data.dimension) {
@@ -338,6 +348,7 @@ export class MarketplaceService {
         modelo: data.modelo,
         dimension: data.dimension,
         eje: data.eje as any ?? null,
+        tipo: data.tipo ?? 'nueva',
         precioCop: data.precioCop,
         precioPromo: data.precioPromo ?? null,
         promoHasta: data.promoHasta ? new Date(data.promoHasta) : null,
@@ -345,7 +356,8 @@ export class MarketplaceService {
         cantidadDisponible: data.cantidadDisponible ?? 0,
         tiempoEntrega: data.tiempoEntrega ?? null,
         descripcion: data.descripcion ?? null,
-        imageUrl: data.imageUrl ?? null,
+        imageUrls: data.imageUrls ?? null,
+        coverIndex: data.coverIndex ?? 0,
       },
     });
   }
@@ -434,6 +446,7 @@ export class MarketplaceService {
         id: true, name: true, profileImage: true, plan: true,
         emailAtencion: true, telefono: true, descripcion: true,
         bannerImage: true, direccion: true, ciudad: true, sitioWeb: true,
+        cobertura: true, tipoEntrega: true,
         _count: { select: { listings: { where: { isActive: true } } } },
       },
     });
@@ -444,6 +457,7 @@ export class MarketplaceService {
   async updateDistributorProfile(distributorId: string, data: Partial<{
     telefono: string; descripcion: string; bannerImage: string;
     direccion: string; ciudad: string; sitioWeb: string; emailAtencion: string;
+    cobertura: string[]; tipoEntrega: string;
   }>) {
     return this.prisma.company.update({ where: { id: distributorId }, data });
   }

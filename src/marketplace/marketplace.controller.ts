@@ -92,6 +92,7 @@ export class MarketplaceController {
     @Query('eje') eje?: string,
     @Query('tipo') tipo?: string,
     @Query('distributorId') distributorId?: string,
+    @Query('ciudad') ciudad?: string,
     @Query('minPrice') minPrice?: string,
     @Query('maxPrice') maxPrice?: string,
     @Query('search') search?: string,
@@ -100,7 +101,7 @@ export class MarketplaceController {
     @Query('limit') limit?: string,
   ) {
     return this.svc.searchListings({
-      dimension, marca, eje, tipo, distributorId, search, sortBy,
+      dimension, marca, eje, tipo, distributorId, ciudad, search, sortBy,
       minPrice: minPrice ? Number(minPrice) : undefined,
       maxPrice: maxPrice ? Number(maxPrice) : undefined,
       page: page ? Number(page) : undefined,
@@ -145,6 +146,7 @@ export class MarketplaceController {
     modelo: string;
     dimension: string;
     eje?: string;
+    tipo?: string;
     precioCop: number;
     precioPromo?: number;
     promoHasta?: string;
@@ -152,7 +154,8 @@ export class MarketplaceController {
     cantidadDisponible?: number;
     tiempoEntrega?: string;
     descripcion?: string;
-    imageUrl?: string;
+    imageUrls?: string[];
+    coverIndex?: number;
   }) {
     return this.svc.createListing(body);
   }

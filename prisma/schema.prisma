@@ -200,6 +200,8 @@ model Company {
   direccion      String?
   ciudad         String?
   sitioWeb       String?
+  cobertura      Json?     // ["Bogota","Medellin","Cali",...] — cities they deliver to
+  tipoEntrega    String?   // "domicilio" | "recogida" | "ambos"
 
   // Agent automation configuration
   agentSettings  Json    @default("{\"agentEnabled\":false,\"alertMode\":\"display_only\",\"purchaseMode\":\"manual\"}")
@@ -1265,7 +1267,8 @@ model DistributorListing {
   tiempoEntrega       String?
 
   descripcion         String?  @db.Text
-  imageUrl            String?
+  imageUrls           Json?    // ["url1","url2",...] max 5
+  coverIndex          Int      @default(0)  // which image is the cover
   isActive            Boolean  @default(true)
 
   createdAt           DateTime @default(now())
