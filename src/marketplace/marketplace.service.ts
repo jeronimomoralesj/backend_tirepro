@@ -689,6 +689,15 @@ export class MarketplaceService {
     };
   }
 
+  async getUserRecentOrders(userId: string, limit = 3) {
+    return this.prisma.marketplaceOrder.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: { listing: { select: { id: true, marca: true, modelo: true, dimension: true, imageUrls: true, coverIndex: true, precioCop: true } } },
+    });
+  }
+
   async getListingSalesCount(listingId: string): Promise<number> {
     const result = await this.prisma.marketplaceOrder.aggregate({
       where: { listingId },

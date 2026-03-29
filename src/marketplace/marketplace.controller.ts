@@ -280,6 +280,12 @@ export class MarketplaceController {
     return this.svc.getDistributorSalesStats(distributorId);
   }
 
+  @Get('orders/user')
+  @UseGuards(JwtAuthGuard)
+  getUserOrders(@Query('userId') userId: string) {
+    return this.svc.getUserRecentOrders(userId);
+  }
+
   @Get('sales/listing/:id')
   getListingSales(@Param('id') id: string) {
     return this.svc.getListingSalesCount(id);
