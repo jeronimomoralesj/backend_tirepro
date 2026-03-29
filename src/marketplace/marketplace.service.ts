@@ -757,7 +757,7 @@ export class MarketplaceService {
     };
   }
 
-  async getUserRecentOrders(userId: string, limit = 3) {
+  async getUserRecentOrders(userId: string, limit = 20) {
     return this.prisma.marketplaceOrder.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
