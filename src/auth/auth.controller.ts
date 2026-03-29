@@ -19,6 +19,7 @@ interface AuthUser {
   name:      string;
   role:      UserRole;
   companyId: string;
+  userPlan:  string;
   company: {
     id:           string;
     name:         string;

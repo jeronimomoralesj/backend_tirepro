@@ -106,9 +106,11 @@ export class AuthService {
         email,
         name,
         password: hashed,
-        companyId: '',
+        companyId: null,
         role: UserRole.admin,
+        userPlan: 'free',
         puntos: 0,
+        isVerified: true, // standalone users skip email verification
       },
     });
 
@@ -133,6 +135,7 @@ export class AuthService {
         role: true,
         companyId: true,
         isVerified: true,
+        userPlan: true,
         company: {
           select: {
             id: true,
@@ -160,7 +163,7 @@ export class AuthService {
     const access_token = this.generateJwt({
       id: user.id,
       email: user.email,
-      companyId: user.companyId,
+      companyId: user.companyId ?? '',
       role: user.role,
     });
 
@@ -171,8 +174,9 @@ export class AuthService {
         email: user.email,
         name: user.name,
         role: user.role,
-        companyId: user.companyId,
-        company: user.company,
+        companyId: user.companyId ?? '',
+        company: user.company ?? null,
+        userPlan: (user as any).userPlan ?? 'free',
       },
     };
   }

@@ -138,12 +138,13 @@ model User {
   name              String
   email             String   @unique
   password          String
-  companyId         String
+  companyId         String?
   role              UserRole @default(admin)
   puntos            Int      @default(0)
   isVerified        Boolean  @default(false)
   verificationToken String?
   preferredLanguage String   @default("es")
+  userPlan          String   @default("free") // "free" | "plus" — for users without a company
 
   // Notification preferences — how this user wants to receive alerts
   notifChannel  String?   // 'email' | 'whatsapp' | 'none'  (null = not configured)
@@ -155,7 +156,7 @@ model User {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  company       Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company       Company?            @relation(fields: [companyId], references: [id], onDelete: Cascade)
   messages      Message[]
   incomes       Income[]
   vehicleAccess UserVehicleAccess[]
