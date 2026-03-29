@@ -5,7 +5,6 @@ import { MarketplaceService } from './marketplace.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @Controller('marketplace')
-@UseGuards(JwtAuthGuard)
 export class MarketplaceController {
   constructor(private readonly svc: MarketplaceService) {}
 
@@ -14,6 +13,7 @@ export class MarketplaceController {
   // ===========================================================================
 
   @Post('bid-requests')
+  @UseGuards(JwtAuthGuard)
   createBidRequest(@Body() body: {
     companyId: string;
     items: any[];
@@ -28,21 +28,25 @@ export class MarketplaceController {
   }
 
   @Get('bid-requests/company')
+  @UseGuards(JwtAuthGuard)
   getCompanyBidRequests(@Query('companyId') companyId: string) {
     return this.svc.getCompanyBidRequests(companyId);
   }
 
   @Get('bid-requests/available')
+  @UseGuards(JwtAuthGuard)
   getAvailableBids(@Query('distributorId') distributorId: string) {
     return this.svc.getAvailableBids(distributorId);
   }
 
   @Get('bid-requests/:id')
+  @UseGuards(JwtAuthGuard)
   getBidRequest(@Param('id') id: string) {
     return this.svc.getBidRequestById(id);
   }
 
   @Patch('bid-requests/:id/award')
+  @UseGuards(JwtAuthGuard)
   awardBid(
     @Param('id') id: string,
     @Body() body: { distributorId: string; companyId: string },
@@ -51,6 +55,7 @@ export class MarketplaceController {
   }
 
   @Patch('bid-requests/:id/cancel')
+  @UseGuards(JwtAuthGuard)
   cancelBidRequest(
     @Param('id') id: string,
     @Body() body: { companyId: string },
@@ -63,6 +68,7 @@ export class MarketplaceController {
   // ===========================================================================
 
   @Post('bid-responses')
+  @UseGuards(JwtAuthGuard)
   submitBidResponse(@Body() body: {
     bidRequestId: string;
     distributorId: string;
@@ -106,11 +112,13 @@ export class MarketplaceController {
   }
 
   @Get('listings/distributor')
+  @UseGuards(JwtAuthGuard)
   getDistributorListings(@Query('distributorId') distributorId: string) {
     return this.svc.getDistributorListings(distributorId);
   }
 
   @Post('listings')
+  @UseGuards(JwtAuthGuard)
   createListing(@Body() body: {
     distributorId: string;
     catalogId?: string;
@@ -131,6 +139,7 @@ export class MarketplaceController {
   }
 
   @Patch('listings/:id')
+  @UseGuards(JwtAuthGuard)
   updateListing(
     @Param('id') id: string,
     @Body() body: { distributorId: string } & Partial<{
@@ -149,6 +158,7 @@ export class MarketplaceController {
   }
 
   @Delete('listings/:id')
+  @UseGuards(JwtAuthGuard)
   deleteListing(
     @Param('id') id: string,
     @Body() body: { distributorId: string },
