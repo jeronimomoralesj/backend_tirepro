@@ -27,13 +27,10 @@ const TIRE_MAP: Record<string, string[]> = {
 // Fuzzy match vehicle class to our map
 function matchVehicleType(clase: string): string[] {
   const upper = (clase ?? '').toUpperCase().trim();
-  // Direct match
   if (TIRE_MAP[upper]) return TIRE_MAP[upper];
-  // Partial match
   for (const [key, dims] of Object.entries(TIRE_MAP)) {
     if (upper.includes(key) || key.includes(upper)) return dims;
   }
-  // Keywords
   if (upper.includes('TRACT') || upper.includes('CABEZOT')) return TIRE_MAP['TRACTOCAMION'];
   if (upper.includes('VOLQU')) return TIRE_MAP['VOLQUETA'];
   if (upper.includes('BUS') && !upper.includes('MICRO')) return TIRE_MAP['BUS'];
@@ -45,18 +42,41 @@ function matchVehicleType(clase: string): string[] {
   if (upper.includes('AUTO') || upper.includes('SEDAN') || upper.includes('HATCH')) return TIRE_MAP['AUTOMOVIL'];
   if (upper.includes('MOTO') && upper.includes('CARRO')) return TIRE_MAP['MOTOCARRO'];
   if (upper.includes('MOTO')) return TIRE_MAP['MOTOCICLETA'];
-  // Fallback
   return ['295/80R22.5', '11R22.5'];
+}
+
+// Infer vehicle type from Colombian plate format
+function inferFromPlateFormat(placa: string): {
+  found: boolean; clase?: string; dimensions: string[];
+} {
+  // Colombian plate formats:
+  // Motorcycles: 3 letters + 2 digits + 1 letter (e.g., ABC12D) — since 2008
+  // Cars/trucks old: 3 letters + 3 digits (e.g., ABC123)
+  // Diplomatic: starts with specific patterns
+  const motoPattern = /^[A-Z]{3}\d{2}[A-Z]$/;
+  if (motoPattern.test(placa)) {
+    return { found: true, clase: 'MOTOCICLETA', dimensions: TIRE_MAP['MOTOCICLETA'] };
+  }
+
+  // Standard vehicle plate: 3 letters + 3 digits
+  const carPattern = /^[A-Z]{3}\d{3}$/;
+  if (carPattern.test(placa)) {
+    // Can't determine exact type, but it's a 4+ wheel vehicle
+    // Return most common types as suggestions
+    return { found: false, dimensions: [] };
+  }
+
+  return { found: false, dimensions: [] };
 }
 
 // Regional datasets on datos.gov.co with real vehicle plate data
 const DATOS_GOV_DATASETS = [
-  { id: 'x9pp-pcn5', plateField: 'placa', region: 'Risaralda' },         // ~420K records
-  { id: 'g7i9-xkxz', plateField: 'placa', region: 'Floridablanca' },     // ~178K records
-  { id: 'p29a-y4rc', plateField: 'placa', region: 'Cucuta' },             // ~10K records
-  { id: 'dkxf-ikd7', plateField: 'placa', region: 'Caldas' },             // ~5K records
-  { id: 'syiu-8mvf', plateField: 'placa', region: 'Barbosa' },            // ~4K records
-  { id: 'fvnt-frpb', plateField: 'placa', region: 'Transporte publico' }, // ~4K records
+  { id: 'x9pp-pcn5', plateField: 'placa', region: 'Risaralda' },
+  { id: 'g7i9-xkxz', plateField: 'placa', region: 'Floridablanca' },
+  { id: 'p29a-y4rc', plateField: 'placa', region: 'Cucuta' },
+  { id: 'dkxf-ikd7', plateField: 'placa', region: 'Caldas' },
+  { id: 'syiu-8mvf', plateField: 'placa', region: 'Barbosa' },
+  { id: 'fvnt-frpb', plateField: 'placa', region: 'Transporte publico' },
 ];
 
 @Injectable()
@@ -108,18 +128,18 @@ export class PlateLookupService {
 
     // 3. Query all datos.gov.co regional datasets in parallel
     try {
-      const runtResult = await this.queryDatosGov(normalized);
-      if (runtResult) {
+      const govResult = await this.queryDatosGov(normalized);
+      if (govResult) {
         const result = {
           found: true,
           source: 'runt',
           placa: normalized,
-          marca: runtResult.marca,
-          linea: runtResult.linea,
-          modelo: runtResult.modelo,
-          clase: runtResult.clase,
-          servicio: runtResult.servicio,
-          dimensions: matchVehicleType(runtResult.clase ?? ''),
+          marca: govResult.marca,
+          linea: govResult.linea,
+          modelo: govResult.modelo,
+          clase: govResult.clase,
+          servicio: govResult.servicio,
+          dimensions: matchVehicleType(govResult.clase ?? ''),
         };
         this.cache.set(normalized, { data: result, ts: Date.now() });
         return result;
@@ -128,7 +148,42 @@ export class PlateLookupService {
       this.logger.warn(`datos.gov.co lookup failed for ${normalized}: ${err}`);
     }
 
-    // 4. Fallback — return not found
+    // 4. Try PlacaAPI.co (RegCheck) — paid API, plate-only nationwide lookup
+    try {
+      const placaApiResult = await this.queryPlacaApi(normalized);
+      if (placaApiResult) {
+        const result = {
+          found: true,
+          source: 'runt',
+          placa: normalized,
+          marca: placaApiResult.marca,
+          linea: placaApiResult.linea,
+          modelo: placaApiResult.modelo,
+          clase: placaApiResult.clase,
+          dimensions: matchVehicleType(placaApiResult.clase ?? ''),
+        };
+        this.cache.set(normalized, { data: result, ts: Date.now() });
+        return result;
+      }
+    } catch (err) {
+      this.logger.warn(`PlacaAPI lookup failed for ${normalized}: ${err}`);
+    }
+
+    // 5. Infer from plate format (e.g., motorcycle plates)
+    const inferred = inferFromPlateFormat(normalized);
+    if (inferred.found) {
+      const result = {
+        found: true,
+        source: 'formato',
+        placa: normalized,
+        clase: inferred.clase,
+        dimensions: inferred.dimensions,
+      };
+      this.cache.set(normalized, { data: result, ts: Date.now() });
+      return result;
+    }
+
+    // 6. Fallback — not found
     return {
       found: false,
       source: 'none',
@@ -140,7 +195,6 @@ export class PlateLookupService {
   private async queryDatosGov(placa: string): Promise<{
     marca?: string; linea?: string; modelo?: string; clase?: string; servicio?: string;
   } | null> {
-    // Query all regional datasets in parallel - first one to return data wins
     const queries = DATOS_GOV_DATASETS.map(async (ds) => {
       try {
         const controller = new AbortController();
@@ -148,10 +202,7 @@ export class PlateLookupService {
 
         const url = `https://www.datos.gov.co/resource/${ds.id}.json?$where=${ds.plateField}='${placa}'&$limit=1`;
         const res = await fetch(url, {
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'TirePro/1.0',
-          },
+          headers: { 'Accept': 'application/json', 'User-Agent': 'TirePro/1.0' },
           signal: controller.signal,
         });
         clearTimeout(timeout);
@@ -170,9 +221,7 @@ export class PlateLookupService {
             };
           }
         }
-      } catch {
-        // Individual dataset failed, continue with others
-      }
+      } catch { /* */ }
       return null;
     });
 
@@ -182,6 +231,89 @@ export class PlateLookupService {
       this.logger.log(`Plate ${placa} found in ${found._region} dataset`);
       return found;
     }
+    return null;
+  }
+
+  /**
+   * PlacaAPI.co (RegCheck) — SOAP API for nationwide Colombian plate lookups.
+   * Set PLACAAPI_USERNAME env var to enable.
+   * 10 free trial lookups, then ~770 COP ($0.20 USD) per lookup.
+   * Register at https://www.placaapi.co
+   */
+  private async queryPlacaApi(placa: string): Promise<{
+    marca?: string; linea?: string; modelo?: string; clase?: string;
+  } | null> {
+    const username = process.env.PLACAAPI_USERNAME;
+    if (!username) return null; // Not configured
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+
+      const soapBody = `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <CheckColombia xmlns="http://regcheck.org.uk">
+      <RegistrationNumber>${placa}</RegistrationNumber>
+      <username>${username}</username>
+    </CheckColombia>
+  </soap:Body>
+</soap:Envelope>`;
+
+      const res = await fetch('https://www.placaapi.co/api/reg.asmx', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/xml; charset=utf-8',
+          'SOAPAction': 'http://regcheck.org.uk/CheckColombia',
+        },
+        body: soapBody,
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!res.ok) return null;
+
+      const xml = await res.text();
+
+      // Parse key fields from the XML response
+      const extract = (tag: string): string | undefined => {
+        const match = xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
+        return match?.[1]?.trim() || undefined;
+      };
+
+      // The response nests vehicle data inside <vehicleJson> as JSON or as direct XML fields
+      // Try JSON first (vehicleJson field)
+      const jsonMatch = xml.match(/<vehicleJson>\s*({[\s\S]*?})\s*<\/vehicleJson>/);
+      if (jsonMatch) {
+        try {
+          const v = JSON.parse(jsonMatch[1]);
+          const marca = v.CarMake || v.Make || undefined;
+          const linea = v.CarModel || v.Model || undefined;
+          const modelo = v.RegistrationYear || v.Year || undefined;
+          const clase = v.BodyStyle || v.VehicleType || undefined;
+          if (marca || linea) {
+            this.logger.log(`PlacaAPI found: ${marca} ${linea} ${modelo}`);
+            return { marca, linea, modelo, clase };
+          }
+        } catch { /* parse failed, try XML */ }
+      }
+
+      // Fallback: extract from XML tags directly
+      const marca = extract('CarMake') || extract('Make');
+      const linea = extract('CarModel') || extract('Model');
+      const modelo = extract('RegistrationYear') || extract('Year');
+      const clase = extract('BodyStyle') || extract('Description');
+
+      if (marca || linea) {
+        this.logger.log(`PlacaAPI found (XML): ${marca} ${linea} ${modelo}`);
+        return { marca, linea, modelo, clase };
+      }
+    } catch (err) {
+      this.logger.debug(`PlacaAPI.co request failed: ${err}`);
+    }
+
     return null;
   }
 }
