@@ -223,6 +223,8 @@ export class MarketplaceService {
     dimension?: string;
     marca?: string;
     eje?: string;
+    tipo?: string;
+    distributorId?: string;
     minPrice?: number;
     maxPrice?: number;
     search?: string;
@@ -235,6 +237,8 @@ export class MarketplaceService {
     if (filters.dimension) where.dimension = filters.dimension;
     if (filters.marca) where.marca = { contains: filters.marca, mode: 'insensitive' };
     if (filters.eje) where.eje = filters.eje;
+    if (filters.tipo) where.tipo = filters.tipo;
+    if (filters.distributorId) where.distributorId = filters.distributorId;
     if (filters.minPrice || filters.maxPrice) {
       where.precioCop = {};
       if (filters.minPrice) where.precioCop.gte = filters.minPrice;
@@ -245,6 +249,7 @@ export class MarketplaceService {
         { marca: { contains: filters.search, mode: 'insensitive' } },
         { modelo: { contains: filters.search, mode: 'insensitive' } },
         { dimension: { contains: filters.search, mode: 'insensitive' } },
+        { distributor: { name: { contains: filters.search, mode: 'insensitive' } } },
       ];
     }
 
@@ -383,7 +388,7 @@ export class MarketplaceService {
   // ===========================================================================
 
   async getMarketplaceFilters() {
-    const [dimensions, marcas] = await Promise.all([
+    const [dimensions, marcas, distributorIds] = await Promise.all([
       this.prisma.distributorListing.findMany({
         where: { isActive: true, cantidadDisponible: { gt: 0 } },
         select: { dimension: true },
@@ -396,12 +401,51 @@ export class MarketplaceService {
         distinct: ['marca'],
         orderBy: { marca: 'asc' },
       }),
+      this.prisma.distributorListing.findMany({
+        where: { isActive: true, cantidadDisponible: { gt: 0 } },
+        select: { distributorId: true },
+        distinct: ['distributorId'],
+      }),
     ]);
+
+    const distributors = distributorIds.length > 0
+      ? await this.prisma.company.findMany({
+          where: { id: { in: distributorIds.map((d) => d.distributorId) } },
+          select: { id: true, name: true, profileImage: true },
+          orderBy: { name: 'asc' },
+        })
+      : [];
 
     return {
       dimensions: dimensions.map((d) => d.dimension),
       marcas: marcas.map((m) => m.marca),
+      distributors,
     };
+  }
+
+  // ===========================================================================
+  // DISTRIBUTOR PUBLIC PROFILE
+  // ===========================================================================
+
+  async getDistributorProfile(distributorId: string) {
+    const company = await this.prisma.company.findUnique({
+      where: { id: distributorId },
+      select: {
+        id: true, name: true, profileImage: true, plan: true,
+        emailAtencion: true, telefono: true, descripcion: true,
+        bannerImage: true, direccion: true, ciudad: true, sitioWeb: true,
+        _count: { select: { listings: { where: { isActive: true } } } },
+      },
+    });
+    if (!company) throw new NotFoundException('Distributor not found');
+    return company;
+  }
+
+  async updateDistributorProfile(distributorId: string, data: Partial<{
+    telefono: string; descripcion: string; bannerImage: string;
+    direccion: string; ciudad: string; sitioWeb: string; emailAtencion: string;
+  }>) {
+    return this.prisma.company.update({ where: { id: distributorId }, data });
   }
 
   // ===========================================================================

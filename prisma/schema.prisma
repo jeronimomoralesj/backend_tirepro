@@ -192,8 +192,14 @@ model Company {
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
-  // Distributor-only: attention email for receiving purchase proposals
+  // Distributor-only fields
   emailAtencion  String?
+  telefono       String?
+  descripcion    String?   @db.Text
+  bannerImage    String?
+  direccion      String?
+  ciudad         String?
+  sitioWeb       String?
 
   // Agent automation configuration
   agentSettings  Json    @default("{\"agentEnabled\":false,\"alertMode\":\"display_only\",\"purchaseMode\":\"manual\"}")
@@ -1248,6 +1254,7 @@ model DistributorListing {
   modelo              String
   dimension           String
   eje                 EjeType?
+  tipo                String    @default("nueva")  // "nueva" | "reencauche"
 
   precioCop           Float
   precioPromo         Float?

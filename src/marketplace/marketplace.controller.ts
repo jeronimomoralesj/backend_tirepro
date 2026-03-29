@@ -90,6 +90,8 @@ export class MarketplaceController {
     @Query('dimension') dimension?: string,
     @Query('marca') marca?: string,
     @Query('eje') eje?: string,
+    @Query('tipo') tipo?: string,
+    @Query('distributorId') distributorId?: string,
     @Query('minPrice') minPrice?: string,
     @Query('maxPrice') maxPrice?: string,
     @Query('search') search?: string,
@@ -98,7 +100,7 @@ export class MarketplaceController {
     @Query('limit') limit?: string,
   ) {
     return this.svc.searchListings({
-      dimension, marca, eje, search, sortBy,
+      dimension, marca, eje, tipo, distributorId, search, sortBy,
       minPrice: minPrice ? Number(minPrice) : undefined,
       maxPrice: maxPrice ? Number(maxPrice) : undefined,
       page: page ? Number(page) : undefined,
@@ -109,6 +111,23 @@ export class MarketplaceController {
   @Get('listings/filters')
   getFilters() {
     return this.svc.getMarketplaceFilters();
+  }
+
+  @Get('distributor/:id/profile')
+  getDistributorProfile(@Param('id') id: string) {
+    return this.svc.getDistributorProfile(id);
+  }
+
+  @Patch('distributor/:id/profile')
+  @UseGuards(JwtAuthGuard)
+  updateDistributorProfile(
+    @Param('id') id: string,
+    @Body() body: Partial<{
+      telefono: string; descripcion: string; bannerImage: string;
+      direccion: string; ciudad: string; sitioWeb: string; emailAtencion: string;
+    }>,
+  ) {
+    return this.svc.updateDistributorProfile(id, body);
   }
 
   @Get('listings/distributor')
