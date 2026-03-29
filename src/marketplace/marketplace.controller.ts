@@ -299,6 +299,14 @@ export class MarketplaceController {
     return this.plateLookup.lookupPlate(placa);
   }
 
+  @Post('plate-lookup/:placa/community')
+  saveCommunityPlate(
+    @Param('placa') placa: string,
+    @Body('clase') clase: string,
+  ) {
+    return this.plateLookup.saveCommunityLookup(placa, clase);
+  }
+
   @Get('distributors/map')
   getDistributorMap() {
     return this.svc.getDistributorMapData();

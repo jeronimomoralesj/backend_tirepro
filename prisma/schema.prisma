@@ -1342,3 +1342,24 @@ model MarketplaceOrder {
   @@index([createdAt])
   @@map("marketplace_orders")
 }
+
+// =============================================================================
+// PLATE CACHE — crowdsourced vehicle lookups
+// =============================================================================
+
+model PlateCache {
+  id        String   @id @default(uuid())
+  placa     String   @unique
+  marca     String?
+  linea     String?
+  modelo    String?
+  clase     String?
+  servicio  String?
+  source    String   @default("community") // runt, tirepro, community
+  lookups   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([placa])
+  @@map("plate_cache")
+}

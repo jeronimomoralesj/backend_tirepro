@@ -24,7 +24,6 @@ const TIRE_MAP: Record<string, string[]> = {
   'MOTOCARRO':       ['4.00-8', '4.50-12'],
 };
 
-// Fuzzy match vehicle class to our map
 function matchVehicleType(clase: string): string[] {
   const upper = (clase ?? '').toUpperCase().trim();
   if (TIRE_MAP[upper]) return TIRE_MAP[upper];
@@ -45,30 +44,6 @@ function matchVehicleType(clase: string): string[] {
   return ['295/80R22.5', '11R22.5'];
 }
 
-// Infer vehicle type from Colombian plate format
-function inferFromPlateFormat(placa: string): {
-  found: boolean; clase?: string; dimensions: string[];
-} {
-  // Colombian plate formats:
-  // Motorcycles: 3 letters + 2 digits + 1 letter (e.g., ABC12D) — since 2008
-  // Cars/trucks old: 3 letters + 3 digits (e.g., ABC123)
-  // Diplomatic: starts with specific patterns
-  const motoPattern = /^[A-Z]{3}\d{2}[A-Z]$/;
-  if (motoPattern.test(placa)) {
-    return { found: true, clase: 'MOTOCICLETA', dimensions: TIRE_MAP['MOTOCICLETA'] };
-  }
-
-  // Standard vehicle plate: 3 letters + 3 digits
-  const carPattern = /^[A-Z]{3}\d{3}$/;
-  if (carPattern.test(placa)) {
-    // Can't determine exact type, but it's a 4+ wheel vehicle
-    // Return most common types as suggestions
-    return { found: false, dimensions: [] };
-  }
-
-  return { found: false, dimensions: [] };
-}
-
 // Regional datasets on datos.gov.co with real vehicle plate data
 const DATOS_GOV_DATASETS = [
   { id: 'x9pp-pcn5', plateField: 'placa', region: 'Risaralda' },
@@ -79,34 +54,36 @@ const DATOS_GOV_DATASETS = [
   { id: 'fvnt-frpb', plateField: 'placa', region: 'Transporte publico' },
 ];
 
+interface LookupResult {
+  found: boolean;
+  source: string;
+  placa: string;
+  marca?: string;
+  linea?: string;
+  modelo?: string;
+  clase?: string;
+  servicio?: string;
+  dimensions: string[];
+}
+
 @Injectable()
 export class PlateLookupService {
   private readonly logger = new Logger(PlateLookupService.name);
-  private cache = new Map<string, { data: any; ts: number }>();
+  private memCache = new Map<string, { data: LookupResult; ts: number }>();
   private readonly CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async lookupPlate(placa: string): Promise<{
-    found: boolean;
-    source: string;
-    placa: string;
-    marca?: string;
-    linea?: string;
-    modelo?: string;
-    clase?: string;
-    servicio?: string;
-    dimensions: string[];
-  }> {
+  async lookupPlate(placa: string): Promise<LookupResult> {
     const normalized = placa.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-    // 1. Check cache
-    const cached = this.cache.get(normalized);
-    if (cached && Date.now() - cached.ts < this.CACHE_TTL) {
-      return cached.data;
+    // 1. Memory cache
+    const memCached = this.memCache.get(normalized);
+    if (memCached && Date.now() - memCached.ts < this.CACHE_TTL) {
+      return memCached.data;
     }
 
-    // 2. Check our own DB first
+    // 2. Check our vehicles DB
     try {
       const vehicle = await this.prisma.vehicle.findFirst({
         where: { placa: { equals: normalized, mode: 'insensitive' } },
@@ -114,82 +91,120 @@ export class PlateLookupService {
       });
       if (vehicle) {
         const dims = [...new Set(vehicle.tires.map(t => t.dimension).filter(Boolean))];
-        const result = {
-          found: true,
-          source: 'tirepro',
-          placa: normalized,
+        return this.cacheAndReturn({
+          found: true, source: 'tirepro', placa: normalized,
           clase: vehicle.tipovhc ?? undefined,
           dimensions: dims.length > 0 ? dims : matchVehicleType(vehicle.tipovhc ?? ''),
-        };
-        this.cache.set(normalized, { data: result, ts: Date.now() });
-        return result;
+        });
       }
-    } catch { /* not found */ }
+    } catch { /* */ }
 
-    // 3. Query all datos.gov.co regional datasets in parallel
+    // 3. Check persistent plate_cache (crowdsourced DB)
+    try {
+      const cached = await this.prisma.plateCache.findUnique({ where: { placa: normalized } });
+      if (cached) {
+        // Bump lookup count (fire and forget)
+        this.prisma.plateCache.update({
+          where: { placa: normalized },
+          data: { lookups: { increment: 1 } },
+        }).catch(() => {});
+
+        return this.cacheAndReturn({
+          found: true, source: cached.source, placa: normalized,
+          marca: cached.marca ?? undefined,
+          linea: cached.linea ?? undefined,
+          modelo: cached.modelo ?? undefined,
+          clase: cached.clase ?? undefined,
+          servicio: cached.servicio ?? undefined,
+          dimensions: matchVehicleType(cached.clase ?? ''),
+        });
+      }
+    } catch { /* */ }
+
+    // 4. Query datos.gov.co regional datasets in parallel
     try {
       const govResult = await this.queryDatosGov(normalized);
       if (govResult) {
-        const result = {
-          found: true,
-          source: 'runt',
-          placa: normalized,
-          marca: govResult.marca,
-          linea: govResult.linea,
-          modelo: govResult.modelo,
-          clase: govResult.clase,
+        // Save to plate_cache for future lookups
+        this.savePlateCache(normalized, govResult, 'runt');
+        return this.cacheAndReturn({
+          found: true, source: 'runt', placa: normalized,
+          marca: govResult.marca, linea: govResult.linea,
+          modelo: govResult.modelo, clase: govResult.clase,
           servicio: govResult.servicio,
           dimensions: matchVehicleType(govResult.clase ?? ''),
-        };
-        this.cache.set(normalized, { data: result, ts: Date.now() });
-        return result;
+        });
       }
     } catch (err) {
-      this.logger.warn(`datos.gov.co lookup failed for ${normalized}: ${err}`);
+      this.logger.warn(`datos.gov.co failed for ${normalized}: ${err}`);
     }
 
-    // 4. Try PlacaAPI.co (RegCheck) — paid API, plate-only nationwide lookup
+    // 5. PlacaAPI.co (paid, if configured)
     try {
-      const placaApiResult = await this.queryPlacaApi(normalized);
-      if (placaApiResult) {
-        const result = {
-          found: true,
-          source: 'runt',
-          placa: normalized,
-          marca: placaApiResult.marca,
-          linea: placaApiResult.linea,
-          modelo: placaApiResult.modelo,
-          clase: placaApiResult.clase,
-          dimensions: matchVehicleType(placaApiResult.clase ?? ''),
-        };
-        this.cache.set(normalized, { data: result, ts: Date.now() });
-        return result;
+      const placaResult = await this.queryPlacaApi(normalized);
+      if (placaResult) {
+        this.savePlateCache(normalized, placaResult, 'runt');
+        return this.cacheAndReturn({
+          found: true, source: 'runt', placa: normalized,
+          marca: placaResult.marca, linea: placaResult.linea,
+          modelo: placaResult.modelo, clase: placaResult.clase,
+          dimensions: matchVehicleType(placaResult.clase ?? ''),
+        });
       }
     } catch (err) {
-      this.logger.warn(`PlacaAPI lookup failed for ${normalized}: ${err}`);
+      this.logger.warn(`PlacaAPI failed for ${normalized}: ${err}`);
     }
 
-    // 5. Infer from plate format (e.g., motorcycle plates)
-    const inferred = inferFromPlateFormat(normalized);
-    if (inferred.found) {
-      const result = {
-        found: true,
-        source: 'formato',
-        placa: normalized,
-        clase: inferred.clase,
-        dimensions: inferred.dimensions,
-      };
-      this.cache.set(normalized, { data: result, ts: Date.now() });
-      return result;
+    // 6. Motorcycle plate format detection
+    if (/^[A-Z]{3}\d{2}[A-Z]$/.test(normalized)) {
+      return this.cacheAndReturn({
+        found: true, source: 'formato', placa: normalized,
+        clase: 'MOTOCICLETA',
+        dimensions: TIRE_MAP['MOTOCICLETA'],
+      });
     }
 
-    // 6. Fallback — not found
-    return {
-      found: false,
-      source: 'none',
+    // 7. Not found
+    return { found: false, source: 'none', placa: normalized, dimensions: [] };
+  }
+
+  /**
+   * Called by the frontend when a user manually selects their vehicle type.
+   * This builds the crowdsourced DB so the next person gets instant results.
+   */
+  async saveCommunityLookup(placa: string, clase: string): Promise<LookupResult> {
+    const normalized = placa.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const upperClase = clase.toUpperCase().trim();
+
+    await this.prisma.plateCache.upsert({
+      where: { placa: normalized },
+      create: { placa: normalized, clase: upperClase, source: 'community' },
+      update: { clase: upperClase, lookups: { increment: 1 } },
+    });
+
+    const result: LookupResult = {
+      found: true,
+      source: 'community',
       placa: normalized,
-      dimensions: [],
+      clase: upperClase,
+      dimensions: matchVehicleType(upperClase),
     };
+
+    this.memCache.set(normalized, { data: result, ts: Date.now() });
+    return result;
+  }
+
+  private cacheAndReturn(result: LookupResult): LookupResult {
+    this.memCache.set(result.placa, { data: result, ts: Date.now() });
+    return result;
+  }
+
+  private savePlateCache(placa: string, data: { marca?: string; linea?: string; modelo?: string; clase?: string; servicio?: string }, source: string) {
+    this.prisma.plateCache.upsert({
+      where: { placa },
+      create: { placa, marca: data.marca, linea: data.linea, modelo: data.modelo, clase: data.clase, servicio: data.servicio, source },
+      update: { marca: data.marca, linea: data.linea, modelo: data.modelo, clase: data.clase, servicio: data.servicio, source },
+    }).catch((err) => this.logger.warn(`Failed to cache plate ${placa}: ${err}`));
   }
 
   private async queryDatosGov(placa: string): Promise<{
@@ -199,17 +214,15 @@ export class PlateLookupService {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 6000);
-
         const url = `https://www.datos.gov.co/resource/${ds.id}.json?$where=${ds.plateField}='${placa}'&$limit=1`;
         const res = await fetch(url, {
           headers: { 'Accept': 'application/json', 'User-Agent': 'TirePro/1.0' },
           signal: controller.signal,
         });
         clearTimeout(timeout);
-
         if (res.ok) {
           const data = await res.json();
-          if (data && data.length > 0) {
+          if (data?.length > 0) {
             const v = data[0];
             return {
               marca: v.marca ?? undefined,
@@ -224,32 +237,23 @@ export class PlateLookupService {
       } catch { /* */ }
       return null;
     });
-
     const results = await Promise.all(queries);
     const found = results.find(r => r !== null);
     if (found) {
-      this.logger.log(`Plate ${placa} found in ${found._region} dataset`);
+      this.logger.log(`Plate ${placa} found in ${found._region}`);
       return found;
     }
     return null;
   }
 
-  /**
-   * PlacaAPI.co (RegCheck) — SOAP API for nationwide Colombian plate lookups.
-   * Set PLACAAPI_USERNAME env var to enable.
-   * 10 free trial lookups, then ~770 COP ($0.20 USD) per lookup.
-   * Register at https://www.placaapi.co
-   */
   private async queryPlacaApi(placa: string): Promise<{
     marca?: string; linea?: string; modelo?: string; clase?: string;
   } | null> {
     const username = process.env.PLACAAPI_USERNAME;
-    if (!username) return null; // Not configured
-
+    if (!username) return null;
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
-
       const soapBody = `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                xmlns:xsd="http://www.w3.org/2001/XMLSchema"
@@ -261,30 +265,16 @@ export class PlateLookupService {
     </CheckColombia>
   </soap:Body>
 </soap:Envelope>`;
-
       const res = await fetch('https://www.placaapi.co/api/reg.asmx', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'text/xml; charset=utf-8',
-          'SOAPAction': 'http://regcheck.org.uk/CheckColombia',
-        },
+        headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://regcheck.org.uk/CheckColombia' },
         body: soapBody,
         signal: controller.signal,
       });
       clearTimeout(timeout);
-
       if (!res.ok) return null;
-
       const xml = await res.text();
-
-      // Parse key fields from the XML response
-      const extract = (tag: string): string | undefined => {
-        const match = xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
-        return match?.[1]?.trim() || undefined;
-      };
-
-      // The response nests vehicle data inside <vehicleJson> as JSON or as direct XML fields
-      // Try JSON first (vehicleJson field)
+      const extract = (tag: string) => xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`))?.[1]?.trim() || undefined;
       const jsonMatch = xml.match(/<vehicleJson>\s*({[\s\S]*?})\s*<\/vehicleJson>/);
       if (jsonMatch) {
         try {
@@ -293,27 +283,17 @@ export class PlateLookupService {
           const linea = v.CarModel || v.Model || undefined;
           const modelo = v.RegistrationYear || v.Year || undefined;
           const clase = v.BodyStyle || v.VehicleType || undefined;
-          if (marca || linea) {
-            this.logger.log(`PlacaAPI found: ${marca} ${linea} ${modelo}`);
-            return { marca, linea, modelo, clase };
-          }
-        } catch { /* parse failed, try XML */ }
+          if (marca || linea) return { marca, linea, modelo, clase };
+        } catch { /* */ }
       }
-
-      // Fallback: extract from XML tags directly
       const marca = extract('CarMake') || extract('Make');
       const linea = extract('CarModel') || extract('Model');
       const modelo = extract('RegistrationYear') || extract('Year');
       const clase = extract('BodyStyle') || extract('Description');
-
-      if (marca || linea) {
-        this.logger.log(`PlacaAPI found (XML): ${marca} ${linea} ${modelo}`);
-        return { marca, linea, modelo, clase };
-      }
+      if (marca || linea) return { marca, linea, modelo, clase };
     } catch (err) {
-      this.logger.debug(`PlacaAPI.co request failed: ${err}`);
+      this.logger.debug(`PlacaAPI failed: ${err}`);
     }
-
     return null;
   }
 }
