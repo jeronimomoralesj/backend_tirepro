@@ -698,6 +698,95 @@ export class MarketplaceService {
     });
   }
 
+  // ===========================================================================
+  // RECOMMENDATIONS
+  // ===========================================================================
+
+  async getRecommendations(userId?: string, limit = 8) {
+    // If logged in, find what dimensions/brands they've bought and suggest similar
+    if (userId) {
+      const pastOrders = await this.prisma.marketplaceOrder.findMany({
+        where: { userId },
+        include: { listing: { select: { marca: true, dimension: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      });
+
+      if (pastOrders.length > 0) {
+        const brands = [...new Set(pastOrders.map((o) => o.listing.marca))];
+        const dimensions = [...new Set(pastOrders.map((o) => o.listing.dimension))];
+        const boughtIds = pastOrders.map((o) => o.listingId);
+
+        // Find listings matching their brands or dimensions, excluding already bought
+        const recommendations = await this.prisma.distributorListing.findMany({
+          where: {
+            isActive: true,
+            id: { notIn: boughtIds },
+            OR: [
+              { marca: { in: brands } },
+              { dimension: { in: dimensions } },
+            ],
+          },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+          include: {
+            distributor: { select: { id: true, name: true, profileImage: true } },
+            catalog: { select: { terreno: true, reencauchable: true, cpkEstimado: true, crowdAvgCpk: true, kmEstimadosReales: true } },
+            _count: { select: { reviews: true, orders: true } },
+            reviews: { select: { rating: true }, take: 100 },
+          },
+        });
+
+        if (recommendations.length >= 4) {
+          return { type: 'personalized' as const, listings: recommendations };
+        }
+      }
+    }
+
+    // Fallback: most sold items (works for guests and users with no purchase history)
+    // Get listing IDs sorted by order count
+    const topSold = await this.prisma.marketplaceOrder.groupBy({
+      by: ['listingId'],
+      _sum: { quantity: true },
+      orderBy: { _sum: { quantity: 'desc' } },
+      take: limit,
+    });
+
+    const ids = topSold.map((t) => t.listingId);
+
+    if (ids.length === 0) {
+      // No sales at all — return newest listings
+      const newest = await this.prisma.distributorListing.findMany({
+        where: { isActive: true },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        include: {
+          distributor: { select: { id: true, name: true, profileImage: true } },
+          catalog: { select: { terreno: true, reencauchable: true, cpkEstimado: true, crowdAvgCpk: true, kmEstimadosReales: true } },
+          _count: { select: { reviews: true, orders: true } },
+          reviews: { select: { rating: true }, take: 100 },
+        },
+      });
+      return { type: 'newest' as const, listings: newest };
+    }
+
+    const listings = await this.prisma.distributorListing.findMany({
+      where: { id: { in: ids }, isActive: true },
+      include: {
+        distributor: { select: { id: true, name: true, profileImage: true } },
+        catalog: { select: { terreno: true, reencauchable: true, cpkEstimado: true, crowdAvgCpk: true, kmEstimadosReales: true } },
+        _count: { select: { reviews: true, orders: true } },
+        reviews: { select: { rating: true }, take: 100 },
+      },
+    });
+
+    // Sort by the order from topSold
+    const orderMap = new Map(topSold.map((t, i) => [t.listingId, i]));
+    listings.sort((a, b) => (orderMap.get(a.id) ?? 999) - (orderMap.get(b.id) ?? 999));
+
+    return { type: 'popular' as const, listings };
+  }
+
   async getListingSalesCount(listingId: string): Promise<number> {
     const result = await this.prisma.marketplaceOrder.aggregate({
       where: { listingId },

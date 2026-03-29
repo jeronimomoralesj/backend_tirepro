@@ -286,6 +286,11 @@ export class MarketplaceController {
     return this.svc.getUserRecentOrders(userId);
   }
 
+  @Get('recommendations')
+  getRecommendations(@Query('userId') userId?: string) {
+    return this.svc.getRecommendations(userId || undefined);
+  }
+
   @Get('sales/listing/:id')
   getListingSales(@Param('id') id: string) {
     return this.svc.getListingSalesCount(id);
