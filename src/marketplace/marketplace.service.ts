@@ -372,6 +372,7 @@ export class MarketplaceService {
       orderBy: { updatedAt: 'desc' },
       include: {
         catalog: { select: { id: true, skuRef: true, marca: true, modelo: true, dimension: true } },
+        _count: { select: { orders: true, reviews: true } },
       },
     });
   }
@@ -443,7 +444,10 @@ export class MarketplaceService {
     cantidadDisponible: number;
     tiempoEntrega: string;
     descripcion: string;
-    imageUrl: string;
+    marca: string;
+    modelo: string;
+    imageUrls: string[];
+    coverIndex: number;
     isActive: boolean;
   }>) {
     const listing = await this.prisma.distributorListing.findUnique({ where: { id } });
