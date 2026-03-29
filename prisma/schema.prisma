@@ -95,6 +95,21 @@ enum NotificationType {
   critical
 }
 
+enum BidRequestStatus {
+  abierta
+  cerrada
+  adjudicada
+  cancelada
+}
+
+enum BidResponseStatus {
+  pendiente
+  cotizada
+  ganadora
+  rechazada
+  expirada
+}
+
 enum CouponCategory {
   llantas
   reencauches
@@ -195,6 +210,13 @@ model Company {
   inventoryBuckets TireInventoryBucket[]
   orders          PurchaseOrder[] @relation("CompanyOrders")
   receivedOrders  PurchaseOrder[] @relation("DistributorOrders")
+
+  // Marketplace
+  bidRequests       BidRequest[]         @relation("CompanyBidRequests")
+  wonBids           BidRequest[]         @relation("WonBids")
+  bidInvitations    BidInvitation[]      @relation("BidInvitations")
+  bidResponses      BidResponse[]        @relation("BidResponses")
+  listings          DistributorListing[] @relation("DistributorListings")
 
   @@index([plan])
 }
@@ -1138,4 +1160,116 @@ model TireMasterCatalog {
   @@index([cpkEstimado])
   @@index([fuente])
   @@map("tire_master_catalog")
+
+  listings DistributorListing[]
+}
+
+// =============================================================================
+// MARKETPLACE — Bid System + Ecommerce Listings
+// =============================================================================
+
+model BidRequest {
+  id              String           @id @default(uuid())
+  companyId       String
+  status          BidRequestStatus @default(abierta)
+
+  items           Json             // [{tireId?, marca, dimension, diseno, eje, cantidad, tipo:"nueva"|"reencauche", catalogId?}]
+  totalEstimado   Float?
+  notas           String?          @db.Text
+  deliveryAddress String?
+
+  deadline        DateTime?
+  maxBidders      Int              @default(10)
+  isPublic        Boolean          @default(false)
+
+  winnerId        String?
+  resolvedAt      DateTime?
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  company         Company          @relation("CompanyBidRequests", fields: [companyId], references: [id])
+  winner          Company?         @relation("WonBids", fields: [winnerId], references: [id])
+  responses       BidResponse[]
+  invitations     BidInvitation[]
+
+  @@index([companyId, status])
+  @@index([status, isPublic])
+  @@index([deadline])
+  @@index([createdAt])
+  @@map("bid_requests")
+}
+
+model BidInvitation {
+  id              String   @id @default(uuid())
+  bidRequestId    String
+  distributorId   String
+  sentAt          DateTime @default(now())
+
+  bidRequest      BidRequest @relation(fields: [bidRequestId], references: [id], onDelete: Cascade)
+  distributor     Company    @relation("BidInvitations", fields: [distributorId], references: [id])
+
+  @@unique([bidRequestId, distributorId])
+  @@index([distributorId])
+  @@map("bid_invitations")
+}
+
+model BidResponse {
+  id              String            @id @default(uuid())
+  bidRequestId    String
+  distributorId   String
+  status          BidResponseStatus @default(pendiente)
+
+  cotizacion      Json?             // [{itemIndex, precioUnitario, disponible, tiempoEntrega, notas, catalogId?}]
+  totalCotizado   Float?
+  notas           String?           @db.Text
+  incluyeIva      Boolean           @default(false)
+  tiempoEntrega   String?
+
+  submittedAt     DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  bidRequest      BidRequest @relation(fields: [bidRequestId], references: [id], onDelete: Cascade)
+  distributor     Company    @relation("BidResponses", fields: [distributorId], references: [id])
+
+  @@unique([bidRequestId, distributorId])
+  @@index([distributorId, status])
+  @@index([bidRequestId, status])
+  @@map("bid_responses")
+}
+
+model DistributorListing {
+  id                  String   @id @default(uuid())
+  distributorId       String
+
+  catalogId           String?
+  marca               String
+  modelo              String
+  dimension           String
+  eje                 EjeType?
+
+  precioCop           Float
+  precioPromo         Float?
+  promoHasta          DateTime?
+  incluyeIva          Boolean  @default(false)
+
+  cantidadDisponible  Int      @default(0)
+  tiempoEntrega       String?
+
+  descripcion         String?  @db.Text
+  imageUrl            String?
+  isActive            Boolean  @default(true)
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  distributor         Company            @relation("DistributorListings", fields: [distributorId], references: [id])
+  catalog             TireMasterCatalog? @relation(fields: [catalogId], references: [id])
+
+  @@index([distributorId, isActive])
+  @@index([dimension, isActive])
+  @@index([marca, dimension, isActive])
+  @@index([precioCop])
+  @@map("distributor_listings")
 }
