@@ -264,4 +264,24 @@ export class MarketplaceController {
   getDistributorOrders(@Query('distributorId') distributorId: string) {
     return this.svc.getDistributorOrders(distributorId);
   }
+
+  @Patch('orders/:id/status')
+  @UseGuards(JwtAuthGuard)
+  updateOrderStatus(
+    @Param('id') id: string,
+    @Body() body: { distributorId: string; status: string },
+  ) {
+    return this.svc.updateOrderStatus(id, body.distributorId, body.status);
+  }
+
+  @Get('sales/distributor')
+  @UseGuards(JwtAuthGuard)
+  getDistributorSales(@Query('distributorId') distributorId: string) {
+    return this.svc.getDistributorSalesStats(distributorId);
+  }
+
+  @Get('sales/listing/:id')
+  getListingSales(@Param('id') id: string) {
+    return this.svc.getListingSalesCount(id);
+  }
 }

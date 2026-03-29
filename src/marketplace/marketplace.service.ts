@@ -291,7 +291,7 @@ export class MarketplaceService {
               crowdAvgPrice: true, psiRecomendado: true, rtdMm: true,
             },
           },
-          _count: { select: { reviews: true } },
+          _count: { select: { reviews: true, orders: true } },
           reviews: { select: { rating: true }, take: 100 },
         },
       }),
@@ -511,7 +511,14 @@ export class MarketplaceService {
       },
     });
     if (!listing) throw new NotFoundException('Listing not found');
-    return listing;
+
+    // Add sales count
+    const salesCount = await this.prisma.marketplaceOrder.aggregate({
+      where: { listingId: id },
+      _sum: { quantity: true },
+    });
+
+    return { ...listing, totalSold: salesCount._sum.quantity ?? 0 };
   }
 
   // ===========================================================================
@@ -623,8 +630,71 @@ export class MarketplaceService {
     return this.prisma.marketplaceOrder.findMany({
       where: { distributorId },
       orderBy: { createdAt: 'desc' },
-      include: { listing: { select: { marca: true, modelo: true, dimension: true } } },
+      include: { listing: { select: { marca: true, modelo: true, dimension: true, imageUrls: true, coverIndex: true } } },
     });
+  }
+
+  async updateOrderStatus(orderId: string, distributorId: string, status: string) {
+    const order = await this.prisma.marketplaceOrder.findUnique({ where: { id: orderId } });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.distributorId !== distributorId) throw new BadRequestException('Not your order');
+    return this.prisma.marketplaceOrder.update({ where: { id: orderId }, data: { status } });
+  }
+
+  async getDistributorSalesStats(distributorId: string) {
+    const [orders, totalRevenue, totalSold, byListing, byMonth] = await Promise.all([
+      this.prisma.marketplaceOrder.count({ where: { distributorId } }),
+      this.prisma.marketplaceOrder.aggregate({ where: { distributorId }, _sum: { totalCop: true } }),
+      this.prisma.marketplaceOrder.aggregate({ where: { distributorId }, _sum: { quantity: true } }),
+      this.prisma.marketplaceOrder.groupBy({
+        by: ['listingId'],
+        where: { distributorId },
+        _sum: { quantity: true, totalCop: true },
+        _count: true,
+        orderBy: { _sum: { totalCop: 'desc' } },
+        take: 10,
+      }),
+      this.prisma.$queryRaw`
+        SELECT DATE_TRUNC('month', "createdAt") as month,
+               COUNT(*)::int as orders,
+               SUM("totalCop")::float as revenue,
+               SUM("quantity")::int as units
+        FROM marketplace_orders
+        WHERE "distributorId" = ${distributorId}
+        GROUP BY month ORDER BY month DESC LIMIT 12
+      ` as Promise<any[]>,
+    ]);
+
+    // Enrich top listings with names
+    const listingIds = byListing.map((l) => l.listingId);
+    const listings = listingIds.length > 0
+      ? await this.prisma.distributorListing.findMany({
+          where: { id: { in: listingIds } },
+          select: { id: true, marca: true, modelo: true, dimension: true },
+        })
+      : [];
+    const listingMap = new Map(listings.map((l) => [l.id, l]));
+
+    return {
+      totalOrders: orders,
+      totalRevenue: totalRevenue._sum.totalCop ?? 0,
+      totalUnitsSold: totalSold._sum.quantity ?? 0,
+      topListings: byListing.map((l) => ({
+        listing: listingMap.get(l.listingId) ?? { marca: '?', modelo: '?', dimension: '?' },
+        orders: l._count,
+        unitsSold: l._sum.quantity ?? 0,
+        revenue: l._sum.totalCop ?? 0,
+      })),
+      monthlyStats: byMonth,
+    };
+  }
+
+  async getListingSalesCount(listingId: string): Promise<number> {
+    const result = await this.prisma.marketplaceOrder.aggregate({
+      where: { listingId },
+      _sum: { quantity: true },
+    });
+    return result._sum.quantity ?? 0;
   }
 
   // ===========================================================================
