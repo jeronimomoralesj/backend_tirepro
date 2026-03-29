@@ -19,6 +19,9 @@ const TIRE_MAP: Record<string, string[]> = {
   'AUTOMOVIL':       ['195/65R15', '205/55R16', '215/60R16'],
   'CAMPERO':         ['265/70R16', '245/70R16', '235/75R15'],
   'PICKUP':          ['265/70R16', '245/70R16', '255/70R16'],
+  // Motorcycles
+  'MOTOCICLETA':     ['120/80-17', '90/90-18', '110/80-17'],
+  'MOTOCARRO':       ['4.00-8', '4.50-12'],
 };
 
 // Fuzzy match vehicle class to our map
@@ -40,9 +43,21 @@ function matchVehicleType(clase: string): string[] {
   if (upper.includes('FURG')) return TIRE_MAP['FURGON'];
   if (upper.includes('CAMP') || upper.includes('SUV') || upper.includes('4X4')) return TIRE_MAP['CAMPERO'];
   if (upper.includes('AUTO') || upper.includes('SEDAN') || upper.includes('HATCH')) return TIRE_MAP['AUTOMOVIL'];
+  if (upper.includes('MOTO') && upper.includes('CARRO')) return TIRE_MAP['MOTOCARRO'];
+  if (upper.includes('MOTO')) return TIRE_MAP['MOTOCICLETA'];
   // Fallback
   return ['295/80R22.5', '11R22.5'];
 }
+
+// Regional datasets on datos.gov.co with real vehicle plate data
+const DATOS_GOV_DATASETS = [
+  { id: 'x9pp-pcn5', plateField: 'placa', region: 'Risaralda' },         // ~420K records
+  { id: 'g7i9-xkxz', plateField: 'placa', region: 'Floridablanca' },     // ~178K records
+  { id: 'p29a-y4rc', plateField: 'placa', region: 'Cucuta' },             // ~10K records
+  { id: 'dkxf-ikd7', plateField: 'placa', region: 'Caldas' },             // ~5K records
+  { id: 'syiu-8mvf', plateField: 'placa', region: 'Barbosa' },            // ~4K records
+  { id: 'fvnt-frpb', plateField: 'placa', region: 'Transporte publico' }, // ~4K records
+];
 
 @Injectable()
 export class PlateLookupService {
@@ -91,9 +106,9 @@ export class PlateLookupService {
       }
     } catch { /* not found */ }
 
-    // 3. Try RUNT public consultation
+    // 3. Query all datos.gov.co regional datasets in parallel
     try {
-      const runtResult = await this.queryRunt(normalized);
+      const runtResult = await this.queryDatosGov(normalized);
       if (runtResult) {
         const result = {
           found: true,
@@ -110,7 +125,7 @@ export class PlateLookupService {
         return result;
       }
     } catch (err) {
-      this.logger.warn(`RUNT lookup failed for ${normalized}: ${err}`);
+      this.logger.warn(`datos.gov.co lookup failed for ${normalized}: ${err}`);
     }
 
     // 4. Fallback — return not found
@@ -122,75 +137,51 @@ export class PlateLookupService {
     };
   }
 
-  private async queryRunt(placa: string): Promise<{
+  private async queryDatosGov(placa: string): Promise<{
     marca?: string; linea?: string; modelo?: string; clase?: string; servicio?: string;
   } | null> {
-    // Try the RUNT public consultation endpoint
-    // This is the same data citizens can freely look up on www.runt.com.co
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
+    // Query all regional datasets in parallel - first one to return data wins
+    const queries = DATOS_GOV_DATASETS.map(async (ds) => {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 6000);
 
-      const res = await fetch(
-        `https://www.datos.gov.co/resource/jbjy-vk9h.json?$where=upper(no_placa)='${placa}'&$limit=1`,
-        {
+        const url = `https://www.datos.gov.co/resource/${ds.id}.json?$where=${ds.plateField}='${placa}'&$limit=1`;
+        const res = await fetch(url, {
           headers: {
             'Accept': 'application/json',
             'User-Agent': 'TirePro/1.0',
           },
           signal: controller.signal,
-        },
-      );
-      clearTimeout(timeout);
+        });
+        clearTimeout(timeout);
 
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.length > 0) {
-          const v = data[0];
-          return {
-            marca: v.marca ?? v.brand ?? undefined,
-            linea: v.linea ?? v.line ?? undefined,
-            modelo: v.modelo ?? v.model ?? v.a_o_modelo ?? undefined,
-            clase: v.clase_vehiculo ?? v.clase ?? v.vehicle_class ?? undefined,
-            servicio: v.tipo_servicio ?? v.servicio ?? undefined,
-          };
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.length > 0) {
+            const v = data[0];
+            return {
+              marca: v.marca ?? undefined,
+              linea: v.linea ?? undefined,
+              modelo: v.modelo ?? v.a_o_modelo ?? undefined,
+              clase: v.clase_vehiculo ?? v.clase ?? v.tipo_de_vehiculo ?? undefined,
+              servicio: v.tipo_servicio ?? v.servicio ?? undefined,
+              _region: ds.region,
+            };
+          }
         }
+      } catch {
+        // Individual dataset failed, continue with others
       }
-    } catch (err) {
-      this.logger.debug(`datos.gov.co lookup failed: ${err}`);
+      return null;
+    });
+
+    const results = await Promise.all(queries);
+    const found = results.find(r => r !== null);
+    if (found) {
+      this.logger.log(`Plate ${placa} found in ${found._region} dataset`);
+      return found;
     }
-
-    // Try alternative open data source
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-
-      const res = await fetch(
-        `https://www.datos.gov.co/resource/a3xd-k4xj.json?$where=upper(placa)='${placa}'&$limit=1`,
-        {
-          headers: { 'Accept': 'application/json', 'User-Agent': 'TirePro/1.0' },
-          signal: controller.signal,
-        },
-      );
-      clearTimeout(timeout);
-
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.length > 0) {
-          const v = data[0];
-          return {
-            marca: v.marca ?? undefined,
-            linea: v.linea ?? undefined,
-            modelo: v.modelo ?? undefined,
-            clase: v.clase ?? v.clase_vehiculo ?? undefined,
-            servicio: v.servicio ?? undefined,
-          };
-        }
-      }
-    } catch (err) {
-      this.logger.debug(`Alternative lookup failed: ${err}`);
-    }
-
     return null;
   }
 }
