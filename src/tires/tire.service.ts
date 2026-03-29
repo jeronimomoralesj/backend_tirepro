@@ -1591,67 +1591,53 @@ export class TireService {
 
     await this.notificationsService.deleteByTire(tireId);
 
-    if (updatedTire.alertLevel !== TireAlertLevel.ok) {
-      const analysis = this.buildTireAnalysis(updatedTire);
-      await this.notificationsService.createNotification({
-        title:     `Llantas — ${updatedTire.alertLevel === TireAlertLevel.critical ? 'Crítico' : 'Precaución'}`,
-        message:   analysis.recomendaciones[0] ?? '',
-        type:      updatedTire.alertLevel === TireAlertLevel.critical ? 'critical' : 'warning',
-        tireId:    updatedTire.id,
-        vehicleId: updatedTire.vehicleId ?? undefined,
-        companyId: updatedTire.companyId,
-      });
-    }
-
-    // ── Wear pattern notifications (after delete so they don't get wiped) ──
+    // ── Single source of truth: buildTireAnalysis generates all recommendations ──
     try {
-      const wpInt = dto.profundidadInt;
-      const wpCen = dto.profundidadCen;
-      const wpExt = dto.profundidadExt;
-      const shoulderDelta = Math.abs(wpInt - wpExt);
-      const centerVsEdge = wpCen - ((wpInt + wpExt) / 2);
+      const analysis = this.buildTireAnalysis(updatedTire);
+      const recs = analysis.recomendaciones;
 
-      // Shoulder delta → alignment issue
-      if (shoulderDelta >= C.ALIGNMENT_WARN_MM) {
-        const worstSide = wpInt < wpExt ? 'interior' : 'exterior';
+      if (recs.length > 0) {
+        // Determine the most appropriate actionType from the recommendation content
+        const fullMsg = recs.join(' ');
+        let actionType = 'inspect';
+        let priority = 1;
+
+        if (fullMsg.includes('Retiro') || fullMsg.includes('retirar') || fullMsg.includes('Retirar')) {
+          actionType = 'remove_from_service';
+          priority = 3;
+        } else if (fullMsg.includes('alineación') || fullMsg.includes('Alineación')) {
+          actionType = 'pressure_adjust';
+          priority = 2;
+        } else if (fullMsg.includes('presión') || fullMsg.includes('Presión') || fullMsg.includes('Sobreinflado') || fullMsg.includes('sobreinflado')) {
+          actionType = 'pressure_adjust';
+          priority = 2;
+        } else if (fullMsg.includes('reencauche') || fullMsg.includes('Reencauche') || fullMsg.includes('Regrabado')) {
+          actionType = 'retread';
+          priority = 2;
+        } else if (fullMsg.includes('rotar') || fullMsg.includes('Rotar') || fullMsg.includes('Emparejar')) {
+          actionType = 'rotate';
+          priority = 2;
+        }
+
+        const isCritical = updatedTire.alertLevel === TireAlertLevel.critical
+          || recs[0].includes('🔴');
+
         await this.notificationsService.createNotification({
-          title: `Desalineación detectada: ${updatedTire.placa} P${updatedTire.posicion}`,
-          message: `Diferencia de ${shoulderDelta.toFixed(1)}mm entre hombros (hombro ${worstSide} más gastado). Revisar alineación del vehículo.`,
-          type: shoulderDelta >= 2.5 ? 'critical' : 'warning',
+          title: `${updatedTire.placa} P${updatedTire.posicion} — ${isCritical ? 'Acción requerida' : 'Atención'}`,
+          message: recs.join('\n'),
+          type: isCritical ? 'critical' : 'warning',
           tireId,
           vehicleId: updatedTire.vehicleId ?? undefined,
           companyId: updatedTire.companyId,
-          actionType: 'pressure_adjust',
-          actionPayload: { tireId, shoulderDelta, worstSide, position: updatedTire.posicion },
-          actionLabel: `Revisar alineación (Δ${shoulderDelta.toFixed(1)}mm)`,
+          actionType,
+          actionPayload: { tireId, position: updatedTire.posicion, vehicleId: updatedTire.vehicleId },
+          actionLabel: recs[0].replace(/^[🔴🟡🟢⚠️\s]+/, '').substring(0, 80),
           groupKey: updatedTire.vehicleId ?? undefined,
-          priority: shoulderDelta >= 2.5 ? 3 : 2,
-        });
-      }
-
-      // Center vs edges → pressure wear pattern
-      if (Math.abs(centerVsEdge) > 1.5) {
-        const isUnderInflated = centerVsEdge < -1.5;
-        await this.notificationsService.createNotification({
-          title: isUnderInflated
-            ? `Baja presión detectada: ${updatedTire.placa} P${updatedTire.posicion}`
-            : `Sobreinflado detectado: ${updatedTire.placa} P${updatedTire.posicion}`,
-          message: isUnderInflated
-            ? `Desgaste excesivo en hombros (${Math.abs(centerVsEdge).toFixed(1)}mm más que el centro). Indica baja presión crónica.`
-            : `Desgaste excesivo en centro (${centerVsEdge.toFixed(1)}mm más que hombros). Indica sobreinflado.`,
-          type: 'warning',
-          tireId,
-          vehicleId: updatedTire.vehicleId ?? undefined,
-          companyId: updatedTire.companyId,
-          actionType: 'pressure_adjust',
-          actionPayload: { tireId, centerVsEdge, isUnderInflated, position: updatedTire.posicion },
-          actionLabel: isUnderInflated ? 'Aumentar presión' : 'Reducir presión',
-          groupKey: updatedTire.vehicleId ?? undefined,
-          priority: 2,
+          priority,
         });
       }
     } catch (err: any) {
-      this.logger.warn(`Wear pattern notification failed for tire ${tireId}: ${err.message}`);
+      this.logger.warn(`Notification creation failed for tire ${tireId}: ${err.message}`);
     }
 
     await this.invalidateCompanyCache(tire.companyId);
