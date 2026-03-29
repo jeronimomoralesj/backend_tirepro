@@ -520,7 +520,7 @@ export class MarketplaceService {
         id: true, name: true, profileImage: true, plan: true,
         emailAtencion: true, telefono: true, descripcion: true,
         bannerImage: true, direccion: true, ciudad: true, sitioWeb: true,
-        cobertura: true, tipoEntrega: true,
+        cobertura: true, tipoEntrega: true, colorMarca: true,
         _count: { select: { listings: { where: { isActive: true } } } },
       },
     });
@@ -531,7 +531,7 @@ export class MarketplaceService {
   async updateDistributorProfile(distributorId: string, data: Partial<{
     telefono: string; descripcion: string; bannerImage: string;
     direccion: string; ciudad: string; sitioWeb: string; emailAtencion: string;
-    cobertura: string[]; tipoEntrega: string;
+    cobertura: any[]; tipoEntrega: string; colorMarca: string;
   }>) {
     return this.prisma.company.update({ where: { id: distributorId }, data });
   }
@@ -881,6 +881,28 @@ export class MarketplaceService {
       _sum: { quantity: true },
     });
     return result._sum.quantity ?? 0;
+  }
+
+  // ===========================================================================
+  // DISTRIBUTOR MAP DATA
+  // ===========================================================================
+
+  async getDistributorMapData() {
+    const distributors = await this.prisma.company.findMany({
+      where: {
+        plan: 'distribuidor',
+        cobertura: { not: { equals: null } },
+      },
+      select: {
+        id: true, name: true, profileImage: true, colorMarca: true,
+        cobertura: true, telefono: true, ciudad: true,
+        _count: { select: { listings: { where: { isActive: true } } } },
+      },
+    });
+    return distributors.filter((d) => {
+      const cob = d.cobertura as any;
+      return Array.isArray(cob) && cob.length > 0 && cob.some((c: any) => c.lat && c.lng);
+    });
   }
 
   // ===========================================================================

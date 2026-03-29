@@ -202,8 +202,9 @@ model Company {
   direccion      String?
   ciudad         String?
   sitioWeb       String?
-  cobertura      Json?     // ["Bogota","Medellin","Cali",...] — cities they deliver to
+  cobertura      Json?     // [{ciudad, direccion, lat, lng},...] — locations with coordinates
   tipoEntrega    String?   // "domicilio" | "recogida" | "ambos"
+  colorMarca     String?   // hex color for map pins and branding
 
   // Agent automation configuration
   agentSettings  Json    @default("{\"agentEnabled\":false,\"alertMode\":\"display_only\",\"purchaseMode\":\"manual\"}")

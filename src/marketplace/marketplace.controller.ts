@@ -292,6 +292,11 @@ export class MarketplaceController {
     return this.svc.rescoreAllListings();
   }
 
+  @Get('distributors/map')
+  getDistributorMap() {
+    return this.svc.getDistributorMapData();
+  }
+
   @Get('recommendations')
   getRecommendations(@Query('userId') userId?: string) {
     return this.svc.getRecommendations(userId || undefined);
