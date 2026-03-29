@@ -308,6 +308,13 @@ export class MarketplaceService {
     descripcion?: string;
     imageUrl?: string;
   }) {
+    // Auto-link to catalog by marca+modelo+dimension
+    if (!data.catalogId && data.marca && data.modelo && data.dimension) {
+      const catalog = await this.prisma.tireMasterCatalog.findFirst({
+        where: { marca: { equals: data.marca, mode: 'insensitive' }, modelo: { equals: data.modelo, mode: 'insensitive' }, dimension: data.dimension },
+      });
+      if (catalog) data.catalogId = catalog.id;
+    }
     // If catalogId provided, enrich from catalog
     if (data.catalogId) {
       const catalog = await this.prisma.tireMasterCatalog.findUnique({ where: { id: data.catalogId } });
