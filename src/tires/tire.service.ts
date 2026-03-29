@@ -1603,6 +1603,57 @@ export class TireService {
       });
     }
 
+    // ── Wear pattern notifications (after delete so they don't get wiped) ──
+    try {
+      const wpInt = dto.profundidadInt;
+      const wpCen = dto.profundidadCen;
+      const wpExt = dto.profundidadExt;
+      const shoulderDelta = Math.abs(wpInt - wpExt);
+      const centerVsEdge = wpCen - ((wpInt + wpExt) / 2);
+
+      // Shoulder delta → alignment issue
+      if (shoulderDelta >= C.ALIGNMENT_WARN_MM) {
+        const worstSide = wpInt < wpExt ? 'interior' : 'exterior';
+        await this.notificationsService.createNotification({
+          title: `Desalineación detectada: ${updatedTire.placa} P${updatedTire.posicion}`,
+          message: `Diferencia de ${shoulderDelta.toFixed(1)}mm entre hombros (hombro ${worstSide} más gastado). Revisar alineación del vehículo.`,
+          type: shoulderDelta >= 2.5 ? 'critical' : 'warning',
+          tireId,
+          vehicleId: updatedTire.vehicleId ?? undefined,
+          companyId: updatedTire.companyId,
+          actionType: 'pressure_adjust',
+          actionPayload: { tireId, shoulderDelta, worstSide, position: updatedTire.posicion },
+          actionLabel: `Revisar alineación (Δ${shoulderDelta.toFixed(1)}mm)`,
+          groupKey: updatedTire.vehicleId ?? undefined,
+          priority: shoulderDelta >= 2.5 ? 3 : 2,
+        });
+      }
+
+      // Center vs edges → pressure wear pattern
+      if (Math.abs(centerVsEdge) > 1.5) {
+        const isUnderInflated = centerVsEdge < -1.5;
+        await this.notificationsService.createNotification({
+          title: isUnderInflated
+            ? `Baja presión detectada: ${updatedTire.placa} P${updatedTire.posicion}`
+            : `Sobreinflado detectado: ${updatedTire.placa} P${updatedTire.posicion}`,
+          message: isUnderInflated
+            ? `Desgaste excesivo en hombros (${Math.abs(centerVsEdge).toFixed(1)}mm más que el centro). Indica baja presión crónica.`
+            : `Desgaste excesivo en centro (${centerVsEdge.toFixed(1)}mm más que hombros). Indica sobreinflado.`,
+          type: 'warning',
+          tireId,
+          vehicleId: updatedTire.vehicleId ?? undefined,
+          companyId: updatedTire.companyId,
+          actionType: 'pressure_adjust',
+          actionPayload: { tireId, centerVsEdge, isUnderInflated, position: updatedTire.posicion },
+          actionLabel: isUnderInflated ? 'Aumentar presión' : 'Reducir presión',
+          groupKey: updatedTire.vehicleId ?? undefined,
+          priority: 2,
+        });
+      }
+    } catch (err: any) {
+      this.logger.warn(`Wear pattern notification failed for tire ${tireId}: ${err.message}`);
+    }
+
     await this.invalidateCompanyCache(tire.companyId);
     if (tire.vehicleId) {
       await Promise.allSettled([
@@ -2375,66 +2426,6 @@ export class TireService {
       }
     } catch (err: any) {
       this.logger.warn(`Dual harmony check failed for tire ${tireId}: ${err.message}`);
-    }
-
-    // ── Wear pattern notifications (shoulder/pressure) ─────────────────────
-    try {
-      const shoulderDelta = Math.abs(pInt - pExt);
-      const centerVsEdge = pCen - ((pInt + pExt) / 2);
-
-      // Shoulder delta → alignment issue
-      if (shoulderDelta >= C.ALIGNMENT_WARN_MM) {
-        const existing = await this.prisma.notification.findFirst({
-          where: { tireId, actionType: 'pressure_adjust', executed: false,
-                   message: { contains: 'alineación' } },
-        });
-        if (!existing) {
-          const worstSide = pInt < pExt ? 'interior' : 'exterior';
-          await this.notificationsService.createNotification({
-            title: `Desalineación detectada: ${updatedTire.placa} P${updatedTire.posicion}`,
-            message: `Diferencia de ${shoulderDelta.toFixed(1)}mm entre hombros (hombro ${worstSide} más gastado). Revisar alineación del vehículo.`,
-            type: shoulderDelta >= 2.5 ? 'critical' : 'warning',
-            tireId,
-            vehicleId: updatedTire.vehicleId ?? undefined,
-            companyId: updatedTire.companyId,
-            actionType: 'pressure_adjust',
-            actionPayload: { tireId, shoulderDelta, worstSide, position: updatedTire.posicion },
-            actionLabel: `Revisar alineación (Δ${shoulderDelta.toFixed(1)}mm)`,
-            groupKey: updatedTire.vehicleId ?? undefined,
-            priority: shoulderDelta >= 2.5 ? 3 : 2,
-          });
-        }
-      }
-
-      // Center vs edges → pressure issue
-      if (Math.abs(centerVsEdge) > 1.5) {
-        const isUnderInflated = centerVsEdge < -1.5;
-        const existing = await this.prisma.notification.findFirst({
-          where: { tireId, actionType: 'pressure_adjust', executed: false,
-                   message: { contains: isUnderInflated ? 'baja presión' : 'sobreinflado' } },
-        });
-        if (!existing) {
-          await this.notificationsService.createNotification({
-            title: isUnderInflated
-              ? `Baja presión detectada: ${updatedTire.placa} P${updatedTire.posicion}`
-              : `Sobreinflado detectado: ${updatedTire.placa} P${updatedTire.posicion}`,
-            message: isUnderInflated
-              ? `Desgaste excesivo en hombros (${Math.abs(centerVsEdge).toFixed(1)}mm más que el centro). Indica baja presión crónica. Ajustar presión a la recomendada.`
-              : `Desgaste excesivo en el centro (${centerVsEdge.toFixed(1)}mm más que los hombros). Indica sobreinflado. Reducir presión a la recomendada.`,
-            type: 'warning',
-            tireId,
-            vehicleId: updatedTire.vehicleId ?? undefined,
-            companyId: updatedTire.companyId,
-            actionType: 'pressure_adjust',
-            actionPayload: { tireId, centerVsEdge, isUnderInflated, position: updatedTire.posicion },
-            actionLabel: isUnderInflated ? 'Aumentar presión' : 'Reducir presión',
-            groupKey: updatedTire.vehicleId ?? undefined,
-            priority: 2,
-          });
-        }
-      }
-    } catch (err: any) {
-      this.logger.warn(`Wear pattern notification failed for tire ${tireId}: ${err.message}`);
     }
 
     return updatedTire;
