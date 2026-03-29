@@ -6,12 +6,14 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { MarketplaceService } from './marketplace.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { S3Service } from '../companies/s3.service';
+import { PlateLookupService } from './plate-lookup.service';
 
 @Controller('marketplace')
 export class MarketplaceController {
   constructor(
     private readonly svc: MarketplaceService,
     private readonly s3: S3Service,
+    private readonly plateLookup: PlateLookupService,
   ) {}
 
   // ===========================================================================
@@ -290,6 +292,11 @@ export class MarketplaceController {
   @UseGuards(JwtAuthGuard)
   rescoreImages() {
     return this.svc.rescoreAllListings();
+  }
+
+  @Get('plate-lookup/:placa')
+  lookupPlate(@Param('placa') placa: string) {
+    return this.plateLookup.lookupPlate(placa);
   }
 
   @Get('distributors/map')
