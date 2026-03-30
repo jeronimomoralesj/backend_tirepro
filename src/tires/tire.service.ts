@@ -2133,9 +2133,12 @@ export class TireService {
       data.diasEnUso = diasEnUso;
       data.mesesEnUso = mesesEnUso;
 
-      this.logger.log(
-        `editInspection ${insp.id}: costForVida=${costForVida} kmForVida=${kmForVida} ` +
-        `meses=${mesesEnUso.toFixed(1)} cpk=${metrics.cpk} cpt=${metrics.cpt}`,
+      this.logger.warn(
+        `editInspection DEBUG tireId=${tireId} inspId=${insp.id}\n` +
+        `  costos count=${tire.costos.length} values=[${tire.costos.map(c => c.valor).join(',')}]\n` +
+        `  costForVida=${costForVida} kmForVida=${kmForVida} effectiveKm=${effectiveKm}\n` +
+        `  vidaActual=${tire.vidaActual} profInicial=${tire.profundidadInicial} minDepth=${minDepth}\n` +
+        `  meses=${mesesEnUso.toFixed(1)} cpk=${metrics.cpk} cpt=${metrics.cpt} cpkProy=${metrics.cpkProyectado}`,
       );
     }
 
