@@ -2067,6 +2067,24 @@ export class TireService {
       this.logger.log(`editInspection: updated fechaInstalacion to ${newInstall.toISOString()}, updated dias/meses for ${tire.inspecciones.length} inspections`);
     }
 
+    // --- If inspection date changed, move any matching cost entry too ---
+    if (updates.fecha !== undefined) {
+      const oldDate = new Date(insp.fecha);
+      const newDate = new Date(updates.fecha);
+      // Find a cost entry on the same day as the old inspection date
+      const matchingCost = tire.costos.find(c => {
+        const costDate = new Date(c.fecha);
+        return costDate.toISOString().split('T')[0] === oldDate.toISOString().split('T')[0];
+      });
+      if (matchingCost) {
+        await this.prisma.tireCosto.update({
+          where: { id: matchingCost.id },
+          data: { fecha: newDate },
+        });
+        this.logger.log(`editInspection: moved cost ${matchingCost.id} from ${oldDate.toISOString().split('T')[0]} to ${newDate.toISOString().split('T')[0]}`);
+      }
+    }
+
     // --- Handle per-inspection field edits ---
     const data: any = {};
     if (updates.fecha !== undefined) data.fecha = new Date(updates.fecha);
