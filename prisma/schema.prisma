@@ -1329,6 +1329,11 @@ model MarketplaceOrder {
   status          String   @default("pendiente")  // pendiente | confirmado | enviado | entregado | cancelado
   notas           String?  @db.Text
 
+  // Payment
+  paymentId       String?
+  paymentStatus   String?  // approved | declined | error | voided | pending
+  totalWithIva    Float?
+
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

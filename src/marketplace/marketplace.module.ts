@@ -6,11 +6,12 @@ import { S3Service } from '../companies/s3.service';
 import { ConfigModule } from '@nestjs/config';
 import { EmailService } from '../email/email.service';
 import { PlateLookupService } from './plate-lookup.service';
+import { WompiService } from './wompi.service';
 
 @Module({
   imports: [PrismaModule, ConfigModule],
   controllers: [MarketplaceController],
-  providers: [MarketplaceService, S3Service, EmailService, PlateLookupService],
+  providers: [MarketplaceService, S3Service, EmailService, PlateLookupService, WompiService],
   exports: [MarketplaceService],
 })
 export class MarketplaceModule {}

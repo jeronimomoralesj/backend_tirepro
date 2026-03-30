@@ -1,12 +1,13 @@
 import {
   Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards,
-  UseInterceptors, UploadedFile,
+  UseInterceptors, UploadedFile, Headers,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MarketplaceService } from './marketplace.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { S3Service } from '../companies/s3.service';
 import { PlateLookupService } from './plate-lookup.service';
+import { WompiService } from './wompi.service';
 
 @Controller('marketplace')
 export class MarketplaceController {
@@ -14,6 +15,7 @@ export class MarketplaceController {
     private readonly svc: MarketplaceService,
     private readonly s3: S3Service,
     private readonly plateLookup: PlateLookupService,
+    private readonly wompi: WompiService,
   ) {}
 
   // ===========================================================================
@@ -320,5 +322,33 @@ export class MarketplaceController {
   @Get('sales/listing/:id')
   getListingSales(@Param('id') id: string) {
     return this.svc.getListingSalesCount(id);
+  }
+
+  // ===========================================================================
+  // WOMPI PAYMENTS
+  // ===========================================================================
+
+  /** Generate integrity signature for Wompi widget */
+  @Post('payments/integrity')
+  getIntegritySignature(@Body() body: { reference: string; amountInCents: number; currency?: string }) {
+    const signature = this.wompi.generateIntegritySignature(
+      body.reference, body.amountInCents, body.currency ?? 'COP',
+    );
+    return { signature };
+  }
+
+  /** Wompi webhook — receives payment status updates */
+  @Post('payments/webhook')
+  async wompiWebhook(
+    @Body() body: any,
+    @Headers('x-event-checksum') checksum: string,
+  ) {
+    return this.wompi.handleWebhookEvent(body);
+  }
+
+  /** Check transaction status */
+  @Get('payments/transaction/:id')
+  getTransactionStatus(@Param('id') id: string) {
+    return this.wompi.getTransactionStatus(id);
   }
 }
