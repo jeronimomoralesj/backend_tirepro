@@ -2176,6 +2176,37 @@ export class TireService {
     return this.findTireById(tireId);
   }
 
+  async editCosto(tireId: string, costoId: string, newValor?: number, newFecha?: string) {
+    const costo = await this.prisma.tireCosto.findFirst({
+      where: { id: costoId, tireId },
+    });
+    if (!costo) throw new NotFoundException('Cost entry not found');
+
+    const data: any = {};
+    if (newValor !== undefined) data.valor = newValor;
+    if (newFecha !== undefined) data.fecha = new Date(newFecha);
+
+    if (Object.keys(data).length === 0) return costo;
+
+    await this.prisma.tireCosto.update({ where: { id: costoId }, data });
+
+    // Refresh analytics since cost change affects CPK
+    await this.refreshTireAnalyticsCache(tireId);
+    const tire = await this.prisma.tire.findUniqueOrThrow({
+      where: { id: tireId },
+      select: { companyId: true, vehicleId: true },
+    });
+    await this.invalidateCompanyCache(tire.companyId);
+    if (tire.vehicleId) {
+      await Promise.allSettled([
+        this.invalidateVehicleCache(tire.vehicleId),
+        this.cache.del(`analysis:${tire.vehicleId}`),
+      ]);
+    }
+
+    return this.findTireById(tireId);
+  }
+
   async removeInspection(tireId: string, fecha: string) {
     const insp = await this.prisma.inspeccion.findFirst({
       where:  { tireId, fecha: new Date(fecha) },

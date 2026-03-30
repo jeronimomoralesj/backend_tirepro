@@ -176,6 +176,14 @@ export class TireController {
     return this.tireService.editInspection(tireId, fecha, dto);
   }
 
+  @Patch(':tireId/costo/edit')
+  editCosto(
+    @Param('tireId') tireId: string,
+    @Body() body: { costoId: string; valor?: number; fecha?: string },
+  ) {
+    return this.tireService.editCosto(tireId, body.costoId, body.valor, body.fecha);
+  }
+
   @Delete(':tireId/inspection')
   @HttpCode(HttpStatus.OK)
   deleteInspection(
