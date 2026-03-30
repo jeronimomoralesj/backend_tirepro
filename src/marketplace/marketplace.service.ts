@@ -3,9 +3,43 @@ import { PrismaService } from '../prisma/prisma.service';
 import { BidRequestStatus, BidResponseStatus } from '@prisma/client';
 import { EmailService } from '../email/email.service';
 
+// Simple in-memory cache with TTL
+class MemCache {
+  private store = new Map<string, { data: any; expires: number }>();
+
+  get<T>(key: string): T | null {
+    const entry = this.store.get(key);
+    if (!entry || Date.now() > entry.expires) { this.store.delete(key); return null; }
+    return entry.data as T;
+  }
+
+  set(key: string, data: any, ttlMs: number) {
+    this.store.set(key, { data, expires: Date.now() + ttlMs });
+  }
+
+  invalidate(prefix: string) {
+    for (const key of this.store.keys()) {
+      if (key.startsWith(prefix)) this.store.delete(key);
+    }
+  }
+
+  clear() { this.store.clear(); }
+}
+
 @Injectable()
 export class MarketplaceService {
   private readonly logger = new Logger(MarketplaceService.name);
+  private readonly cache = new MemCache();
+
+  // Cache TTLs
+  private readonly FILTERS_TTL  = 5 * 60 * 1000;   // 5 min
+  private readonly LISTINGS_TTL = 2 * 60 * 1000;   // 2 min
+  private readonly PRODUCT_TTL  = 3 * 60 * 1000;   // 3 min
+  private readonly RECS_TTL     = 5 * 60 * 1000;   // 5 min
+  private readonly MAP_TTL      = 10 * 60 * 1000;  // 10 min
+  private readonly PROFILE_TTL  = 5 * 60 * 1000;   // 5 min
+  private readonly REVIEWS_TTL  = 3 * 60 * 1000;   // 3 min
+  private readonly SALES_TTL    = 5 * 60 * 1000;   // 5 min
 
   constructor(
     private readonly prisma: PrismaService,
@@ -301,6 +335,10 @@ export class MarketplaceService {
     page?: number;
     limit?: number;
   }) {
+    const cacheKey = `listings:${JSON.stringify(filters)}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached) return cached;
+
     const where: any = { isActive: true };
 
     if (filters.dimension) where.dimension = filters.dimension;
@@ -363,7 +401,9 @@ export class MarketplaceService {
       this.prisma.distributorListing.count({ where }),
     ]);
 
-    return { listings, total, page, limit, pages: Math.ceil(total / limit) };
+    const result = { listings, total, page, limit, pages: Math.ceil(total / limit) };
+    this.cache.set(cacheKey, result, this.LISTINGS_TTL);
+    return result;
   }
 
   async getDistributorListings(distributorId: string) {
@@ -435,6 +475,15 @@ export class MarketplaceService {
         imageQualityScore,
       },
     });
+    this.invalidateListingCaches();
+    return result;
+  }
+
+  private invalidateListingCaches() {
+    this.cache.invalidate('listings:');
+    this.cache.invalidate('filters');
+    this.cache.invalidate('recs:');
+    this.cache.invalidate('product:');
   }
 
   async updateListing(id: string, distributorId: string, data: Partial<{
@@ -459,7 +508,10 @@ export class MarketplaceService {
       updateData.promoHasta = data.promoHasta ? new Date(data.promoHasta) : null;
     }
 
-    return this.prisma.distributorListing.update({ where: { id }, data: updateData });
+    const result = await this.prisma.distributorListing.update({ where: { id }, data: updateData });
+    this.invalidateListingCaches();
+    this.cache.invalidate(`product:${id}`);
+    return result;
   }
 
   async deleteListing(id: string, distributorId: string) {
@@ -467,10 +519,12 @@ export class MarketplaceService {
     if (!listing) throw new NotFoundException('Listing not found');
     if (listing.distributorId !== distributorId) throw new BadRequestException('Not your listing');
 
-    return this.prisma.distributorListing.update({
+    const result = await this.prisma.distributorListing.update({
       where: { id },
       data: { isActive: false },
     });
+    this.invalidateListingCaches();
+    return result;
   }
 
   // ===========================================================================
@@ -478,6 +532,9 @@ export class MarketplaceService {
   // ===========================================================================
 
   async getMarketplaceFilters() {
+    const cached = this.cache.get('filters');
+    if (cached) return cached;
+
     const [dimensions, marcas, distributorIds] = await Promise.all([
       this.prisma.distributorListing.findMany({
         where: { isActive: true },
@@ -506,11 +563,9 @@ export class MarketplaceService {
         })
       : [];
 
-    return {
-      dimensions: dimensions.map((d) => d.dimension),
-      marcas: marcas.map((m) => m.marca),
-      distributors,
-    };
+    const result = { dimensions: dimensions.map((d) => d.dimension), marcas: marcas.map((m) => m.marca), distributors };
+    this.cache.set('filters', result, this.FILTERS_TTL);
+    return result;
   }
 
   // ===========================================================================
@@ -518,6 +573,10 @@ export class MarketplaceService {
   // ===========================================================================
 
   async getDistributorProfile(distributorId: string) {
+    const cacheKey = `distprofile:${distributorId}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached) return cached;
+
     const company = await this.prisma.company.findUnique({
       where: { id: distributorId },
       select: {
@@ -529,6 +588,7 @@ export class MarketplaceService {
       },
     });
     if (!company) throw new NotFoundException('Distributor not found');
+    this.cache.set(cacheKey, company, this.PROFILE_TTL);
     return company;
   }
 
@@ -537,7 +597,10 @@ export class MarketplaceService {
     direccion: string; ciudad: string; sitioWeb: string; emailAtencion: string;
     cobertura: any[]; tipoEntrega: string; colorMarca: string;
   }>) {
-    return this.prisma.company.update({ where: { id: distributorId }, data });
+    const result = await this.prisma.company.update({ where: { id: distributorId }, data });
+    this.cache.invalidate(`distprofile:${distributorId}`);
+    this.cache.invalidate('distmap');
+    return result;
   }
 
   // ===========================================================================
@@ -547,11 +610,13 @@ export class MarketplaceService {
   async createReview(data: { listingId: string; userId: string; rating: number; comment?: string }) {
     if (data.rating < 1 || data.rating > 5) throw new BadRequestException('Rating must be 1-5');
 
-    return this.prisma.distributorReview.upsert({
+    const result = await this.prisma.distributorReview.upsert({
       where: { listingId_userId: { listingId: data.listingId, userId: data.userId } },
       create: { listingId: data.listingId, userId: data.userId, rating: data.rating, comment: data.comment ?? null },
       update: { rating: data.rating, comment: data.comment ?? null },
     });
+    this.cache.invalidate(`product:${data.listingId}`);
+    return result;
   }
 
   async getListingReviews(listingId: string) {
@@ -573,6 +638,10 @@ export class MarketplaceService {
   // ===========================================================================
 
   async getListingById(id: string) {
+    const cacheKey = `product:${id}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached) return cached;
+
     const listing = await this.prisma.distributorListing.findUnique({
       where: { id },
       include: {
@@ -590,7 +659,9 @@ export class MarketplaceService {
       _sum: { quantity: true },
     });
 
-    return { ...listing, totalSold: salesCount._sum.quantity ?? 0 };
+    const result = { ...listing, totalSold: salesCount._sum.quantity ?? 0 };
+    this.cache.set(cacheKey, result, this.PRODUCT_TTL);
+    return result;
   }
 
   // ===========================================================================
@@ -695,6 +766,8 @@ export class MarketplaceService {
       this.logger.warn(`Failed to send distributor notification: ${err}`);
     }
 
+    this.cache.invalidate(`product:${data.listingId}`);
+    this.cache.invalidate('recs:');
     return order;
   }
 
@@ -855,6 +928,12 @@ export class MarketplaceService {
   // ===========================================================================
 
   async getRecommendations(userId?: string, limit = 8) {
+    const cacheKey = `recs:${userId ?? 'guest'}:${limit}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached) return cached;
+
+    const wrapAndCache = (data: any) => { this.cache.set(cacheKey, data, this.RECS_TTL); return data; };
+
     // If logged in, find what dimensions/brands they've bought and suggest similar
     if (userId) {
       const pastOrders = await this.prisma.marketplaceOrder.findMany({
@@ -890,7 +969,7 @@ export class MarketplaceService {
         });
 
         if (recommendations.length >= 4) {
-          return { type: 'personalized' as const, listings: recommendations };
+          return wrapAndCache({ type: 'personalized' as const, listings: recommendations });
         }
       }
     }
@@ -919,7 +998,7 @@ export class MarketplaceService {
           reviews: { select: { rating: true }, take: 100 },
         },
       });
-      return { type: 'newest' as const, listings: newest };
+      return wrapAndCache({ type: 'newest' as const, listings: newest });
     }
 
     const listings = await this.prisma.distributorListing.findMany({
@@ -936,7 +1015,7 @@ export class MarketplaceService {
     const orderMap = new Map(topSold.map((t, i) => [t.listingId, i]));
     listings.sort((a, b) => (orderMap.get(a.id) ?? 999) - (orderMap.get(b.id) ?? 999));
 
-    return { type: 'popular' as const, listings };
+    return wrapAndCache({ type: 'popular' as const, listings });
   }
 
   async rescoreAllListings() {
@@ -972,6 +1051,9 @@ export class MarketplaceService {
   // ===========================================================================
 
   async getDistributorMapData() {
+    const cached = this.cache.get('distmap');
+    if (cached) return cached;
+
     const distributors = await this.prisma.company.findMany({
       where: {
         plan: 'distribuidor',
@@ -983,10 +1065,12 @@ export class MarketplaceService {
         _count: { select: { listings: { where: { isActive: true } } } },
       },
     });
-    return distributors.filter((d) => {
+    const result = distributors.filter((d) => {
       const cob = d.cobertura as any;
       return Array.isArray(cob) && cob.length > 0 && cob.some((c: any) => c.lat && c.lng);
     });
+    this.cache.set('distmap', result, this.MAP_TTL);
+    return result;
   }
 
   // ===========================================================================
