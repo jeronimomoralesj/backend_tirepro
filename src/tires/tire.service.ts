@@ -2086,32 +2086,22 @@ export class TireService {
       data,
     });
 
-    // If this was the latest inspection, update tire-level fields too
-    const allInspections = tire.inspecciones.sort(
-      (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime(),
-    );
-    const isLatest = allInspections[0]?.id === insp.id;
-
-    if (isLatest && (depthChanged || kmChanged)) {
-      const newInt = updates.profundidadInt ?? insp.profundidadInt;
-      const newCen = updates.profundidadCen ?? insp.profundidadCen;
-      const newExt = updates.profundidadExt ?? insp.profundidadExt;
-      const tireUpdate: any = {
-        profundidadActual: calcMinDepth(newInt, newCen, newExt),
-      };
-      if (kmChanged) {
-        tireUpdate.kilometrosRecorridos = updates.kilometrosEstimados;
+    // If km changed on the latest inspection, update the tire's accumulated km
+    if (kmChanged) {
+      const allInspections = tire.inspecciones.sort(
+        (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime(),
+      );
+      if (allInspections[0]?.id === insp.id) {
+        await this.prisma.tire.update({
+          where: { id: tireId },
+          data: { kilometrosRecorridos: updates.kilometrosEstimados },
+        });
       }
-      if (data.cpk !== undefined) tireUpdate.cpkActual = data.cpk;
-      if (data.cpkProyectado !== undefined) tireUpdate.cpkProyectado = data.cpkProyectado;
-      if (data.cpt !== undefined) tireUpdate.cptActual = data.cpt;
-      if (data.cptProyectado !== undefined) tireUpdate.cptProyectado = data.cptProyectado;
-      if (data.kmProyectado !== undefined) tireUpdate.proyeccionKm = data.kmProyectado;
-
-      await this.prisma.tire.update({ where: { id: tireId }, data: tireUpdate });
     }
 
-    // Invalidate caches
+    // refreshTireAnalyticsCache recomputes currentCpk, currentCpt,
+    // currentProfundidad, projectedKmRemaining, healthScore, etc.
+    // from all inspections — this is the single source of truth.
     await this.refreshTireAnalyticsCache(tireId);
     await this.invalidateCompanyCache(tire.companyId);
     if (tire.vehicleId) {
