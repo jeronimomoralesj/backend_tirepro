@@ -165,6 +165,23 @@ export class TireController {
 
   // ── Delete ────────────────────────────────────────────────────────────────
 
+  @Patch(':tireId/inspection/edit')
+  editInspection(
+    @Param('tireId') tireId: string,
+    @Query('fecha') fecha: string,
+    @Body() body: {
+      fecha?: string;
+      profundidadInt?: number;
+      profundidadCen?: number;
+      profundidadExt?: number;
+      inspeccionadoPorNombre?: string;
+      kilometrosEstimados?: number;
+    },
+  ) {
+    if (!fecha) throw new BadRequestException('fecha query param is required');
+    return this.tireService.editInspection(tireId, fecha, body);
+  }
+
   @Delete(':tireId/inspection')
   @HttpCode(HttpStatus.OK)
   deleteInspection(

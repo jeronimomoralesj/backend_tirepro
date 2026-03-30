@@ -1998,6 +1998,103 @@ export class TireService {
   // REMOVE INSPECTION  (unchanged)
   // ===========================================================================
 
+  /**
+   * Edit an existing inspection in-place — only updates the fields provided.
+   * Does NOT recalculate CPK/km unless depth values changed.
+   */
+  async editInspection(
+    tireId: string,
+    fecha: string,
+    updates: {
+      fecha?: string;
+      profundidadInt?: number;
+      profundidadCen?: number;
+      profundidadExt?: number;
+      inspeccionadoPorNombre?: string;
+      kilometrosEstimados?: number;
+    },
+  ) {
+    const insp = await this.prisma.inspeccion.findFirst({
+      where: { tireId, fecha: new Date(fecha) },
+    });
+    if (!insp) throw new NotFoundException('Inspection not found');
+
+    // Build the update payload — only include fields that were actually sent
+    const data: any = {};
+    if (updates.fecha !== undefined) data.fecha = new Date(updates.fecha);
+    if (updates.profundidadInt !== undefined) data.profundidadInt = updates.profundidadInt;
+    if (updates.profundidadCen !== undefined) data.profundidadCen = updates.profundidadCen;
+    if (updates.profundidadExt !== undefined) data.profundidadExt = updates.profundidadExt;
+    if (updates.inspeccionadoPorNombre !== undefined) data.inspeccionadoPorNombre = updates.inspeccionadoPorNombre;
+    if (updates.kilometrosEstimados !== undefined) {
+      data.kilometrosEstimados = updates.kilometrosEstimados;
+      data.kmEfectivos = updates.kilometrosEstimados;
+    }
+
+    // If depths changed, recalculate CPK for this inspection
+    const depthChanged =
+      updates.profundidadInt !== undefined ||
+      updates.profundidadCen !== undefined ||
+      updates.profundidadExt !== undefined;
+
+    if (depthChanged) {
+      const tire = await this.prisma.tire.findUnique({
+        where: { id: tireId },
+        include: { costos: { orderBy: { fecha: 'asc' } }, inspecciones: { orderBy: { fecha: 'asc' } }, eventos: { orderBy: { fecha: 'asc' } } },
+      });
+      if (tire) {
+        const newInt = updates.profundidadInt ?? insp.profundidadInt;
+        const newCen = updates.profundidadCen ?? insp.profundidadCen;
+        const newExt = updates.profundidadExt ?? insp.profundidadExt;
+        const minDepth = calcMinDepth(newInt, newCen, newExt);
+        const km = updates.kilometrosEstimados ?? insp.kilometrosEstimados ?? 0;
+        const meses = insp.mesesEnUso ?? 1;
+
+        const { costForVida, kmForVida } = resolveVidaCostAndKm({
+          costos: tire.costos,
+          inspecciones: tire.inspecciones,
+          eventos: tire.eventos,
+          vidaActual: tire.vidaActual ?? VidaValue.nueva,
+          currentKm: km,
+          installationDate: tire.fechaInstalacion ?? new Date(),
+          creationKm: 0,
+        });
+
+        const metrics = calcCpkMetrics(costForVida, kmForVida, meses, tire.profundidadInicial, minDepth);
+        data.cpk = metrics.cpk;
+        data.cpkProyectado = metrics.cpkProyectado;
+        data.cpt = metrics.cpt;
+        data.cptProyectado = metrics.cptProyectado;
+        data.kmProyectado = metrics.projectedKm;
+      }
+    }
+
+    if (Object.keys(data).length === 0) {
+      return insp; // Nothing to update
+    }
+
+    const updated = await this.prisma.inspeccion.update({
+      where: { id: insp.id },
+      data,
+    });
+
+    // Invalidate caches
+    const tireForCache = await this.prisma.tire.findUniqueOrThrow({
+      where: { id: tireId },
+      select: { companyId: true, vehicleId: true },
+    });
+    await this.refreshTireAnalyticsCache(tireId);
+    await this.invalidateCompanyCache(tireForCache.companyId);
+    if (tireForCache.vehicleId) {
+      await Promise.allSettled([
+        this.invalidateVehicleCache(tireForCache.vehicleId),
+        this.cache.del(`analysis:${tireForCache.vehicleId}`),
+      ]);
+    }
+
+    return updated;
+  }
+
   async removeInspection(tireId: string, fecha: string) {
     const insp = await this.prisma.inspeccion.findFirst({
       where:  { tireId, fecha: new Date(fecha) },
