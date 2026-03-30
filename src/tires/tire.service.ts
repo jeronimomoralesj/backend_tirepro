@@ -2012,6 +2012,7 @@ export class TireService {
       profundidadExt?: number;
       inspeccionadoPorNombre?: string;
       kilometrosEstimados?: number;
+      fechaInstalacion?: string;
     },
   ) {
     const insp = await this.prisma.inspeccion.findFirst({
@@ -2030,7 +2031,55 @@ export class TireService {
     });
     if (!tire) throw new NotFoundException('Tire not found');
 
-    // Build the update payload — only include fields that were actually sent
+    // --- Handle fechaInstalacion change (tire-level, affects ALL inspections) ---
+    if (updates.fechaInstalacion) {
+      const newInstall = new Date(updates.fechaInstalacion);
+      await this.prisma.tire.update({
+        where: { id: tireId },
+        data: { fechaInstalacion: newInstall },
+      });
+
+      // Recalculate diasEnUso, mesesEnUso, CPK, CPT for ALL inspections
+      for (const ins of tire.inspecciones) {
+        const inspDate = new Date(ins.fecha);
+        const diasEnUso = Math.max(
+          Math.floor((inspDate.getTime() - newInstall.getTime()) / C.MS_POR_DIA),
+          1,
+        );
+        const mesesEnUso = diasEnUso / 30;
+        const minD = calcMinDepth(ins.profundidadInt, ins.profundidadCen, ins.profundidadExt);
+        const effKm = ins.kilometrosEstimados ?? tire.kilometrosRecorridos ?? 0;
+
+        const { costForVida, kmForVida } = resolveVidaCostAndKm({
+          costos: tire.costos,
+          inspecciones: tire.inspecciones,
+          eventos: tire.eventos,
+          vidaActual: tire.vidaActual ?? VidaValue.nueva,
+          currentKm: effKm,
+          installationDate: newInstall,
+          creationKm: 0,
+        });
+
+        const metrics = calcCpkMetrics(costForVida, kmForVida, mesesEnUso, tire.profundidadInicial, minD);
+
+        await this.prisma.inspeccion.update({
+          where: { id: ins.id },
+          data: {
+            diasEnUso,
+            mesesEnUso,
+            cpk: metrics.cpk,
+            cpkProyectado: metrics.cpkProyectado,
+            cpt: metrics.cpt,
+            cptProyectado: metrics.cptProyectado,
+            kmProyectado: metrics.projectedKm,
+          },
+        });
+      }
+
+      this.logger.log(`editInspection: updated fechaInstalacion to ${newInstall.toISOString()}, recalculated ${tire.inspecciones.length} inspections`);
+    }
+
+    // --- Handle per-inspection field edits ---
     const data: any = {};
     if (updates.fecha !== undefined) data.fecha = new Date(updates.fecha);
     if (updates.profundidadInt !== undefined) data.profundidadInt = updates.profundidadInt;
@@ -2054,10 +2103,16 @@ export class TireService {
       const newCen = updates.profundidadCen ?? insp.profundidadCen;
       const newExt = updates.profundidadExt ?? insp.profundidadExt;
       const minDepth = calcMinDepth(newInt, newCen, newExt);
-
-      // Use the tire's accumulated km (same as updateInspection does)
       const effectiveKm = updates.kilometrosEstimados ?? insp.kilometrosEstimados ?? tire.kilometrosRecorridos ?? 0;
-      const meses = insp.mesesEnUso ?? 1;
+      const installDate = updates.fechaInstalacion
+        ? new Date(updates.fechaInstalacion)
+        : (tire.fechaInstalacion ?? new Date());
+      const inspDate = updates.fecha ? new Date(updates.fecha) : new Date(insp.fecha);
+      const diasEnUso = Math.max(
+        Math.floor((inspDate.getTime() - installDate.getTime()) / C.MS_POR_DIA),
+        1,
+      );
+      const mesesEnUso = diasEnUso / 30;
 
       const { costForVida, kmForVida } = resolveVidaCostAndKm({
         costos: tire.costos,
@@ -2065,31 +2120,32 @@ export class TireService {
         eventos: tire.eventos,
         vidaActual: tire.vidaActual ?? VidaValue.nueva,
         currentKm: effectiveKm,
-        installationDate: tire.fechaInstalacion ?? new Date(),
+        installationDate: installDate,
         creationKm: 0,
       });
 
-      const metrics = calcCpkMetrics(costForVida, kmForVida, meses, tire.profundidadInicial, minDepth);
+      const metrics = calcCpkMetrics(costForVida, kmForVida, mesesEnUso, tire.profundidadInicial, minDepth);
       data.cpk = metrics.cpk;
       data.cpkProyectado = metrics.cpkProyectado;
       data.cpt = metrics.cpt;
       data.cptProyectado = metrics.cptProyectado;
       data.kmProyectado = metrics.projectedKm;
+      data.diasEnUso = diasEnUso;
+      data.mesesEnUso = mesesEnUso;
+
+      this.logger.log(
+        `editInspection ${insp.id}: costForVida=${costForVida} kmForVida=${kmForVida} ` +
+        `meses=${mesesEnUso.toFixed(1)} cpk=${metrics.cpk} cpt=${metrics.cpt}`,
+      );
     }
 
-    if (Object.keys(data).length === 0) {
-      return insp; // Nothing to update
+    // Update the inspection if there are changes
+    if (Object.keys(data).length > 0) {
+      await this.prisma.inspeccion.update({
+        where: { id: insp.id },
+        data,
+      });
     }
-
-    this.logger.log(
-      `editInspection ${insp.id}: depthChanged=${depthChanged} kmChanged=${kmChanged} ` +
-      `cpk=${data.cpk ?? 'unchanged'} costForVida=${depthChanged || kmChanged ? 'recalculated' : 'skipped'}`,
-    );
-
-    const updated = await this.prisma.inspeccion.update({
-      where: { id: insp.id },
-      data,
-    });
 
     // If km changed on the latest inspection, update the tire's accumulated km
     if (kmChanged) {
@@ -2104,9 +2160,7 @@ export class TireService {
       }
     }
 
-    // refreshTireAnalyticsCache recomputes currentCpk, currentCpt,
-    // currentProfundidad, projectedKmRemaining, healthScore, etc.
-    // from all inspections — this is the single source of truth.
+    // Refresh all cached analytics from the updated inspections
     await this.refreshTireAnalyticsCache(tireId);
     await this.invalidateCompanyCache(tire.companyId);
     if (tire.vehicleId) {
@@ -2116,7 +2170,6 @@ export class TireService {
       ]);
     }
 
-    // Return the full updated tire so frontend gets everything in one request
     return this.findTireById(tireId);
   }
 

@@ -24,6 +24,7 @@ import { EditTireDto, TireService } from './tire.service';
 import { TireProjectionService } from './tire-projection.service';
 import { CreateTireDto } from './dto/create-tire.dto';
 import { UpdateInspectionDto } from './dto/update-inspection.dto';
+import { EditInspectionDto } from './dto/edit-inspection.dto';
 import { UpdateVidaDto } from './dto/update-vida.dto';
 import { UpdateEventoDto } from './dto/update-evento.dto';
 
@@ -169,17 +170,10 @@ export class TireController {
   editInspection(
     @Param('tireId') tireId: string,
     @Query('fecha') fecha: string,
-    @Body() body: {
-      fecha?: string;
-      profundidadInt?: number;
-      profundidadCen?: number;
-      profundidadExt?: number;
-      inspeccionadoPorNombre?: string;
-      kilometrosEstimados?: number;
-    },
+    @Body() dto: EditInspectionDto,
   ) {
     if (!fecha) throw new BadRequestException('fecha query param is required');
-    return this.tireService.editInspection(tireId, fecha, body);
+    return this.tireService.editInspection(tireId, fecha, dto);
   }
 
   @Delete(':tireId/inspection')
