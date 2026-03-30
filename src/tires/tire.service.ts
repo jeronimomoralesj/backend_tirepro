@@ -2114,31 +2114,43 @@ export class TireService {
       );
       const mesesEnUso = diasEnUso / 30;
 
-      const { costForVida, kmForVida } = resolveVidaCostAndKm({
-        costos: tire.costos,
-        inspecciones: tire.inspecciones,
-        eventos: tire.eventos,
-        vidaActual: tire.vidaActual ?? VidaValue.nueva,
-        currentKm: effectiveKm,
-        installationDate: installDate,
-        creationKm: 0,
-      });
+      // For CPK, we need the total cost and total km for the current vida.
+      // costForVida comes from TireCosto entries.
+      // kmForVida = currentKm - kmAtVidaStart. We must use the TIRE's total
+      // accumulated km, not the inspection's snapshot, to avoid the case where
+      // the inspection being edited IS the only one (kmForVida would be 0).
+      const totalTireKm = updates.kilometrosEstimados ?? tire.kilometrosRecorridos ?? effectiveKm;
 
-      const metrics = calcCpkMetrics(costForVida, kmForVida, mesesEnUso, tire.profundidadInicial, minDepth);
-      data.cpk = metrics.cpk;
-      data.cpkProyectado = metrics.cpkProyectado;
-      data.cpt = metrics.cpt;
-      data.cptProyectado = metrics.cptProyectado;
-      data.kmProyectado = metrics.projectedKm;
+      // Get cost directly — sum all costos for this tire
+      const totalCost = tire.costos.reduce((s, c) => s + c.valor, 0);
+
+      // Simple CPK: total cost / total km
+      const cpk = totalTireKm > 0 ? totalCost / totalTireKm : 0;
+      const cpt = mesesEnUso > 0 ? totalCost / mesesEnUso : 0;
+
+      // Projected CPK using depth-based extrapolation
+      const usableDepth = tire.profundidadInicial - 3; // 3mm legal limit
+      const mmWorn = tire.profundidadInicial - minDepth;
+      const mmLeft = Math.max(minDepth - 3, 0);
+      let projectedKm = 0;
+      if (usableDepth > 0 && totalTireKm > 0 && mmWorn > 0) {
+        projectedKm = totalTireKm + (totalTireKm / mmWorn) * mmLeft;
+      }
+      const cpkProyectado = projectedKm > 0 ? totalCost / projectedKm : 0;
+      const projectedMonths = projectedKm > 0 ? projectedKm / 7000 : 0; // ~7000 km/month
+      const cptProyectado = projectedMonths > 0 ? totalCost / projectedMonths : 0;
+
+      data.cpk = cpk;
+      data.cpkProyectado = cpkProyectado;
+      data.cpt = cpt;
+      data.cptProyectado = cptProyectado;
+      data.kmProyectado = projectedKm;
       data.diasEnUso = diasEnUso;
       data.mesesEnUso = mesesEnUso;
 
-      this.logger.warn(
-        `editInspection DEBUG tireId=${tireId} inspId=${insp.id}\n` +
-        `  costos count=${tire.costos.length} values=[${tire.costos.map(c => c.valor).join(',')}]\n` +
-        `  costForVida=${costForVida} kmForVida=${kmForVida} effectiveKm=${effectiveKm}\n` +
-        `  vidaActual=${tire.vidaActual} profInicial=${tire.profundidadInicial} minDepth=${minDepth}\n` +
-        `  meses=${mesesEnUso.toFixed(1)} cpk=${metrics.cpk} cpt=${metrics.cpt} cpkProy=${metrics.cpkProyectado}`,
+      this.logger.log(
+        `editInspection ${insp.id}: totalCost=${totalCost} totalKm=${totalTireKm} ` +
+        `cpk=${cpk.toFixed(2)} cpkProy=${cpkProyectado.toFixed(2)} cpt=${cpt.toFixed(2)}`,
       );
     }
 
