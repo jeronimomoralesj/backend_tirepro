@@ -141,23 +141,7 @@ export class PlateLookupService {
       this.logger.warn(`datos.gov.co failed for ${normalized}: ${err}`);
     }
 
-    // 5. Free web scraper fallback
-    try {
-      const scraped = await this.scrapePublicSources(normalized);
-      if (scraped) {
-        this.savePlateCache(normalized, scraped, 'web');
-        return this.cacheAndReturn({
-          found: true, source: 'runt', placa: normalized,
-          marca: scraped.marca, linea: scraped.linea,
-          modelo: scraped.modelo, clase: scraped.clase,
-          dimensions: matchVehicleType(scraped.clase ?? ''),
-        });
-      }
-    } catch (err) {
-      this.logger.warn(`Web scraper failed for ${normalized}: ${err}`);
-    }
-
-    // 6. Motorcycle plate format detection
+    // 5. Motorcycle plate format detection
     if (/^[A-Z]{3}\d{2}[A-Z]$/.test(normalized)) {
       return this.cacheAndReturn({
         found: true, source: 'formato', placa: normalized,
@@ -166,7 +150,7 @@ export class PlateLookupService {
       });
     }
 
-    // 7. Not found
+    // 6. Not found
     return { found: false, source: 'none', placa: normalized, dimensions: [] };
   }
 
@@ -248,126 +232,4 @@ export class PlateLookupService {
     return null;
   }
 
-  /**
-   * Free web scraper: tries multiple public Colombian vehicle lookup sources.
-   * No API keys required. Falls through gracefully if sites are down.
-   */
-  private async scrapePublicSources(placa: string): Promise<{
-    marca?: string; linea?: string; modelo?: string; clase?: string;
-  } | null> {
-    // Try sources in sequence — return first hit
-    const scrapers = [
-      () => this.scrapeSIMIT(placa),
-      () => this.scrapeRUNTPublic(placa),
-    ];
-    for (const scraper of scrapers) {
-      try {
-        const result = await scraper();
-        if (result && (result.marca || result.clase)) return result;
-      } catch { /* try next */ }
-    }
-    return null;
-  }
-
-  /**
-   * SIMIT (Sistema Integrado de Información sobre Multas y Sanciones por
-   * Infracciones de Tránsito) — public consultation returns vehicle info.
-   */
-  private async scrapeSIMIT(placa: string): Promise<{
-    marca?: string; linea?: string; modelo?: string; clase?: string;
-  } | null> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    try {
-      const res = await fetch(
-        `https://consulta.simit.org.co/api/v1/vehicles/${encodeURIComponent(placa)}`,
-        {
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          },
-          signal: controller.signal,
-        },
-      );
-      clearTimeout(timeout);
-      if (!res.ok) return null;
-      const data = await res.json();
-      const v = data?.vehicle ?? data?.vehiculo ?? data;
-      if (!v) return null;
-      return {
-        marca: v.marca ?? v.brand ?? undefined,
-        linea: v.linea ?? v.line ?? v.modelo_vehiculo ?? undefined,
-        modelo: v.modelo ?? v.year ?? v.anio ?? undefined,
-        clase: v.clase ?? v.clase_vehiculo ?? v.type ?? v.vehicleType ?? undefined,
-      };
-    } catch {
-      clearTimeout(timeout);
-      return null;
-    }
-  }
-
-  /**
-   * Public RUNT-adjacent lookup — tries the RUNT public consultation page
-   * and parses vehicle data from the HTML response.
-   */
-  private async scrapeRUNTPublic(placa: string): Promise<{
-    marca?: string; linea?: string; modelo?: string; clase?: string;
-  } | null> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    try {
-      // Try the public RUNT consultation endpoint
-      const res = await fetch(
-        `https://www.rfrunt.co/api/consultar/${encodeURIComponent(placa)}`,
-        {
-          headers: {
-            'Accept': 'application/json, text/html',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          },
-          signal: controller.signal,
-        },
-      );
-      clearTimeout(timeout);
-      if (!res.ok) return null;
-
-      const contentType = res.headers.get('content-type') ?? '';
-
-      if (contentType.includes('json')) {
-        const data = await res.json();
-        const v = data?.vehiculo ?? data?.vehicle ?? data;
-        if (!v) return null;
-        return {
-          marca: v.marca ?? v.brand ?? undefined,
-          linea: v.linea ?? v.line ?? undefined,
-          modelo: v.modelo ?? v.year ?? undefined,
-          clase: v.clase ?? v.clase_vehiculo ?? v.tipo ?? undefined,
-        };
-      }
-
-      // HTML response — try to extract vehicle info via regex
-      const html = await res.text();
-      const extract = (label: string): string | undefined => {
-        const patterns = [
-          new RegExp(`${label}[:\\s]*<[^>]*>\\s*([^<]+)`, 'i'),
-          new RegExp(`<td[^>]*>${label}</td>\\s*<td[^>]*>\\s*([^<]+)`, 'i'),
-          new RegExp(`"${label}"\\s*:\\s*"([^"]+)"`, 'i'),
-        ];
-        for (const p of patterns) {
-          const m = html.match(p);
-          if (m?.[1]?.trim()) return m[1].trim();
-        }
-        return undefined;
-      };
-
-      const marca = extract('marca') ?? extract('Marca');
-      const linea = extract('linea') ?? extract('Línea') ?? extract('Linea');
-      const modelo = extract('modelo') ?? extract('Modelo') ?? extract('Año');
-      const clase = extract('clase') ?? extract('Clase') ?? extract('tipo_vehiculo') ?? extract('Tipo');
-
-      if (marca || clase) return { marca, linea, modelo, clase };
-    } catch {
-      clearTimeout(timeout);
-    }
-    return null;
-  }
 }
