@@ -69,6 +69,11 @@ export class TireController {
     return this.tireService.analyzeTires(placa);
   }
 
+  @Get(':id')
+  getTireById(@Param('id') id: string) {
+    return this.tireService.findTireById(id);
+  }
+
   // ── Projections ─────────────────────────────────────────────────────────
 
   @Post('projections/update')

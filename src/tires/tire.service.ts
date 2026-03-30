@@ -1376,6 +1376,20 @@ export class TireService {
   // READ  (unchanged)
   // ===========================================================================
 
+  async findTireById(id: string) {
+    const tire = await this.prisma.tire.findUnique({
+      where: { id },
+      include: {
+        inspecciones: { orderBy: { fecha: 'desc' } },
+        costos:       { orderBy: { fecha: 'asc' } },
+        eventos:      { orderBy: { fecha: 'desc' } },
+        vehicle:      { select: { placa: true, tipovhc: true, tipoOperacion: true } },
+      },
+    });
+    if (!tire) throw new NotFoundException('Tire not found');
+    return tire;
+  }
+
   async findTiresByCompany(companyId: string) {
     const cached = await this.cache.get(this.tireKey(companyId));
     if (cached) return cached;
