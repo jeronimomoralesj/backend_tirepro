@@ -2019,6 +2019,17 @@ export class TireService {
     });
     if (!insp) throw new NotFoundException('Inspection not found');
 
+    const tire = await this.prisma.tire.findUnique({
+      where: { id: tireId },
+      include: {
+        costos:       { orderBy: { fecha: 'asc' } },
+        inspecciones: { orderBy: { fecha: 'asc' } },
+        eventos:      { orderBy: { fecha: 'asc' } },
+        vehicle:      true,
+      },
+    });
+    if (!tire) throw new NotFoundException('Tire not found');
+
     // Build the update payload — only include fields that were actually sent
     const data: any = {};
     if (updates.fecha !== undefined) data.fecha = new Date(updates.fecha);
@@ -2031,42 +2042,39 @@ export class TireService {
       data.kmEfectivos = updates.kilometrosEstimados;
     }
 
-    // If depths changed, recalculate CPK for this inspection
+    // Recalculate CPK if depths OR km changed
     const depthChanged =
       updates.profundidadInt !== undefined ||
       updates.profundidadCen !== undefined ||
       updates.profundidadExt !== undefined;
+    const kmChanged = updates.kilometrosEstimados !== undefined;
 
-    if (depthChanged) {
-      const tire = await this.prisma.tire.findUnique({
-        where: { id: tireId },
-        include: { costos: { orderBy: { fecha: 'asc' } }, inspecciones: { orderBy: { fecha: 'asc' } }, eventos: { orderBy: { fecha: 'asc' } } },
+    if (depthChanged || kmChanged) {
+      const newInt = updates.profundidadInt ?? insp.profundidadInt;
+      const newCen = updates.profundidadCen ?? insp.profundidadCen;
+      const newExt = updates.profundidadExt ?? insp.profundidadExt;
+      const minDepth = calcMinDepth(newInt, newCen, newExt);
+
+      // Use the tire's accumulated km (same as updateInspection does)
+      const effectiveKm = updates.kilometrosEstimados ?? insp.kilometrosEstimados ?? tire.kilometrosRecorridos ?? 0;
+      const meses = insp.mesesEnUso ?? 1;
+
+      const { costForVida, kmForVida } = resolveVidaCostAndKm({
+        costos: tire.costos,
+        inspecciones: tire.inspecciones,
+        eventos: tire.eventos,
+        vidaActual: tire.vidaActual ?? VidaValue.nueva,
+        currentKm: effectiveKm,
+        installationDate: tire.fechaInstalacion ?? new Date(),
+        creationKm: 0,
       });
-      if (tire) {
-        const newInt = updates.profundidadInt ?? insp.profundidadInt;
-        const newCen = updates.profundidadCen ?? insp.profundidadCen;
-        const newExt = updates.profundidadExt ?? insp.profundidadExt;
-        const minDepth = calcMinDepth(newInt, newCen, newExt);
-        const km = updates.kilometrosEstimados ?? insp.kilometrosEstimados ?? 0;
-        const meses = insp.mesesEnUso ?? 1;
 
-        const { costForVida, kmForVida } = resolveVidaCostAndKm({
-          costos: tire.costos,
-          inspecciones: tire.inspecciones,
-          eventos: tire.eventos,
-          vidaActual: tire.vidaActual ?? VidaValue.nueva,
-          currentKm: km,
-          installationDate: tire.fechaInstalacion ?? new Date(),
-          creationKm: 0,
-        });
-
-        const metrics = calcCpkMetrics(costForVida, kmForVida, meses, tire.profundidadInicial, minDepth);
-        data.cpk = metrics.cpk;
-        data.cpkProyectado = metrics.cpkProyectado;
-        data.cpt = metrics.cpt;
-        data.cptProyectado = metrics.cptProyectado;
-        data.kmProyectado = metrics.projectedKm;
-      }
+      const metrics = calcCpkMetrics(costForVida, kmForVida, meses, tire.profundidadInicial, minDepth);
+      data.cpk = metrics.cpk;
+      data.cpkProyectado = metrics.cpkProyectado;
+      data.cpt = metrics.cpt;
+      data.cptProyectado = metrics.cptProyectado;
+      data.kmProyectado = metrics.projectedKm;
     }
 
     if (Object.keys(data).length === 0) {
@@ -2078,17 +2086,38 @@ export class TireService {
       data,
     });
 
+    // If this was the latest inspection, update tire-level fields too
+    const allInspections = tire.inspecciones.sort(
+      (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime(),
+    );
+    const isLatest = allInspections[0]?.id === insp.id;
+
+    if (isLatest && (depthChanged || kmChanged)) {
+      const newInt = updates.profundidadInt ?? insp.profundidadInt;
+      const newCen = updates.profundidadCen ?? insp.profundidadCen;
+      const newExt = updates.profundidadExt ?? insp.profundidadExt;
+      const tireUpdate: any = {
+        profundidadActual: calcMinDepth(newInt, newCen, newExt),
+      };
+      if (kmChanged) {
+        tireUpdate.kilometrosRecorridos = updates.kilometrosEstimados;
+      }
+      if (data.cpk !== undefined) tireUpdate.cpkActual = data.cpk;
+      if (data.cpkProyectado !== undefined) tireUpdate.cpkProyectado = data.cpkProyectado;
+      if (data.cpt !== undefined) tireUpdate.cptActual = data.cpt;
+      if (data.cptProyectado !== undefined) tireUpdate.cptProyectado = data.cptProyectado;
+      if (data.kmProyectado !== undefined) tireUpdate.proyeccionKm = data.kmProyectado;
+
+      await this.prisma.tire.update({ where: { id: tireId }, data: tireUpdate });
+    }
+
     // Invalidate caches
-    const tireForCache = await this.prisma.tire.findUniqueOrThrow({
-      where: { id: tireId },
-      select: { companyId: true, vehicleId: true },
-    });
     await this.refreshTireAnalyticsCache(tireId);
-    await this.invalidateCompanyCache(tireForCache.companyId);
-    if (tireForCache.vehicleId) {
+    await this.invalidateCompanyCache(tire.companyId);
+    if (tire.vehicleId) {
       await Promise.allSettled([
-        this.invalidateVehicleCache(tireForCache.vehicleId),
-        this.cache.del(`analysis:${tireForCache.vehicleId}`),
+        this.invalidateVehicleCache(tire.vehicleId),
+        this.cache.del(`analysis:${tire.vehicleId}`),
       ]);
     }
 
