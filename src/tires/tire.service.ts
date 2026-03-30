@@ -2031,15 +2031,24 @@ export class TireService {
     });
     if (!tire) throw new NotFoundException('Tire not found');
 
-    // --- Handle fechaInstalacion change (tire-level, affects ALL inspections) ---
+    // --- Handle fechaInstalacion change (tire-level) ---
     if (updates.fechaInstalacion) {
       const newInstall = new Date(updates.fechaInstalacion);
+
+      // Guard: cannot be in the future
+      if (newInstall.getTime() > Date.now()) {
+        throw new BadRequestException('La fecha de instalacion no puede ser en el futuro');
+      }
+
       await this.prisma.tire.update({
         where: { id: tireId },
         data: { fechaInstalacion: newInstall },
       });
 
-      // Recalculate diasEnUso, mesesEnUso, CPK, CPT for ALL inspections
+      // Only update diasEnUso and mesesEnUso — CPK does NOT change (it depends on km/cost, not date)
+      // CPT does change because CPT = cost / months
+      const totalCost = tire.costos.reduce((s, c) => s + c.valor, 0);
+
       for (const ins of tire.inspecciones) {
         const inspDate = new Date(ins.fecha);
         const diasEnUso = Math.max(
@@ -2047,36 +2056,15 @@ export class TireService {
           1,
         );
         const mesesEnUso = diasEnUso / 30;
-        const minD = calcMinDepth(ins.profundidadInt, ins.profundidadCen, ins.profundidadExt);
-        const effKm = ins.kilometrosEstimados ?? tire.kilometrosRecorridos ?? 0;
-
-        const { costForVida, kmForVida } = resolveVidaCostAndKm({
-          costos: tire.costos,
-          inspecciones: tire.inspecciones,
-          eventos: tire.eventos,
-          vidaActual: tire.vidaActual ?? VidaValue.nueva,
-          currentKm: effKm,
-          installationDate: newInstall,
-          creationKm: 0,
-        });
-
-        const metrics = calcCpkMetrics(costForVida, kmForVida, mesesEnUso, tire.profundidadInicial, minD);
+        const cpt = mesesEnUso > 0 ? totalCost / mesesEnUso : 0;
 
         await this.prisma.inspeccion.update({
           where: { id: ins.id },
-          data: {
-            diasEnUso,
-            mesesEnUso,
-            cpk: metrics.cpk,
-            cpkProyectado: metrics.cpkProyectado,
-            cpt: metrics.cpt,
-            cptProyectado: metrics.cptProyectado,
-            kmProyectado: metrics.projectedKm,
-          },
+          data: { diasEnUso, mesesEnUso, cpt },
         });
       }
 
-      this.logger.log(`editInspection: updated fechaInstalacion to ${newInstall.toISOString()}, recalculated ${tire.inspecciones.length} inspections`);
+      this.logger.log(`editInspection: updated fechaInstalacion to ${newInstall.toISOString()}, updated dias/meses for ${tire.inspecciones.length} inspections`);
     }
 
     // --- Handle per-inspection field edits ---
