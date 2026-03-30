@@ -1483,7 +1483,7 @@ export class TireService {
       kilometrosRecorridos = priorTireKm;
     }
 
-    const now              = new Date();
+    const now              = dto.fecha ? new Date(dto.fecha) : new Date();
     const fechaInstalacion = dto.fechaInstalacion
       ? new Date(dto.fechaInstalacion)
       : (tire.fechaInstalacion ?? now);

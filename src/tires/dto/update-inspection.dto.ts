@@ -18,6 +18,12 @@ const INSPECCION_SOURCE_VALUES = {
 } as const;
 
 export class UpdateInspectionDto {
+  // ── Optional date override (for editing past inspections) ─────────────────
+
+  @IsOptional()
+  @IsString()
+  fecha?: string;
+
   // ── Required tread depth readings ─────────────────────────────────────────
 
   @Type(() => Number)
