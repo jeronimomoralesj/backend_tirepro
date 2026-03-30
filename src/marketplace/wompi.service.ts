@@ -29,25 +29,30 @@ export class WompiService {
    * Verify webhook event signature from Wompi.
    * Wompi sends a checksum in the header that we verify with our events secret.
    */
-  verifyWebhookSignature(body: any, receivedChecksum: string): boolean {
+  verifyWebhookSignature(body: any): boolean {
     const secret = process.env.WOMPI_EVENTS_SECRET;
     if (!secret) {
       this.logger.warn('WOMPI_EVENTS_SECRET not configured, skipping verification');
-      return true; // Allow in dev
+      return true;
     }
 
-    // Wompi signature: SHA256 of concatenated event properties + timestamp + secret
-    // The exact fields depend on the event type
-    const event = body.event;
-    const data = body.data?.transaction;
-    if (!event || !data) return false;
+    const properties: string[] = body.signature?.properties ?? [];
+    const checksum: string = body.signature?.checksum ?? '';
+    if (!properties.length || !checksum) return false;
 
-    const props = `${data.id}${data.status}${data.amount_in_cents}`;
-    const timestamp = body.timestamp?.toString() ?? '';
-    const toHash = `${props}${timestamp}${secret}`;
-    const computed = crypto.createHash('sha256').update(toHash).digest('hex');
+    // Resolve each dot-path property from the payload
+    const values = properties.map((prop: string) =>
+      prop.split('.').reduce((obj: any, key: string) => obj?.[key], body),
+    );
 
-    return computed === receivedChecksum;
+    const concatenated = values.join('') + (body.timestamp ?? '') + secret;
+    const computed = crypto.createHash('sha256').update(concatenated).digest('hex');
+
+    try {
+      return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(checksum));
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -70,6 +75,10 @@ export class WompiService {
    * Handle a Wompi webhook event (transaction.updated)
    */
   async handleWebhookEvent(body: any): Promise<{ ok: boolean; message: string }> {
+    if (!this.verifyWebhookSignature(body)) {
+      this.logger.warn('Invalid Wompi webhook signature');
+    }
+
     const event = body.event;
     const data = body.data?.transaction;
 
