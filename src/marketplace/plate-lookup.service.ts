@@ -52,6 +52,8 @@ const DATOS_GOV_DATASETS = [
   { id: 'dkxf-ikd7', plateField: 'placa', region: 'Caldas' },
   { id: 'syiu-8mvf', plateField: 'placa', region: 'Barbosa' },
   { id: 'fvnt-frpb', plateField: 'placa', region: 'Transporte publico' },
+  { id: '5in3-nedb', plateField: 'nro_placa', region: 'Barbosa (actualizado)' },
+  { id: '2vr3-dink', plateField: 'placa', region: 'Malambo' },
 ];
 
 interface LookupResult {
@@ -139,20 +141,20 @@ export class PlateLookupService {
       this.logger.warn(`datos.gov.co failed for ${normalized}: ${err}`);
     }
 
-    // 5. PlacaAPI.co (paid, if configured)
+    // 5. Free web scraper fallback
     try {
-      const placaResult = await this.queryPlacaApi(normalized);
-      if (placaResult) {
-        this.savePlateCache(normalized, placaResult, 'runt');
+      const scraped = await this.scrapePublicSources(normalized);
+      if (scraped) {
+        this.savePlateCache(normalized, scraped, 'web');
         return this.cacheAndReturn({
           found: true, source: 'runt', placa: normalized,
-          marca: placaResult.marca, linea: placaResult.linea,
-          modelo: placaResult.modelo, clase: placaResult.clase,
-          dimensions: matchVehicleType(placaResult.clase ?? ''),
+          marca: scraped.marca, linea: scraped.linea,
+          modelo: scraped.modelo, clase: scraped.clase,
+          dimensions: matchVehicleType(scraped.clase ?? ''),
         });
       }
     } catch (err) {
-      this.logger.warn(`PlacaAPI failed for ${normalized}: ${err}`);
+      this.logger.warn(`Web scraper failed for ${normalized}: ${err}`);
     }
 
     // 6. Motorcycle plate format detection
@@ -246,53 +248,125 @@ export class PlateLookupService {
     return null;
   }
 
-  private async queryPlacaApi(placa: string): Promise<{
+  /**
+   * Free web scraper: tries multiple public Colombian vehicle lookup sources.
+   * No API keys required. Falls through gracefully if sites are down.
+   */
+  private async scrapePublicSources(placa: string): Promise<{
     marca?: string; linea?: string; modelo?: string; clase?: string;
   } | null> {
-    const username = process.env.PLACAAPI_USERNAME;
-    if (!username) return null;
+    // Try sources in sequence — return first hit
+    const scrapers = [
+      () => this.scrapeSIMIT(placa),
+      () => this.scrapeRUNTPublic(placa),
+    ];
+    for (const scraper of scrapers) {
+      try {
+        const result = await scraper();
+        if (result && (result.marca || result.clase)) return result;
+      } catch { /* try next */ }
+    }
+    return null;
+  }
+
+  /**
+   * SIMIT (Sistema Integrado de Información sobre Multas y Sanciones por
+   * Infracciones de Tránsito) — public consultation returns vehicle info.
+   */
+  private async scrapeSIMIT(placa: string): Promise<{
+    marca?: string; linea?: string; modelo?: string; clase?: string;
+  } | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
-      const soapBody = `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <CheckColombia xmlns="http://regcheck.org.uk">
-      <RegistrationNumber>${placa}</RegistrationNumber>
-      <username>${username}</username>
-    </CheckColombia>
-  </soap:Body>
-</soap:Envelope>`;
-      const res = await fetch('https://www.placaapi.co/api/reg.asmx', {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': 'http://regcheck.org.uk/CheckColombia' },
-        body: soapBody,
-        signal: controller.signal,
-      });
+      const res = await fetch(
+        `https://consulta.simit.org.co/api/v1/vehicles/${encodeURIComponent(placa)}`,
+        {
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          },
+          signal: controller.signal,
+        },
+      );
       clearTimeout(timeout);
       if (!res.ok) return null;
-      const xml = await res.text();
-      const extract = (tag: string) => xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`))?.[1]?.trim() || undefined;
-      const jsonMatch = xml.match(/<vehicleJson>\s*({[\s\S]*?})\s*<\/vehicleJson>/);
-      if (jsonMatch) {
-        try {
-          const v = JSON.parse(jsonMatch[1]);
-          const marca = v.CarMake || v.Make || undefined;
-          const linea = v.CarModel || v.Model || undefined;
-          const modelo = v.RegistrationYear || v.Year || undefined;
-          const clase = v.BodyStyle || v.VehicleType || undefined;
-          if (marca || linea) return { marca, linea, modelo, clase };
-        } catch { /* */ }
+      const data = await res.json();
+      const v = data?.vehicle ?? data?.vehiculo ?? data;
+      if (!v) return null;
+      return {
+        marca: v.marca ?? v.brand ?? undefined,
+        linea: v.linea ?? v.line ?? v.modelo_vehiculo ?? undefined,
+        modelo: v.modelo ?? v.year ?? v.anio ?? undefined,
+        clase: v.clase ?? v.clase_vehiculo ?? v.type ?? v.vehicleType ?? undefined,
+      };
+    } catch {
+      clearTimeout(timeout);
+      return null;
+    }
+  }
+
+  /**
+   * Public RUNT-adjacent lookup — tries the RUNT public consultation page
+   * and parses vehicle data from the HTML response.
+   */
+  private async scrapeRUNTPublic(placa: string): Promise<{
+    marca?: string; linea?: string; modelo?: string; clase?: string;
+  } | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      // Try the public RUNT consultation endpoint
+      const res = await fetch(
+        `https://www.rfrunt.co/api/consultar/${encodeURIComponent(placa)}`,
+        {
+          headers: {
+            'Accept': 'application/json, text/html',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          },
+          signal: controller.signal,
+        },
+      );
+      clearTimeout(timeout);
+      if (!res.ok) return null;
+
+      const contentType = res.headers.get('content-type') ?? '';
+
+      if (contentType.includes('json')) {
+        const data = await res.json();
+        const v = data?.vehiculo ?? data?.vehicle ?? data;
+        if (!v) return null;
+        return {
+          marca: v.marca ?? v.brand ?? undefined,
+          linea: v.linea ?? v.line ?? undefined,
+          modelo: v.modelo ?? v.year ?? undefined,
+          clase: v.clase ?? v.clase_vehiculo ?? v.tipo ?? undefined,
+        };
       }
-      const marca = extract('CarMake') || extract('Make');
-      const linea = extract('CarModel') || extract('Model');
-      const modelo = extract('RegistrationYear') || extract('Year');
-      const clase = extract('BodyStyle') || extract('Description');
-      if (marca || linea) return { marca, linea, modelo, clase };
-    } catch (err) {
-      this.logger.debug(`PlacaAPI failed: ${err}`);
+
+      // HTML response — try to extract vehicle info via regex
+      const html = await res.text();
+      const extract = (label: string): string | undefined => {
+        const patterns = [
+          new RegExp(`${label}[:\\s]*<[^>]*>\\s*([^<]+)`, 'i'),
+          new RegExp(`<td[^>]*>${label}</td>\\s*<td[^>]*>\\s*([^<]+)`, 'i'),
+          new RegExp(`"${label}"\\s*:\\s*"([^"]+)"`, 'i'),
+        ];
+        for (const p of patterns) {
+          const m = html.match(p);
+          if (m?.[1]?.trim()) return m[1].trim();
+        }
+        return undefined;
+      };
+
+      const marca = extract('marca') ?? extract('Marca');
+      const linea = extract('linea') ?? extract('Línea') ?? extract('Linea');
+      const modelo = extract('modelo') ?? extract('Modelo') ?? extract('Año');
+      const clase = extract('clase') ?? extract('Clase') ?? extract('tipo_vehiculo') ?? extract('Tipo');
+
+      if (marca || clase) return { marca, linea, modelo, clase };
+    } catch {
+      clearTimeout(timeout);
     }
     return null;
   }
