@@ -2081,6 +2081,11 @@ export class TireService {
       return insp; // Nothing to update
     }
 
+    this.logger.log(
+      `editInspection ${insp.id}: depthChanged=${depthChanged} kmChanged=${kmChanged} ` +
+      `cpk=${data.cpk ?? 'unchanged'} costForVida=${depthChanged || kmChanged ? 'recalculated' : 'skipped'}`,
+    );
+
     const updated = await this.prisma.inspeccion.update({
       where: { id: insp.id },
       data,
@@ -2088,7 +2093,7 @@ export class TireService {
 
     // If km changed on the latest inspection, update the tire's accumulated km
     if (kmChanged) {
-      const allInspections = tire.inspecciones.sort(
+      const allInspections = [...tire.inspecciones].sort(
         (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime(),
       );
       if (allInspections[0]?.id === insp.id) {
@@ -2111,7 +2116,8 @@ export class TireService {
       ]);
     }
 
-    return updated;
+    // Return the full updated tire so frontend gets everything in one request
+    return this.findTireById(tireId);
   }
 
   async removeInspection(tireId: string, fecha: string) {
