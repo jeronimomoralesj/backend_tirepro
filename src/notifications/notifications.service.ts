@@ -189,7 +189,7 @@ export class NotificationsService {
       where:   { companyId, executed: false },
       orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
       include: {
-        tire:    { select: { placa: true, marca: true, posicion: true, alertLevel: true } },
+        tire:    { select: { placa: true, marca: true, posicion: true, alertLevel: true, currentProfundidad: true, inspecciones: { orderBy: { fecha: 'desc' }, take: 1, select: { profundidadInt: true, profundidadCen: true, profundidadExt: true } } } },
         vehicle: { select: { placa: true, drivers: true } },
       },
     });
