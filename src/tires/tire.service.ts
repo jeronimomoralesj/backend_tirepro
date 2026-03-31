@@ -1611,13 +1611,12 @@ export class TireService {
       const recs = analysis.recomendaciones;
 
       if (recs.length > 0) {
-        // Check if there's already an unexecuted notification for this tire — don't duplicate
-        const existing = await this.prisma.notification.findFirst({
+        // Delete any existing unexecuted notifications for this tire — replace with fresh analysis
+        await this.prisma.notification.deleteMany({
           where: { tireId, executed: false },
-          select: { id: true },
         });
 
-        if (!existing) {
+        {
           // Determine the most appropriate actionType from the top recommendation
           const topRec = recs[0];
           let actionType = 'inspect';
@@ -2747,128 +2746,69 @@ export class TireService {
     const recomendaciones: { msg: string; priority: number }[] = [];
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 1. DESGASTE CRÍTICO — below legal limit
+    // 1. DESGASTE CRÍTICO
     // ═══════════════════════════════════════════════════════════════════════════
     if (minDepth <= C.LIMITE_LEGAL_MM) {
-      recomendaciones.push({
-        priority: 100,
-        msg: '🔴 Cambio inmediato: La llanta alcanzó el límite legal (2mm). Retirar de operación. El casco podría tener daño en cinturas de acero.',
-      });
+      recomendaciones.push({ priority: 100, msg: `Retirar de servicio. Profundidad ${minDepth.toFixed(1)}mm — limite legal alcanzado.` });
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 2. OPTIMAL RETIREMENT — 3mm threshold for casing preservation
-    // ═══════════════════════════════════════════════════════════════════════════
+    // 2. RETIRO ÓPTIMO
     if (minDepth <= C.OPTIMAL_RETIREMENT_MM && minDepth > C.LIMITE_LEGAL_MM) {
-      recomendaciones.push({
-        priority: 96,
-        msg: `🔴 Retiro óptimo: Profundidad ${minDepth.toFixed(1)}mm. Retirar AHORA preserva el casco para reencauche. Bajar de 3mm daña las cinturas de acero y destruye la inversión en el casco.`,
-      });
+      recomendaciones.push({ priority: 96, msg: `Retirar para reencauche. Profundidad ${minDepth.toFixed(1)}mm — preservar casco ahora.` });
     } else if (minDepth <= 4 && minDepth > C.OPTIMAL_RETIREMENT_MM) {
-      recomendaciones.push({
-        priority: 88,
-        msg: `🟡 Retiro estratégico: ${minDepth.toFixed(1)}mm — zona óptima para reencauche. Retirar ahora maximiza vida útil total (2-3 reencauches posibles).`,
-      });
+      recomendaciones.push({ priority: 88, msg: `Programar retiro. Profundidad ${minDepth.toFixed(1)}mm — zona optima para reencauche.` });
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 3. REGROOVING (regrabado) — before retread, gain 10-15% extra life
-    // ═══════════════════════════════════════════════════════════════════════════
-    if (
-      tire.isRegrabable &&
-      minDepth >= C.REGRABADO_MIN_MM &&
-      minDepth <= C.REGRABADO_MAX_MM &&
-      tire.vidaActual !== VidaValue.fin
-    ) {
-      recomendaciones.push({
-        priority: 82,
-        msg: `🟡 Regrabado recomendado: ${minDepth.toFixed(1)}mm. Al ser regrabable, se puede ganar 10-15% de vida original extra antes de reencauchar. Esto maximiza el CPK total.`,
-      });
+    // 3. REGRABADO
+    if (tire.isRegrabable && minDepth >= C.REGRABADO_MIN_MM && minDepth <= C.REGRABADO_MAX_MM && tire.vidaActual !== VidaValue.fin) {
+      recomendaciones.push({ priority: 82, msg: `Regrebar llanta. ${minDepth.toFixed(1)}mm — gana 10-15% vida extra antes de reencauchar.` });
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 4. PRESIÓN — critical, warning, over-inflation
-    // ═══════════════════════════════════════════════════════════════════════════
+    // 4. PRESIÓN (solo si hay datos de PSI)
     if (latest.presionPsi != null && latest.presionRecomendadaPsi != null) {
       const diff = latest.presionPsi - latest.presionRecomendadaPsi;
       if (diff <= -C.PRESSURE_UNDER_CRIT_PSI) {
-        recomendaciones.push({
-          priority: 95,
-          msg: `🔴 Riesgo crítico: ${Math.abs(Math.round(diff))} PSI por debajo. Alta probabilidad de sobrecalentamiento, degradación de acero interno y falla estructural. Inflar inmediatamente.`,
-        });
+        recomendaciones.push({ priority: 95, msg: `Inflar urgente. ${Math.abs(Math.round(diff))} PSI por debajo de lo recomendado (${latest.presionRecomendadaPsi} PSI).` });
       } else if (diff <= -C.PRESSURE_UNDER_WARN_PSI) {
-        recomendaciones.push({
-          priority: 80,
-          msg: `🟡 Baja presión: ${Math.abs(Math.round(diff))} PSI por debajo. Genera calor excesivo en flancos y aumenta desgaste de hombros. Corregir según carga actual.`,
-        });
+        recomendaciones.push({ priority: 80, msg: `Subir presion a ${latest.presionRecomendadaPsi} PSI. Actualmente ${Math.abs(Math.round(diff))} PSI por debajo.` });
       } else if (diff >= 8) {
-        recomendaciones.push({
-          priority: 70,
-          msg: `🟡 Sobrepresión: ${Math.round(diff)} PSI por encima. Reduce huella de contacto, concentra desgaste en centro y aumenta riesgo de estallido por impacto.`,
-        });
+        recomendaciones.push({ priority: 70, msg: `Bajar presion a ${latest.presionRecomendadaPsi} PSI. Actualmente ${Math.round(diff)} PSI por encima.` });
       }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 5. ALIGNMENT DETECTION — unilateral shoulder wear (Int vs Ext)
-    //    Expert: if difference between shoulders ≥1.5mm but center is normal,
-    //    it's a camber/toe alignment issue, not a pressure issue
-    // ═══════════════════════════════════════════════════════════════════════════
+    // 5. ALINEACIÓN
     const shoulderDelta = Math.abs(pInt - pExt);
     const centerVsAvgShoulders = Math.abs(pCen - (pInt + pExt) / 2);
 
     if (shoulderDelta >= C.ALIGNMENT_SEVERE_MM) {
       const worstSide = pInt < pExt ? 'interior' : 'exterior';
-      recomendaciones.push({
-        priority: 92,
-        msg: `🔴 Alineación urgente: Diferencia de ${shoulderDelta.toFixed(1)}mm entre hombros (mayor desgaste ${worstSide}). Indica Camber o convergencia/divergencia errónea. Alinear ejes y rotar para nivelar banda.`,
-      });
+      recomendaciones.push({ priority: 92, msg: `Alinear ejes urgente. Diferencia ${shoulderDelta.toFixed(1)}mm entre hombros (desgaste ${worstSide}).` });
     } else if (shoulderDelta >= C.ALIGNMENT_WARN_MM && centerVsAvgShoulders < 1.5) {
-      // Unilateral wear with normal center = alignment, not pressure
       const worstSide = pInt < pExt ? 'interior' : 'exterior';
-      recomendaciones.push({
-        priority: 83,
-        msg: `🟡 Posible desalineación: ${shoulderDelta.toFixed(1)}mm de diferencia entre hombros (hombro ${worstSide} más gastado). Realizar alineación de ejes y rotación cruzada para limpiar el desgaste.`,
-      });
+      recomendaciones.push({ priority: 83, msg: `Revisar alineacion. ${shoulderDelta.toFixed(1)}mm diferencia entre hombros (lado ${worstSide}).` });
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 6. BILATERAL WEAR PATTERNS — pressure/overload signatures
-    // ═══════════════════════════════════════════════════════════════════════════
-    const maxDelta = Math.max(
-      Math.abs(pInt - pCen),
-      Math.abs(pExt - pCen),
-      Math.abs(pInt - pExt),
-    );
+    // 6. PATRONES DE DESGASTE (solo si no hay problema de alineación)
+    const maxDelta = Math.max(Math.abs(pInt - pCen), Math.abs(pExt - pCen), Math.abs(pInt - pExt));
 
     if (maxDelta > 3 && shoulderDelta < C.ALIGNMENT_WARN_MM) {
-      // High overall irregularity but shoulders are balanced = center vs. edges issue
-      recomendaciones.push({
-        priority: 85,
-        msg: '🟡 Desgaste irregular severo: Diferencias >3mm entre zonas. Requiere revisión mecánica (presión, carga o suspensión).',
-      });
+      recomendaciones.push({ priority: 85, msg: 'Revision mecanica. Desgaste irregular >3mm entre zonas (presion, carga o suspension).' });
     } else if (pCen < pInt && pCen < pExt && shoulderDelta < C.ALIGNMENT_WARN_MM) {
-      recomendaciones.push({
-        priority: 70,
-        msg: '🟡 Sobreinflado crónico: Centro más gastado que hombros. Reduce huella de contacto y aumenta riesgo de estallido por impacto. Reducir presión.',
-      });
+      // Only add if we don't already have a PSI-based pressure rec (avoid contradiction)
+      if (!recomendaciones.some(r => r.msg.includes('presion') || r.msg.includes('Inflar') || r.msg.includes('PSI'))) {
+        recomendaciones.push({ priority: 70, msg: 'Reducir presion. Centro mas gastado que hombros — indica sobreinflado.' });
+      }
     } else if (pCen > pInt && pCen > pExt && shoulderDelta < C.ALIGNMENT_WARN_MM) {
-      recomendaciones.push({
-        priority: 75,
-        msg: '🟡 Baja presión o sobrecarga: Hombros más gastados que centro. Genera calor excesivo en flancos y degrada estructura interna. Aumentar presión o reducir carga.',
-      });
+      if (!recomendaciones.some(r => r.msg.includes('presion') || r.msg.includes('Inflar') || r.msg.includes('PSI'))) {
+        recomendaciones.push({ priority: 75, msg: 'Aumentar presion. Hombros mas gastados que centro — indica baja presion o sobrecarga.' });
+      }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 7. APPLICATION MATCH — tire design vs axle position
-    // ═══════════════════════════════════════════════════════════════════════════
+    // 7. APLICACIÓN INCORRECTA
     if (tire.tipoDiseno) {
       const validAxles = VALID_DESIGN_AXLE[tire.tipoDiseno] ?? [];
       if (validAxles.length > 0 && !validAxles.includes(tire.eje)) {
-        recomendaciones.push({
-          priority: 87,
-          msg: `🟡 Aplicación incorrecta: Diseño "${tire.tipoDiseno}" instalado en eje "${tire.eje}". Esto genera desgaste irregular acelerado, vibraciones y puede destruir el casco prematuramente. Reubicar en eje compatible.`,
-        });
+        recomendaciones.push({ priority: 87, msg: `Reubicar llanta. Diseno "${tire.tipoDiseno}" no es compatible con eje "${tire.eje}".` });
       }
     }
 
@@ -2882,59 +2822,35 @@ export class TireService {
       // This is handled in refreshTireAnalyticsCache with a dual lookup
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 9. CPK ANALYSIS
-    // ═══════════════════════════════════════════════════════════════════════════
+    // 9. CPK
     const cpk = latest.cpk ?? null;
     if (cpk != null && cpk < 5) {
-      recomendaciones.push({
-        priority: 90,
-        msg: '🔴 Alto costo: CPK elevado. Esta llanta está generando sobrecostos. Evaluar reemplazo con referencia de mejor CPK del catálogo.',
-      });
+      recomendaciones.push({ priority: 90, msg: 'Evaluar reemplazo. CPK elevado — esta llanta genera sobrecostos.' });
     }
     if (cpkTrend != null && cpkTrend > 0.1) {
-      recomendaciones.push({
-        priority: 75,
-        msg: '🟡 Degradación: El costo por km está aumentando. Detectar causa (presión, carga, conducción o desalineación).',
-      });
+      recomendaciones.push({ priority: 75, msg: 'Investigar causa de degradacion. CPK esta aumentando.' });
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 10. ROTATION RECOMMENDATION — every ~10,000 km
-    // ═══════════════════════════════════════════════════════════════════════════
+    // 10. ROTACIÓN
     const lastRotation = (tire.eventos ?? [])
       .filter((e: any) => e.tipo === 'rotacion')
       .sort((a: any, b: any) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime())[0];
-
     const kmSinceRotation = lastRotation
       ? tire.kilometrosRecorridos - (lastRotation.metadata?.kmAtEvent ?? 0)
       : tire.kilometrosRecorridos;
 
     if (kmSinceRotation >= C.ROTATION_INTERVAL_KM && minDepth > C.OPTIMAL_RETIREMENT_MM) {
-      recomendaciones.push({
-        priority: 65,
-        msg: `🟡 Rotación recomendada: ${Math.round(kmSinceRotation / 1000)}K km sin rotar. La rotación cada 10,000 km previene irregularidades y extiende vida útil.`,
-      });
+      recomendaciones.push({ priority: 65, msg: `Rotar llanta. ${Math.round(kmSinceRotation / 1000)}K km sin rotacion.` });
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 11. AGING — high days, low km
-    // ═══════════════════════════════════════════════════════════════════════════
+    // 11. ENVEJECIMIENTO
     if (tire.diasAcumulados > 180 && tire.kilometrosRecorridos < 20000) {
-      recomendaciones.push({
-        priority: 60,
-        msg: '🟡 Envejecimiento: Muchos días con bajo uso. Revisar resequedad o grietas en flancos. El caucho pierde propiedades con el tiempo.',
-      });
+      recomendaciones.push({ priority: 60, msg: 'Revisar flancos. Muchos dias con bajo uso — posible resequedad.' });
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 12. FALLBACK POSITIVO
-    // ═══════════════════════════════════════════════════════════════════════════
+    // 12. SIN PROBLEMAS
     if (recomendaciones.length === 0) {
-      recomendaciones.push({
-        priority: 10,
-        msg: '🟢 Operación óptima: La llanta se encuentra en buen estado y sin anomalías.',
-      });
+      recomendaciones.push({ priority: 10, msg: 'Sin anomalias. Llanta en buen estado.' });
     }
 
     return {
