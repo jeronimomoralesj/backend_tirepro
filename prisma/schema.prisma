@@ -1287,6 +1287,10 @@ model DistributorListing {
   @@index([dimension, isActive])
   @@index([marca, dimension, isActive])
   @@index([precioCop])
+  @@index([isActive, createdAt])
+  @@index([isActive, imageQualityScore, createdAt])
+  @@index([isActive, precioCop])
+  @@index([tipo, isActive])
   @@map("distributor_listings")
 
   reviews DistributorReview[]
@@ -1345,6 +1349,7 @@ model MarketplaceOrder {
   @@index([userId])
   @@index([buyerEmail])
   @@index([createdAt])
+  @@index([listingId])
   @@map("marketplace_orders")
 }
 

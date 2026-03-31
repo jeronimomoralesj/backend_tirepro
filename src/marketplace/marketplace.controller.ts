@@ -1,6 +1,6 @@
 import {
   Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards,
-  UseInterceptors, UploadedFile, Headers,
+  UseInterceptors, UploadedFile, Headers, Header,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MarketplaceService } from './marketplace.service';
@@ -96,6 +96,7 @@ export class MarketplaceController {
   // ===========================================================================
 
   @Get('listings')
+  @Header('Cache-Control', 'public, max-age=60, stale-while-revalidate=120')
   searchListings(
     @Query('dimension') dimension?: string,
     @Query('marca') marca?: string,
@@ -120,11 +121,13 @@ export class MarketplaceController {
   }
 
   @Get('listings/filters')
+  @Header('Cache-Control', 'public, max-age=300, stale-while-revalidate=600')
   getFilters() {
     return this.svc.getMarketplaceFilters();
   }
 
   @Get('distributor/:id/profile')
+  @Header('Cache-Control', 'public, max-age=300, stale-while-revalidate=600')
   getDistributorProfile(@Param('id') id: string) {
     return this.svc.getDistributorProfile(id);
   }
@@ -239,6 +242,7 @@ export class MarketplaceController {
   // ===========================================================================
 
   @Get('product/:id')
+  @Header('Cache-Control', 'public, max-age=180, stale-while-revalidate=600')
   getProduct(@Param('id') id: string) {
     return this.svc.getListingById(id);
   }
@@ -310,11 +314,13 @@ export class MarketplaceController {
   }
 
   @Get('distributors/map')
+  @Header('Cache-Control', 'public, max-age=600, stale-while-revalidate=1200')
   getDistributorMap() {
     return this.svc.getDistributorMapData();
   }
 
   @Get('recommendations')
+  @Header('Cache-Control', 'public, max-age=300, stale-while-revalidate=600')
   getRecommendations(@Query('userId') userId?: string) {
     return this.svc.getRecommendations(userId || undefined);
   }
