@@ -1611,44 +1611,56 @@ export class TireService {
       const recs = analysis.recomendaciones;
 
       if (recs.length > 0) {
-        // Determine the most appropriate actionType from the recommendation content
-        const fullMsg = recs.join(' ');
-        let actionType = 'inspect';
-        let priority = 1;
-
-        if (fullMsg.includes('Retiro') || fullMsg.includes('retirar') || fullMsg.includes('Retirar')) {
-          actionType = 'remove_from_service';
-          priority = 3;
-        } else if (fullMsg.includes('alineación') || fullMsg.includes('Alineación')) {
-          actionType = 'pressure_adjust';
-          priority = 2;
-        } else if (fullMsg.includes('presión') || fullMsg.includes('Presión') || fullMsg.includes('Sobreinflado') || fullMsg.includes('sobreinflado')) {
-          actionType = 'pressure_adjust';
-          priority = 2;
-        } else if (fullMsg.includes('reencauche') || fullMsg.includes('Reencauche') || fullMsg.includes('Regrabado')) {
-          actionType = 'retread';
-          priority = 2;
-        } else if (fullMsg.includes('rotar') || fullMsg.includes('Rotar') || fullMsg.includes('Emparejar')) {
-          actionType = 'rotate';
-          priority = 2;
-        }
-
-        const isCritical = updatedTire.alertLevel === TireAlertLevel.critical
-          || recs[0].includes('🔴');
-
-        await this.notificationsService.createNotification({
-          title: `${updatedTire.placa} P${updatedTire.posicion} — ${isCritical ? 'Acción requerida' : 'Atención'}`,
-          message: recs.join('\n'),
-          type: isCritical ? 'critical' : 'warning',
-          tireId,
-          vehicleId: updatedTire.vehicleId ?? undefined,
-          companyId: updatedTire.companyId,
-          actionType,
-          actionPayload: { tireId, position: updatedTire.posicion, vehicleId: updatedTire.vehicleId },
-          actionLabel: recs[0].replace(/^[🔴🟡🟢⚠️\s]+/, '').substring(0, 80),
-          groupKey: updatedTire.vehicleId ?? undefined,
-          priority,
+        // Check if there's already an unexecuted notification for this tire — don't duplicate
+        const existing = await this.prisma.notification.findFirst({
+          where: { tireId, executed: false },
+          select: { id: true },
         });
+
+        if (!existing) {
+          // Determine the most appropriate actionType from the top recommendation
+          const topRec = recs[0];
+          let actionType = 'inspect';
+          let priority = 1;
+
+          if (topRec.includes('Retiro') || topRec.includes('retirar') || topRec.includes('Retirar')) {
+            actionType = 'remove_from_service';
+            priority = 3;
+          } else if (topRec.includes('alineación') || topRec.includes('Alineación')) {
+            actionType = 'pressure_adjust';
+            priority = 2;
+          } else if (topRec.includes('presión') || topRec.includes('Presión') || topRec.includes('Sobreinflado') || topRec.includes('sobreinflado')) {
+            actionType = 'pressure_adjust';
+            priority = 2;
+          } else if (topRec.includes('reencauche') || topRec.includes('Reencauche') || topRec.includes('Regrabado')) {
+            actionType = 'retread';
+            priority = 2;
+          } else if (topRec.includes('rotar') || topRec.includes('Rotar') || topRec.includes('Emparejar')) {
+            actionType = 'rotate';
+            priority = 2;
+          }
+
+          const isCritical = updatedTire.alertLevel === TireAlertLevel.critical
+            || topRec.includes('🔴');
+
+          // Use top recommendation as title, additional ones as message body
+          const cleanTitle = topRec.replace(/^[🔴🟡🟢⚠️\s]+/, '').substring(0, 120);
+          const additionalRecs = recs.slice(1).map(r => r.replace(/^[🔴🟡🟢⚠️\s]+/, '')).join(' | ');
+
+          await this.notificationsService.createNotification({
+            title: `${updatedTire.placa} P${updatedTire.posicion}`,
+            message: cleanTitle,
+            type: isCritical ? 'critical' : 'warning',
+            tireId,
+            vehicleId: updatedTire.vehicleId ?? undefined,
+            companyId: updatedTire.companyId,
+            actionType,
+            actionPayload: { tireId, position: updatedTire.posicion, vehicleId: updatedTire.vehicleId },
+            actionLabel: additionalRecs || undefined,
+            groupKey: updatedTire.vehicleId ?? undefined,
+            priority,
+          });
+        }
       }
     } catch (err: any) {
       this.logger.warn(`Notification creation failed for tire ${tireId}: ${err.message}`);
