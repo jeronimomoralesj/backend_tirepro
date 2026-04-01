@@ -276,6 +276,57 @@ function normalize(s: string): string {
     .trim();
 }
 
+/**
+ * Parse a date string from Excel. Handles:
+ *  - DD/MM/YYYY (Colombian format): "30/01/2026"
+ *  - MM/DD/YYYY: "01/30/2026"
+ *  - YYYY-MM-DD (ISO): "2026-01-30"
+ *  - DD-MM-YYYY: "30-01-2026"
+ *  - Excel serial numbers: 45322 (days since 1899-12-30)
+ *  - Any string Date() can parse directly
+ */
+function parseExcelDate(raw: string): Date | null {
+  if (!raw?.trim()) return null;
+  const s = raw.trim();
+
+  // Excel serial number (e.g., 45322)
+  if (/^\d{4,5}$/.test(s)) {
+    const serial = parseInt(s, 10);
+    if (serial > 30000 && serial < 60000) {
+      // Excel epoch: 1899-12-30
+      const d = new Date(1899, 11, 30);
+      d.setDate(d.getDate() + serial);
+      return isNaN(d.getTime()) ? null : d;
+    }
+  }
+
+  // ISO: YYYY-MM-DD or YYYY/MM/DD
+  const isoMatch = s.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (isoMatch) {
+    const d = new Date(+isoMatch[1], +isoMatch[2] - 1, +isoMatch[3]);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // DD/MM/YYYY or DD-MM-YYYY (detect: if first part > 12, it must be day)
+  const slashMatch = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
+  if (slashMatch) {
+    const a = +slashMatch[1], b = +slashMatch[2], y = +slashMatch[3];
+    // If first number > 12 → definitely DD/MM/YYYY
+    // If second number > 12 → definitely MM/DD/YYYY
+    // If both ≤ 12 → assume DD/MM/YYYY (Colombian convention)
+    let day: number, month: number;
+    if (a > 12) { day = a; month = b; }
+    else if (b > 12) { day = b; month = a; }
+    else { day = a; month = b; } // default: DD/MM/YYYY
+    const d = new Date(y, month - 1, day);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // Fallback: let JS try
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 function generateTireId(): string {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 11).toUpperCase()}`;
 }
@@ -732,6 +783,7 @@ const HEADER_MAP_B: Record<string, string> = {
   'placa':               'placa_vehiculo',
   'km actual':           'kilometros_vehiculo',
   'pos':                 'posicion',
+  'posicion':            'posicion',
   '# numero de llanta':  'llanta',
   'numero de llanta':    'llanta',
   'diseño':              'diseno_original',
@@ -747,10 +799,15 @@ const HEADER_MAP_B: Record<string, string> = {
   'profundidad inicial': 'profundidad_inicial',
   'tipo llanta':         'tipollanta',
   'tipo de llanta':      'tipollanta',
+  'eje':                 'tipollanta',
+  'vida':                'vida_override',
   'fecha ult ins':       'fecha_inspeccion',
   'fecha ult. ins':      'fecha_inspeccion',
+  'fecha ultima inspeccion': 'fecha_inspeccion',
   'presion psi':         'presion_psi',
   'presión psi':         'presion_psi',
+  'novedad':             'novedad',
+  'serie':               'serie',
 };
 
 function isFormatB(rows: Record<string, string>[]): boolean {
@@ -1243,7 +1300,19 @@ export class TireService {
           const marcaBanda = normalize(get(row, 'marca_banda'));
           bandaName        = get(row, 'banda_name').toLowerCase();
           needsReencauche  = marcaBanda.includes('reencauche') || marcaBanda.includes('rencauche');
-          vidaValor        = 'nueva';
+
+          // Format B: check if there's a "Vida" column override, else default 'nueva'
+          const vidaOverride = normalize(get(row, 'vida_override'));
+          if (vidaOverride === 'original' || vidaOverride === 'nueva' || !vidaOverride) {
+            vidaValor = 'nueva';
+          } else if (vidaOverride.includes('reencauche') || vidaOverride.includes('rencauche')) {
+            vidaValor = 'reencauche1';
+            needsReencauche = true;
+          } else if (isVidaValue(vidaOverride)) {
+            vidaValor = vidaOverride;
+          } else {
+            vidaValor = 'nueva';
+          }
 
           // Fuzzy-match banda name against catalog models
           if (bandaName && catalogModels.length > 0) {
@@ -1315,7 +1384,7 @@ export class TireService {
 
         // fechaInspeccion: always prefer the explicit column
         const fechaInspeccion: Date = rawFechaInsp
-          ? new Date(rawFechaInsp)
+          ? (parseExcelDate(rawFechaInsp) ?? now)
           : now;
 
         const kmLlantaExcel = safeFloat(get(row, 'kilometros_llanta'));
@@ -1341,7 +1410,7 @@ export class TireService {
         // fechaInstalacion: estimate if not provided
         let fechaInstalacion: Date;
         if (rawFechaInstalacion) {
-          fechaInstalacion = new Date(rawFechaInstalacion);
+          fechaInstalacion = parseExcelDate(rawFechaInstalacion) ?? now;
         } else {
           // Estimate how long ago the tire was mounted:
           // 1. From km: divide by avg monthly km to get months back
