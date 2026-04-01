@@ -85,14 +85,20 @@ export class CatalogService {
     }
     if (filters.query) {
       where.OR = [
-        { marca:  { contains: filters.query, mode: 'insensitive' } },
-        { modelo: { contains: filters.query, mode: 'insensitive' } },
+        { marca:     { contains: filters.query, mode: 'insensitive' } },
+        { modelo:    { contains: filters.query, mode: 'insensitive' } },
+        { dimension: { contains: filters.query, mode: 'insensitive' } },
       ];
     }
 
+    // Prefer SKUs with real prices; exclude $0 entries
+    where.precioCop = { gt: 0 };
+
     return this.prisma.tireMasterCatalog.findMany({
       where,
-      orderBy: [{ cpkEstimado: 'asc' }],
+      orderBy: [
+        { precioCop: 'asc' },
+      ],
       take: 50,
     });
   }
@@ -111,20 +117,21 @@ export class CatalogService {
 
     const match = await this.prisma.tireMasterCatalog.findFirst({
       where,
-      orderBy: { cpkEstimado: 'asc' },
+      orderBy: { precioCop: { sort: 'asc', nulls: 'last' } },
     });
 
     if (match) await this.cache.set(cacheKey, match, CatalogService.TTL);
     return match;
   }
 
-  /** Get all unique brands in the catalog */
+  /** Get all unique brands in the catalog (only those with real prices) */
   async getBrands() {
     const cacheKey = 'catalog:brands';
     const cached = await this.cache.get(cacheKey);
     if (cached) return cached;
 
     const brands = await this.prisma.tireMasterCatalog.findMany({
+      where: { precioCop: { gt: 0 } },
       select: { marca: true },
       distinct: ['marca'],
       orderBy: { marca: 'asc' },
@@ -135,13 +142,14 @@ export class CatalogService {
     return result;
   }
 
-  /** Get all unique dimensions in the catalog */
+  /** Get all unique dimensions in the catalog (only those with real prices) */
   async getDimensions() {
     const cacheKey = 'catalog:dimensions';
     const cached = await this.cache.get(cacheKey);
     if (cached) return cached;
 
     const dims = await this.prisma.tireMasterCatalog.findMany({
+      where: { precioCop: { gt: 0 } },
       select: { dimension: true },
       distinct: ['dimension'],
       orderBy: { dimension: 'asc' },
@@ -164,7 +172,7 @@ export class CatalogService {
 
     return this.prisma.tireMasterCatalog.findMany({
       where,
-      orderBy: { cpkEstimado: 'asc' },
+      orderBy: { precioCop: { sort: 'asc', nulls: 'last' } },
       take: 10,
     });
   }

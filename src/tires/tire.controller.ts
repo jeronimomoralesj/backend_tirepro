@@ -58,6 +58,38 @@ export class TireController {
     return this.tireService.findAllTires();
   }
 
+  @Get('search')
+  searchTires(
+    @Query('companyId') companyId: string,
+    @Query('q')         q: string,
+    @Query('limit')     limit: string,
+    @Query('offset')    offset: string,
+  ) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    return this.tireService.searchTires({
+      companyId,
+      q:      q || undefined,
+      limit:  limit  ? parseInt(limit, 10)  : undefined,
+      offset: offset ? parseInt(offset, 10) : undefined,
+    });
+  }
+
+  @Get('list')
+  listTiresSummary(
+    @Query('companyId')  companyId: string,
+    @Query('limit')      limit: string,
+    @Query('offset')     offset: string,
+    @Query('alertLevel') alertLevel: string,
+  ) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    return this.tireService.listTiresSummary({
+      companyId,
+      limit:      limit      ? parseInt(limit, 10)      : undefined,
+      offset:     offset     ? parseInt(offset, 10)     : undefined,
+      alertLevel: alertLevel ? (alertLevel as any)       : undefined,
+    });
+  }
+
   @Get('vehicle')
   getTiresByVehicle(@Query('vehicleId') vehicleId: string) {
     if (!vehicleId) throw new BadRequestException('vehicleId is required');

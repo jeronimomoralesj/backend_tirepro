@@ -229,6 +229,7 @@ model Tire {
   @@index([alertLevel])
   @@index([companyId, alertLevel])       // "show all warnings for company X"
   @@index([companyId, lastInspeccionDate]) // dashboard sorting
+  @@index([companyId, placa])              // distributor tire search by placa
 }
 
 // =============================================================================

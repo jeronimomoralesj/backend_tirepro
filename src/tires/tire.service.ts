@@ -28,8 +28,8 @@ import { Cache } from 'cache-manager';
 const C = {
   KM_POR_MES:                  6_000,
   MS_POR_DIA:                  86_400_000,
-  PREMIUM_TIRE_EXPECTED_KM:    120_000,
-  STANDARD_TIRE_EXPECTED_KM:   100_000,
+  PREMIUM_TIRE_EXPECTED_KM:    120_000,  // legacy — bulk upload now uses catalog or 80k fallback
+  STANDARD_TIRE_EXPECTED_KM:   80_000,  // updated default when catalog has no data
   SIGNIFICANT_WEAR_MM:         10,
   RECENT_REGISTRATION_DAYS:    30,
   DEFAULT_PROFUNDIDAD_INICIAL: 22,
@@ -70,6 +70,113 @@ const VIDA_SEQUENCE: VidaValue[] = [
 ];
 
 const VALID_VIDA_SET = new Set<string>(VIDA_SEQUENCE);
+
+// =============================================================================
+// Fuzzy-matching helpers for bulk upload brand / design / dimension correction
+// =============================================================================
+
+/** Levenshtein distance between two strings */
+function levenshtein(a: string, b: string): number {
+  const la = a.length, lb = b.length;
+  if (la === 0) return lb;
+  if (lb === 0) return la;
+  const dp: number[] = Array.from({ length: lb + 1 }, (_, i) => i);
+  for (let i = 1; i <= la; i++) {
+    let prev = i;
+    for (let j = 1; j <= lb; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const val  = Math.min(dp[j] + 1, prev + 1, dp[j - 1] + cost);
+      dp[j - 1] = prev;
+      prev       = val;
+    }
+    dp[lb] = prev;
+  }
+  return dp[lb];
+}
+
+/**
+ * Find the best match from a list of known values. Returns the match if
+ * the edit distance is within the tolerance threshold, otherwise null.
+ *
+ * Threshold scales with string length:
+ *  - len ≤ 4  → max 1 edit
+ *  - len ≤ 8  → max 2 edits
+ *  - len > 8  → max 3 edits
+ */
+function fuzzyMatch(input: string, known: string[]): string | null {
+  if (!input) return null;
+  const lo = input.toLowerCase();
+  // Exact match first (fast path)
+  const exact = known.find(k => k.toLowerCase() === lo);
+  if (exact) return exact;
+
+  const maxDist = lo.length <= 4 ? 1 : lo.length <= 8 ? 2 : 3;
+  let bestMatch: string | null = null;
+  let bestDist  = Infinity;
+
+  for (const candidate of known) {
+    // Skip candidates where length diff alone exceeds threshold
+    if (Math.abs(candidate.length - lo.length) > maxDist) continue;
+    const dist = levenshtein(lo, candidate.toLowerCase());
+    if (dist < bestDist && dist <= maxDist) {
+      bestDist  = dist;
+      bestMatch = candidate;
+    }
+  }
+  return bestMatch;
+}
+
+/**
+ * Normalize a tire dimension string to a canonical format.
+ * Handles common variations users type:
+ *   "12r22.5"   → "12 R 22.5"
+ *   "12R22.5"   → "12 R 22.5"
+ *   "12 r 22.5" → "12 R 22.5"
+ *   "295/80r22.5" → "295/80 R 22.5"
+ *   "295/80R22.5" → "295/80 R 22.5"
+ *   "11 R 22.5"   → "11 R 22.5" (unchanged)
+ *   "385/65r22.5" → "385/65 R 22.5"
+ */
+function normalizeDimension(raw: string): string {
+  if (!raw) return raw;
+  let d = raw.trim();
+  // Collapse multiple spaces
+  d = d.replace(/\s+/g, ' ');
+  // Main pattern: capture {prefix}R{rimSize} with optional spaces around R
+  // prefix can be like "12", "295/80", "11.00", etc.
+  d = d.replace(
+    /^([\d./]+)\s*[rR]\s*([\d.]+)$/,
+    (_, prefix, rim) => `${prefix} R ${rim}`,
+  );
+  return d;
+}
+
+/**
+ * Match a user-provided dimension against known catalog dimensions.
+ * First normalizes both, then tries exact match, then fuzzy.
+ */
+function matchDimension(input: string, known: string[]): string | null {
+  if (!input) return null;
+  const normInput = normalizeDimension(input).toLowerCase();
+  // Build a map of normalized → original
+  for (const k of known) {
+    if (normalizeDimension(k).toLowerCase() === normInput) return k;
+  }
+  // Fuzzy fallback: try matching the normalized forms
+  const normKnown = known.map(k => normalizeDimension(k).toLowerCase());
+  const maxDist = 2;
+  let bestMatch: string | null = null;
+  let bestDist  = Infinity;
+  for (let i = 0; i < normKnown.length; i++) {
+    if (Math.abs(normKnown[i].length - normInput.length) > maxDist) continue;
+    const dist = levenshtein(normInput, normKnown[i]);
+    if (dist < bestDist && dist <= maxDist) {
+      bestDist  = dist;
+      bestMatch = known[i];
+    }
+  }
+  return bestMatch;
+}
 
 // =============================================================================
 // Public-facing DTO / interface types
@@ -214,34 +321,49 @@ function calcCpkMetrics(
   meses: number,
   profundidadInicial: number,
   minDepth: number,
+  expectedLifetimeKm: number = 80_000,
 ): CpkMetrics {
-  const cpk = km    > 0 ? totalCost / km    : 0;
-  const cpt = meses > 0 ? totalCost / meses : 0;
-
   const usableDepth = profundidadInicial - C.LIMITE_LEGAL_MM;
   const mmWorn      = profundidadInicial - minDepth;
   const mmLeft      = Math.max(minDepth - C.LIMITE_LEGAL_MM, 0);
   let   projectedKm = 0;
 
-  if (usableDepth > 0 && km > 0) {
-    // Wear-rate estimate: extrapolate from actual km/mm observed
-    const wearEstimate = mmWorn > 0
-      ? km + (km / mmWorn) * mmLeft
-      : 0;
+  if (usableDepth > 0) {
+    if (km > 0) {
+      // Wear-rate estimate: extrapolate from actual km/mm observed
+      const wearEstimate = mmWorn > 0
+        ? km + (km / mmWorn) * mmLeft
+        : 0;
 
-    // Fallback estimate: assume standard tire lifecycle proportionally
-    const fallbackEstimate = km + (mmLeft / usableDepth) * C.STANDARD_TIRE_EXPECTED_KM;
+      // Fallback estimate: use catalog/estimated lifecycle proportionally
+      const fallbackEstimate = km + (mmLeft / usableDepth) * expectedLifetimeKm;
 
-    if (mmWorn <= 0) {
-      // No wear yet — pure fallback
-      projectedKm = fallbackEstimate;
+      if (mmWorn <= 0) {
+        // No wear yet — pure fallback
+        projectedKm = fallbackEstimate;
+      } else {
+        // Blend: confidence in wear data grows with mm worn (0→1 over usableDepth)
+        const wearConfidence = Math.min(mmWorn / usableDepth, 1);
+        projectedKm = wearEstimate * wearConfidence + fallbackEstimate * (1 - wearConfidence);
+      }
     } else {
-      // Blend: confidence in wear data grows with mm worn (0→1 over usableDepth)
-      // At 1mm worn we're ~5% confident in wear rate, at full usable depth we're 100%
-      const wearConfidence = Math.min(mmWorn / usableDepth, 1);
-      projectedKm = wearEstimate * wearConfidence + fallbackEstimate * (1 - wearConfidence);
+      // No km data at all — project from catalog/estimated lifecycle
+      projectedKm = expectedLifetimeKm;
     }
   }
+
+  // CPK: prefer actual km, but if km=0 and we have a projected lifecycle,
+  // use projectedKm so we never store 0 CPK when cost exists.
+  let cpk: number;
+  if (km > 0) {
+    cpk = totalCost / km;
+  } else if (projectedKm > 0 && totalCost > 0) {
+    cpk = totalCost / projectedKm;
+  } else {
+    cpk = 0;
+  }
+
+  const cpt = meses > 0 ? totalCost / meses : 0;
 
   const projectedMonths = projectedKm / C.KM_POR_MES;
   const cpkProyectado   = projectedKm     > 0 ? totalCost / projectedKm     : 0;
@@ -590,7 +712,12 @@ const HEADER_MAP_A: Record<string, string> = {
   'precio':               'costo',
   'costo furgon':         'costo',
   'fecha instalacion':    'fecha_instalacion',
+  'fecha montaje':        'fecha_instalacion',
+  'fecha de montaje':     'fecha_instalacion',
   'fecha inspeccion':     'fecha_inspeccion',
+  'fecha ult ins':        'fecha_inspeccion',
+  'fecha ult. ins':       'fecha_inspeccion',
+  'fecha ultima inspeccion': 'fecha_inspeccion',
   'imageurl':             'imageurl',
   'tipovhc':              'tipovhc',
   'tipo de vehiculo':     'tipovhc',
@@ -938,8 +1065,23 @@ export class TireService {
     // Eliminates repeated DB hits for vehicles and benchmark prices that
     // repeat across rows (extremely common for fleet uploads).
     // ─────────────────────────────────────────────────────────────────────────
-    const vehicleMap = new Map<string, any>();   // placa → vehicle record
-    const priceCache = new Map<string, number>(); // marca:diseno:dimension → price
+    const vehicleMap  = new Map<string, any>();   // placa → vehicle record
+    const priceCache  = new Map<string, number>(); // marca:diseno:dimension → price
+    const skuCache    = new Map<string, any>();    // marca:dimension → catalog SKU (or null)
+
+    /** Look up the catalog SKU for a marca + dimension. Returns null if not found. */
+    const resolveSku = async (marca: string, dimension: string): Promise<any> => {
+      const key = `${marca.toLowerCase()}:${dimension.toLowerCase()}`;
+      if (skuCache.has(key)) return skuCache.get(key);
+      try {
+        const sku = await this.catalogService.findBestMatch(marca, dimension);
+        skuCache.set(key, sku ?? null);
+        return sku ?? null;
+      } catch {
+        skuCache.set(key, null);
+        return null;
+      }
+    };
 
     const resolvePrice = async (marca: string, diseno: string, dimension: string): Promise<number> => {
       const key = `${marca}:${diseno}:${dimension}`;
@@ -948,6 +1090,35 @@ export class TireService {
       priceCache.set(key, price);
       return price;
     };
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CATALOG-AWARE FUZZY MATCHING
+    // Pre-load all known brands, designs, and dimensions from the catalog so
+    // that typos like "continenal" → "Continental" or "12r22.5" → "12 R 22.5"
+    // are automatically corrected during upload.
+    // ─────────────────────────────────────────────────────────────────────────
+    let catalogBrands:     string[] = [];
+    let catalogModels:     string[] = [];
+    let catalogDimensions: string[] = [];
+    try {
+      const [brandsRes, modelsRes, dimsRes] = await Promise.all([
+        this.prisma.tireMasterCatalog.findMany({
+          select: { marca: true }, distinct: ['marca'],
+        }),
+        this.prisma.tireMasterCatalog.findMany({
+          select: { modelo: true }, distinct: ['modelo'],
+        }),
+        this.prisma.tireMasterCatalog.findMany({
+          select: { dimension: true }, distinct: ['dimension'],
+        }),
+      ]);
+      catalogBrands     = brandsRes.map(b => b.marca);
+      catalogModels     = modelsRes.map(m => m.modelo);
+      catalogDimensions = dimsRes.map(d => d.dimension);
+      this.logger.log(`Bulk upload: catalog loaded — ${catalogBrands.length} brands, ${catalogModels.length} models, ${catalogDimensions.length} dimensions`);
+    } catch (e) {
+      this.logger.warn('Bulk upload: could not load catalog for fuzzy matching — proceeding without');
+    }
 
     let lastTipoVHC = '';
     let lastPlaca   = '';
@@ -981,9 +1152,42 @@ export class TireService {
         processedIds.add(tirePlaca);
 
         const marcaRaw  = get(row, 'marca').trim();
-        const marca     = marcaRaw.charAt(0).toUpperCase() + marcaRaw.slice(1).toLowerCase();
-        const diseno    = get(row, 'diseno_original').toLowerCase();
-        const dimension = get(row, 'dimension').toLowerCase();
+        let marca       = marcaRaw.charAt(0).toUpperCase() + marcaRaw.slice(1).toLowerCase();
+        let diseno      = get(row, 'diseno_original').toLowerCase();
+        let dimension   = get(row, 'dimension').toLowerCase();
+
+        // ── Catalog fuzzy matching (brand / design / dimension) ─────────────
+        // Correct typos and normalize formats against known catalog values.
+        if (catalogBrands.length > 0) {
+          const matchedBrand = fuzzyMatch(marca, catalogBrands);
+          if (matchedBrand && matchedBrand.toLowerCase() !== marca.toLowerCase()) {
+            warnings.push(`Row ${rowNum}: marca "${marca}" → "${matchedBrand}" (catálogo)`);
+            marca = matchedBrand;
+          }
+        }
+        if (catalogModels.length > 0 && diseno) {
+          const matchedModel = fuzzyMatch(diseno, catalogModels);
+          if (matchedModel && matchedModel.toLowerCase() !== diseno.toLowerCase()) {
+            warnings.push(`Row ${rowNum}: diseño "${diseno}" → "${matchedModel}" (catálogo)`);
+            diseno = matchedModel.toLowerCase();
+          }
+        }
+        if (catalogDimensions.length > 0 && dimension) {
+          const matchedDim = matchDimension(dimension, catalogDimensions);
+          if (matchedDim) {
+            if (matchedDim.toLowerCase() !== dimension) {
+              warnings.push(`Row ${rowNum}: dimensión "${dimension}" → "${matchedDim}" (catálogo)`);
+            }
+            dimension = matchedDim.toLowerCase();
+          } else {
+            // No catalog match — still normalize the format
+            dimension = normalizeDimension(dimension).toLowerCase();
+          }
+        } else {
+          // No catalog loaded — still normalize the dimension format
+          dimension = normalizeDimension(dimension).toLowerCase();
+        }
+
         const posicion  = safeInt(get(row, 'posicion'), 0);
         const eje       = normalizeEje(fmtB ? get(row, 'tipollanta') : get(row, 'eje'));
 
@@ -1001,13 +1205,34 @@ export class TireService {
         const presionRaw = safeFloat(get(row, 'presion_psi'), 0);
         const presionPsi = presionRaw > 0 ? presionRaw : null;
 
+        // ── Catalog SKU lookup (for profundidadInicial + km estimation) ──────
+        const sku = await resolveSku(marca, dimension);
+        const catalogRtd = sku?.rtdMm ?? null;        // initial depth from catalog
+        const catalogKm  = sku?.kmEstimadosReales ?? null; // expected lifetime from catalog
+
         let profundidadInicial = safeFloat(get(row, 'profundidad_inicial'));
         if (profundidadInicial <= 0) {
           const maxObs = Math.max(profInt, profCen, profExt);
-          profundidadInicial = maxObs > 0
-            ? (maxObs > C.DEFAULT_PROFUNDIDAD_INICIAL ? maxObs + 1 : C.DEFAULT_PROFUNDIDAD_INICIAL)
-            : C.DEFAULT_PROFUNDIDAD_INICIAL;
-          warnings.push(`Row ${rowNum}: profundidadInicial inferred as ${profundidadInicial}mm`);
+          if (catalogRtd && catalogRtd > 0) {
+            // Use catalog initial depth, but never less than observed + 1
+            profundidadInicial = maxObs > 0
+              ? Math.max(catalogRtd, maxObs + 1)
+              : catalogRtd;
+          } else if (maxObs > 0) {
+            // No catalog — use observed depth + 1mm (tire can't be shallower than what we measured)
+            profundidadInicial = maxObs + 1;
+          } else {
+            // No measurements at all — fallback to 22mm
+            profundidadInicial = C.DEFAULT_PROFUNDIDAD_INICIAL;
+          }
+          warnings.push(`Row ${rowNum}: profundidadInicial inferred as ${profundidadInicial}mm${catalogRtd ? ' (catálogo)' : ''}`);
+        } else if (hasInsp) {
+          // Even when provided, ensure it's not less than observed depths
+          const maxObs = Math.max(profInt, profCen, profExt);
+          if (profundidadInicial < maxObs) {
+            profundidadInicial = maxObs + 1;
+            warnings.push(`Row ${rowNum}: profundidadInicial adjusted to ${profundidadInicial}mm (was less than measured depth)`);
+          }
         }
 
         let vidaValor       = '';
@@ -1019,6 +1244,15 @@ export class TireService {
           bandaName        = get(row, 'banda_name').toLowerCase();
           needsReencauche  = marcaBanda.includes('reencauche') || marcaBanda.includes('rencauche');
           vidaValor        = 'nueva';
+
+          // Fuzzy-match banda name against catalog models
+          if (bandaName && catalogModels.length > 0) {
+            const matchedBanda = fuzzyMatch(bandaName, catalogModels);
+            if (matchedBanda && matchedBanda.toLowerCase() !== bandaName) {
+              warnings.push(`Row ${rowNum}: banda "${bandaName}" → "${matchedBanda}" (catálogo)`);
+              bandaName = matchedBanda.toLowerCase();
+            }
+          }
         } else {
           vidaValor = get(row, 'vida').trim().toLowerCase();
           if (vidaValor === 'rencauche' || vidaValor === 'reencauche') vidaValor = 'reencauche1';
@@ -1071,19 +1305,75 @@ export class TireService {
           warnings.push(`Row ${rowNum}: Cost fallback used — $${costoCell}`);
         }
 
-        // ── Date resolution ───────────────────────────────────────────────────
+        // ── Date & KM resolution ─────────────────────────────────────────────
+        // Priority for fechaInspeccion: Excel "Fecha Ult Ins" > now
+        // Priority for fechaInstalacion: Excel > estimate from km > estimate from wear > now
         const now = new Date();
 
         const rawFechaInstalacion = get(row, 'fecha_instalacion')?.trim();
         const rawFechaInsp        = get(row, 'fecha_inspeccion')?.trim();
 
-        const fechaInstalacion: Date = rawFechaInstalacion
-          ? new Date(rawFechaInstalacion)
-          : now;
-
+        // fechaInspeccion: always prefer the explicit column
         const fechaInspeccion: Date = rawFechaInsp
           ? new Date(rawFechaInsp)
-          : fechaInstalacion;
+          : now;
+
+        const kmLlantaExcel = safeFloat(get(row, 'kilometros_llanta'));
+        const usableDepth   = profundidadInicial - C.LIMITE_LEGAL_MM;
+        const mmWorn        = hasInsp ? (profundidadInicial - minDepth) : 0;
+
+        // KM resolution (done before date so we can use km to estimate fechaInstalacion)
+        // Use catalog expected km if available, otherwise 80k default
+        const FALLBACK_EXPECTED_KM = 80_000;
+        const expectedLifetimeKm = catalogKm ?? FALLBACK_EXPECTED_KM;
+
+        let kmEstimados: number;
+
+        if (kmLlantaExcel > 0) {
+          kmEstimados = kmLlantaExcel;
+        } else if (hasInsp && mmWorn > 0 && usableDepth > 0) {
+          kmEstimados = Math.round((expectedLifetimeKm / usableDepth) * mmWorn);
+          warnings.push(`Row ${rowNum}: KM estimated from wear — ${kmEstimados} km${catalogKm ? ' (catálogo)' : ''}`);
+        } else {
+          kmEstimados = 0; // will be re-estimated below after date resolution
+        }
+
+        // fechaInstalacion: estimate if not provided
+        let fechaInstalacion: Date;
+        if (rawFechaInstalacion) {
+          fechaInstalacion = new Date(rawFechaInstalacion);
+        } else {
+          // Estimate how long ago the tire was mounted:
+          // 1. From km: divide by avg monthly km to get months back
+          // 2. From wear: mm worn ÷ avg wear rate gives months
+          // 3. Fallback: 1 month before inspection date for new tires
+          let estimatedMonthsBack = 0;
+
+          if (kmEstimados > 0) {
+            estimatedMonthsBack = kmEstimados / C.KM_POR_MES;
+          } else if (hasInsp && mmWorn > 0) {
+            // Typical wear: ~1mm per 5000km → ~0.83mm/month at 6000km/month
+            const mmPerMonth = C.KM_POR_MES / 5000;
+            estimatedMonthsBack = mmWorn / mmPerMonth;
+          } else {
+            // Brand new tire with no data — assume installed 1 month ago
+            estimatedMonthsBack = 1;
+          }
+
+          // Cap at 5 years back (60 months) as a sanity check
+          estimatedMonthsBack = Math.min(estimatedMonthsBack, 60);
+          const msBack = Math.round(estimatedMonthsBack * 30 * C.MS_POR_DIA);
+          fechaInstalacion = new Date(fechaInspeccion.getTime() - msBack);
+          warnings.push(
+            `Row ${rowNum}: fechaInstalacion estimated as ${fechaInstalacion.toISOString().slice(0, 10)} ` +
+            `(~${Math.round(estimatedMonthsBack)} months before inspection)`,
+          );
+        }
+
+        // Ensure fechaInstalacion is not after fechaInspeccion
+        if (fechaInstalacion.getTime() > fechaInspeccion.getTime()) {
+          fechaInstalacion = new Date(fechaInspeccion.getTime() - C.MS_POR_DIA);
+        }
 
         const diasEnUso = Math.max(
           Math.floor(
@@ -1093,24 +1383,10 @@ export class TireService {
         );
         const mesesEnUso = diasEnUso / 30;
 
-        const isPremium     = costoCell >= C.PREMIUM_TIRE_THRESHOLD;
-        const kmLlantaExcel = safeFloat(get(row, 'kilometros_llanta'));
-        const usableDepth   = profundidadInicial - C.LIMITE_LEGAL_MM;
-        const mmWorn        = profundidadInicial - minDepth;
-
-        // ── KM resolution ─────────────────────────────────────────────────────
-        let kmEstimados: number;
-
-        if (kmLlantaExcel > 0) {
-          kmEstimados = kmLlantaExcel;
-        } else if (hasInsp && mmWorn > 0 && usableDepth > 0) {
-          const lifetime = isPremium ? C.PREMIUM_TIRE_EXPECTED_KM : C.STANDARD_TIRE_EXPECTED_KM;
-          kmEstimados    = Math.round((lifetime / usableDepth) * mmWorn);
-          warnings.push(`Row ${rowNum}: KM estimated from wear — ${kmEstimados} km`);
-        } else if (mesesEnUso > 1) {
+        // Re-estimate KM from time if it was 0 and we now have a real date span
+        if (kmEstimados <= 0 && mesesEnUso > 0.5) {
           kmEstimados = Math.round(mesesEnUso * C.KM_POR_MES);
-        } else {
-          kmEstimados = 0;
+          warnings.push(`Row ${rowNum}: KM estimated from time — ${kmEstimados} km`);
         }
 
         const presionRecomendada = vehicle
@@ -1135,24 +1411,104 @@ export class TireService {
           });
         }
 
-        // ── Branch A: existing tire — append inspection ───────────────────────
+        // ── Branch A: existing tire — smart duplicate detection ─────────────
+        let existingFull: any = null;
         if (existing) {
           if (hasInsp) {
-            // PERF-FIX: fetch the full tire with relations once and reuse.
-            // Original code fetched this and then immediately passed all sub-
-            // arrays to resolveVidaCostAndKm — kept as a single query here.
-            const existingFull = await this.prisma.tire.findUnique({
+            // Fetch the full tire with its LATEST inspection to compare depths
+            existingFull = await this.prisma.tire.findUnique({
               where:   { id: existing.id },
               include: {
                 costos:       { orderBy: { fecha: 'asc' } },
-                inspecciones: {
-                  orderBy: { fecha: 'asc' },
-                  select:  { fecha: true, kilometrosEstimados: true },
-                },
+                inspecciones: { orderBy: { fecha: 'desc' } },
                 eventos:      { orderBy: { fecha: 'asc' }, select: { fecha: true, notas: true } },
               },
             });
 
+            const lastInsp = existingFull?.inspecciones?.[0] ?? null;
+
+            // ── Duplicate / replacement / new-inspection detection ───────────
+            // Compare the uploaded depths against the latest inspection:
+            //  • All three match exactly → duplicate upload, skip
+            //  • All three are deeper by >3mm → tire was replaced on vehicle,
+            //    dispose old tire and create a new one in its place
+            //  • Otherwise → normal new inspection (wear progression)
+            if (lastInsp) {
+              const prevInt = lastInsp.profundidadInt ?? 0;
+              const prevCen = lastInsp.profundidadCen ?? 0;
+              const prevExt = lastInsp.profundidadExt ?? 0;
+
+              const exactMatch =
+                profInt === prevInt &&
+                profCen === prevCen &&
+                profExt === prevExt;
+
+              if (exactMatch) {
+                // Duplicate upload — same tire, same depths → skip entirely
+                warnings.push(`Row ${rowNum}: llanta "${tirePlaca}" pos ${posicion} — profundidades idénticas a última inspección, omitida (duplicado).`);
+                continue;
+              }
+
+              const REPLACEMENT_THRESHOLD_MM = 3;
+              const allDeeper =
+                (profInt - prevInt) > REPLACEMENT_THRESHOLD_MM &&
+                (profCen - prevCen) > REPLACEMENT_THRESHOLD_MM &&
+                (profExt - prevExt) > REPLACEMENT_THRESHOLD_MM;
+
+              if (allDeeper) {
+                // Tire replaced — dispose old tire, then fall through to Branch B
+                // to create the new tire in its position.
+                warnings.push(
+                  `Row ${rowNum}: llanta "${tirePlaca}" pos ${posicion} — profundidades mucho mayores ` +
+                  `(${prevInt}/${prevCen}/${prevExt} → ${profInt}/${profCen}/${profExt}). ` +
+                  `Llanta anterior desmontada, nueva llanta creada.`
+                );
+
+                // Dispose: set vida to "fin", unassign from vehicle, record event
+                await this.prisma.tire.update({
+                  where: { id: existing.id },
+                  data: {
+                    vidaActual:         VidaValue.fin,
+                    vehicleId:          null,
+                    posicion:           0,
+                    lastVehicleId:      existing.vehicleId ?? null,
+                    lastVehiclePlaca:   vehicle?.placa ?? null,
+                    lastPosicion:       existing.posicion ?? 0,
+                    inventoryEnteredAt: new Date(),
+                  },
+                });
+
+                await this.prisma.tireEvento.create({
+                  data: {
+                    tireId: existing.id,
+                    tipo:   TireEventType.retiro,
+                    fecha:  fechaInspeccion,
+                    notas:  VidaValue.fin,
+                    metadata: toJson({
+                      motivo:   MotivoFinVida.preventivo,
+                      reason:   'bulk_upload_replacement_detected',
+                      prevDepth: { int: prevInt, cen: prevCen, ext: prevExt },
+                      newDepth:  { int: profInt, cen: profCen, ext: profExt },
+                    }),
+                  },
+                });
+
+                tireIdsToRefresh.add(existing.id);
+                if (existing.vehicleId) {
+                  // Eagerly invalidate the vehicle cache since the tire was removed
+                  this.invalidateVehicleCache(existing.vehicleId).catch(() => {});
+                  this.cache.del(`analysis:${existing.vehicleId}`).catch(() => {});
+                }
+
+                // Reset "existing" so the code falls through to Branch B below
+                // which creates a brand new tire at this position
+                existing = null;
+              }
+            }
+          }
+
+          // ── Branch A continued: normal new inspection ─────────────────────
+          if (existing && hasInsp) {
             const vidaActual  = existingFull?.vidaActual ?? VidaValue.nueva;
             const installDate = existingFull?.fechaInstalacion ?? fechaInstalacion;
 
@@ -1175,6 +1531,7 @@ export class TireService {
               mesesEnUso,
               existing.profundidadInicial || profundidadInicial,
               minDepth,
+              expectedLifetimeKm,
             );
 
             await this.prisma.inspeccion.create({
@@ -1216,9 +1573,10 @@ export class TireService {
 
             tireIdsToRefresh.add(existing.id);
           }
+        }
 
-        // ── Branch B: new tire ────────────────────────────────────────────────
-        } else {
+        // ── Branch B: new tire (or replacement — existing was set to null) ───
+        if (!existing) {
           let finalTirePlaca = tirePlaca;
           const alreadyExists = await this.prisma.tire.findFirst({
             where: { placa: tirePlaca, companyId },
@@ -1275,6 +1633,7 @@ export class TireService {
           if (hasInsp) {
             const metrics = calcCpkMetrics(
               costoCell, kmEstimados, mesesEnUso, profundidadInicial, minDepth,
+              expectedLifetimeKm,
             );
 
             await this.prisma.inspeccion.create({
@@ -1406,6 +1765,84 @@ export class TireService {
 
     await this.cache.set(this.tireKey(companyId), tires, TireService.TTL_COMPANY);
     return tires;
+  }
+
+  /**
+   * Lightweight paginated tire search — designed for distributor dashboards
+   * that may manage 200k+ tires. Returns only the latest inspection per tire,
+   * skips full cost/event history to keep payloads small.
+   */
+  async searchTires(opts: {
+    companyId: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const take = Math.min(opts.limit ?? 50, 200);
+    const skip = opts.offset ?? 0;
+    const q    = opts.q?.trim().toLowerCase();
+
+    const where: Prisma.TireWhereInput = { companyId: opts.companyId };
+
+    if (q) {
+      where.OR = [
+        { placa: { contains: q, mode: 'insensitive' } },
+        { marca: { contains: q, mode: 'insensitive' } },
+        { diseno: { contains: q, mode: 'insensitive' } },
+        { id:    { contains: q, mode: 'insensitive' } },
+      ];
+    }
+
+    const [tires, total] = await Promise.all([
+      this.prisma.tire.findMany({
+        where,
+        take,
+        skip,
+        orderBy: [{ lastInspeccionDate: 'desc' }],
+        include: {
+          inspecciones: { orderBy: { fecha: 'desc' }, take: 1 },
+          vehicle:      { select: { placa: true, tipovhc: true } },
+        },
+      }),
+      this.prisma.tire.count({ where }),
+    ]);
+
+    return { data: tires, total, limit: take, offset: skip };
+  }
+
+  /**
+   * Lightweight paginated tire list for a company — returns summary data only.
+   * Used by alert screens and distributor overviews that need to process
+   * large fleets without pulling full inspection/cost history.
+   */
+  async listTiresSummary(opts: {
+    companyId: string;
+    limit?: number;
+    offset?: number;
+    alertLevel?: TireAlertLevel;
+  }) {
+    const take = Math.min(opts.limit ?? 100, 500);
+    const skip = opts.offset ?? 0;
+
+    const where: Prisma.TireWhereInput = { companyId: opts.companyId };
+    if (opts.alertLevel) where.alertLevel = opts.alertLevel;
+
+    const [tires, total] = await Promise.all([
+      this.prisma.tire.findMany({
+        where,
+        take,
+        skip,
+        orderBy: [{ lastInspeccionDate: 'desc' }],
+        include: {
+          inspecciones: { orderBy: { fecha: 'desc' }, take: 1 },
+          costos:       { orderBy: { fecha: 'desc' }, take: 1 },
+          vehicle:      { select: { placa: true, tipovhc: true } },
+        },
+      }),
+      this.prisma.tire.count({ where }),
+    ]);
+
+    return { data: tires, total, limit: take, offset: skip };
   }
 
   async findTiresByVehicle(vehicleId: string) {
