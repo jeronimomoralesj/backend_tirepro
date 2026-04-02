@@ -1177,12 +1177,45 @@ export class TireService {
       this.logger.warn('Bulk upload: could not load catalog for fuzzy matching — proceeding without');
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // PRE-SORT: when the same tire appears multiple times (multiple inspections),
+    // ensure the row with DEEPER tread comes first (= older/initial inspection)
+    // and the row with SHALLOWER tread comes second (= newer inspection with wear).
+    // This prevents the duplicate-detection logic from mistakenly treating a
+    // worn tire as a "replacement" (depths suddenly deeper).
+    // ─────────────────────────────────────────────────────────────────────────
+    const getLlantaKey = (row: Record<string, string>) => {
+      const id = getCell(row, 'llanta', headerMap)?.trim().toLowerCase();
+      if (id && !needsIdGeneration(id)) return id;
+      // Fallback: vehicle placa + position
+      const placa = getCell(row, 'placa_vehiculo', headerMap)?.trim().toLowerCase();
+      const pos   = getCell(row, 'posicion', headerMap)?.trim();
+      return placa && pos ? `${placa}:${pos}` : '';
+    };
+    const getMinDepth = (row: Record<string, string>) => {
+      const int = safeFloat(getCell(row, 'profundidad_int', headerMap));
+      const cen = safeFloat(getCell(row, 'profundidad_cen', headerMap));
+      const ext = safeFloat(getCell(row, 'profundidad_ext', headerMap));
+      return calcMinDepth(int, cen, ext);
+    };
+
+    // Stable sort: group by tire key, deeper rows first within each group
+    const indexedRows = rows.map((row, idx) => ({ row, idx, key: getLlantaKey(row), minD: getMinDepth(row) }));
+    indexedRows.sort((a, b) => {
+      if (a.key && b.key && a.key === b.key) {
+        // Same tire: deeper (more mm) first, shallower (less mm) second
+        return b.minD - a.minD;
+      }
+      // Preserve original order for different tires
+      return a.idx - b.idx;
+    });
+
     let lastTipoVHC = '';
     let lastPlaca   = '';
 
-    for (let i = 0; i < rows.length; i++) {
-      const row    = rows[i];
-      const rowNum = i + 2;
+    for (let i = 0; i < indexedRows.length; i++) {
+      const row    = indexedRows[i].row;
+      const rowNum = indexedRows[i].idx + 2; // original Excel row number
 
       try {
         if (fmtB) {
