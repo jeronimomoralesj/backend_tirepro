@@ -159,7 +159,14 @@ export class CompaniesService {
   async getClientsForDistributor(distributorCompanyId: string) {
     return this.prisma.distributorAccess.findMany({
       where:   { distributorId: distributorCompanyId },
-      include: { company: { select: COMPANY_PUBLIC_SELECT } },
+      include: {
+        company: {
+          select: {
+            ...COMPANY_PUBLIC_SELECT,
+            _count: { select: { vehicles: true, tires: true } },
+          },
+        },
+      },
     });
   }
 
