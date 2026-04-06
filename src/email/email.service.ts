@@ -626,7 +626,12 @@ async sendWelcomeEmail(to: string, name: string) {
 }
 
   async sendPasswordResetEmail(to: string, resetToken: string, userName?: string) {
-    const resetLink = `${process.env.FRONTEND_URL || 'https://app.tirepro.com.co'}/reset-password?token=${resetToken}`;
+    // Production URL — never use localhost in emails even if FRONTEND_URL is misconfigured
+    const envUrl = process.env.FRONTEND_URL?.trim();
+    const baseUrl = (envUrl && !envUrl.includes('localhost') && !envUrl.includes('127.0.0.1'))
+      ? envUrl.replace(/\/$/, '')
+      : 'https://www.tirepro.com.co';
+    const resetLink = `${baseUrl}/reset-password?token=${resetToken}`;
     const greeting = userName ? `Hola ${userName},` : 'Hola,';
     const htmlContent = `
       <!DOCTYPE html>
