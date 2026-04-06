@@ -1,0 +1,524 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// ENUMS — Replace all magic strings
+// =============================================================================
+
+enum UserRole {
+  admin
+  viewer
+  technician
+}
+
+enum CompanyPlan {
+  basic
+  pro
+  enterprise
+}
+
+enum TireAlertLevel {
+  ok
+  watch
+  warning
+  critical
+}
+
+enum EjeType {
+  direccion
+  traccion
+  libre
+  remolque
+  repuesto
+}
+
+enum TireEventType {
+  montaje
+  rotacion
+  reparacion
+  retiro
+  inspeccion
+  reencauche
+}
+
+enum NotificationType {
+  info
+  warning
+  critical
+}
+
+enum CouponCategory {
+  llantas
+  reencauches
+  baterias
+  gasolina
+  aceites
+}
+
+// =============================================================================
+// USER & AUTH
+// =============================================================================
+
+model User {
+  id                String    @id @default(uuid())
+  name              String
+  email             String    @unique
+  password          String
+  companyId         String
+  role              UserRole  @default(admin)
+  puntos            Int       @default(0)
+  isVerified        Boolean   @default(false)
+  verificationToken String?
+  preferredLanguage String    @default("es")
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  company           Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messages          Message[]
+  incomes           Income[]
+  vehicleAccess     UserVehicleAccess[]
+
+  @@index([companyId])
+  @@index([email])
+}
+
+// Replaces User.plates[] string array — now queryable and relational
+model UserVehicleAccess {
+  userId    String
+  vehicleId String
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, vehicleId])
+  @@index([userId])
+  @@index([vehicleId])
+  @@map("user_vehicle_access")
+}
+
+// =============================================================================
+// COMPANY
+// =============================================================================
+
+model Company {
+  id           String      @id @default(uuid())
+  name         String
+  periodicity  Int         @default(1)
+  profileImage String      @default("https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png")
+  plan         CompanyPlan @default(basic)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // NOTE: userCount, tireCount, vehicleCount removed — derive via COUNT(*) queries
+  // or refresh from CompanySnapshot. Stale cached integers cause data drift.
+
+  distributors  DistributorAccess[] @relation("CompanyDistributors")
+  clients       DistributorAccess[] @relation("DistributorClients")
+  users         User[]
+  vehicles      Vehicle[]
+  tires         Tire[]
+  notifications Notification[]
+  snapshots     CompanySnapshot[]
+}
+
+model DistributorAccess {
+  companyId     String
+  distributorId String
+  createdAt     DateTime @default(now())
+
+  company     Company @relation("CompanyDistributors", fields: [companyId], references: [id])
+  distributor Company @relation("DistributorClients", fields: [distributorId], references: [id])
+
+  @@id([companyId, distributorId])
+  @@index([distributorId])
+}
+
+// =============================================================================
+// VEHICLE
+// =============================================================================
+
+model Vehicle {
+  id               String   @id @default(uuid())
+  placa            String
+  kilometrajeActual Int     @default(0)
+  carga            String
+  pesoCarga        Float
+  tipovhc          String
+  companyId        String
+  cliente          String?
+  // union stores axle/position configuration — kept as JSON because it is
+  // truly a variable-structure layout config, not queryable analytics data
+  union            Json     @default("[]")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  company       Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tires         Tire[]              @relation("VehicleTires")
+  extras        Extra[]
+  notifications Notification[]
+  userAccess    UserVehicleAccess[]
+
+  @@index([companyId])
+  @@index([placa])
+}
+
+// =============================================================================
+// TIRE — Core entity, now with cached analytics columns
+// =============================================================================
+
+model Tire {
+  id        String  @id @default(uuid())
+  companyId String
+  vehicleId String?
+  placa     String
+
+  // Identity
+  marca              String
+  diseno             String
+  dimension          String
+  eje                EjeType
+  posicion           Int     @default(0)
+  profundidadInicial Float
+
+  // Lifecycle
+  fechaInstalacion  DateTime?
+  diasAcumulados    Int       @default(0)
+  kilometrosRecorridos Int    @default(0)
+
+  // -------------------------------------------------------------------------
+  // CACHED ANALYTICS — updated on every new Inspeccion write
+  // These allow O(1) dashboard reads instead of loading all inspections
+  // -------------------------------------------------------------------------
+  currentCpk           Float?          // latest cost per km
+  currentCpt           Float?          // latest cost per day/month
+  currentProfundidad   Float?          // latest avg tread depth (Int + Cen + Ext / 3)
+  cpkTrend             Float?          // slope over last 5 inspections (negative = improving)
+  projectedKmRemaining Int?            // estimated km until min tread depth
+  projectedDateEOL     DateTime?       // projected end-of-life date
+  healthScore          Int?            // 0–100 composite score (ML hook)
+  alertLevel           TireAlertLevel  @default(ok)
+  lastInspeccionDate   DateTime?       // denormalized for fast sorting
+
+  // primeraVida: kept as JSON — it's a snapshot copy of the tire's first-life
+  // inspection history used for comparison. Not used in aggregations.
+  primeraVida Json @default("[]")
+
+  // desechos: retirement metadata — kept as JSON because it's a one-time
+  // write with variable fields and never queried for aggregation.
+  desechos Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vehicle       Vehicle?       @relation("VehicleTires", fields: [vehicleId], references: [id])
+  inspecciones  Inspeccion[]
+  eventos       TireEvento[]
+  costos        TireCosto[]
+  notifications Notification[]
+
+  @@index([companyId])
+  @@index([vehicleId])
+  @@index([marca, dimension])
+  @@index([alertLevel])
+  @@index([companyId, alertLevel])       // "show all warnings for company X"
+  @@index([companyId, lastInspeccionDate]) // dashboard sorting
+  @@index([companyId, placa])              // distributor tire search by placa
+}
+
+// =============================================================================
+// INSPECCION — Normalized from Tire.inspecciones JSON
+// This is the most important change: unlocks all analytics queries
+// =============================================================================
+
+model Inspeccion {
+  id     String   @id @default(uuid())
+  tireId String
+  fecha  DateTime
+
+  // Tread depth readings
+  profundidadInt Float
+  profundidadCen Float
+  profundidadExt Float
+
+  // Computed metrics (stored so we can aggregate across fleet)
+  cpk              Float?
+  cpkProyectado    Float?
+  cpt              Float?
+  cptProyectado    Float?
+  diasEnUso        Int?
+  mesesEnUso       Float?
+  kilometrosEstimados Int?
+  kmActualVehiculo    Int?     // vehicle odometer at time of inspection
+  kmEfectivos         Int?     // effective km used for CPK calculation
+  kmProyectado        Float?   // projected km until EOL
+
+  imageUrl String?
+
+  createdAt DateTime @default(now())
+
+  tire Tire @relation(fields: [tireId], references: [id], onDelete: Cascade)
+
+  @@index([tireId])
+  @@index([fecha])
+  @@index([cpk])                // "find all tires with cpk > X"
+  @@index([tireId, fecha])      // most common query: tire history ordered by date
+  @@index([tireId, createdAt])
+  @@map("inspecciones")
+}
+
+// =============================================================================
+// TIRE EVENTO — Normalized from Tire.eventos JSON
+// =============================================================================
+
+model TireEvento {
+  id       String        @id @default(uuid())
+  tireId   String
+  tipo     TireEventType
+  fecha    DateTime
+  notas    String?
+  metadata Json?         // only truly unstructured extras (e.g. mechanic name, workshop)
+
+  createdAt DateTime @default(now())
+
+  tire Tire @relation(fields: [tireId], references: [id], onDelete: Cascade)
+
+  @@index([tireId, fecha])
+  @@index([tipo])
+  @@map("tire_eventos")
+}
+
+// =============================================================================
+// TIRE COSTO — Normalized from Tire.costo JSON
+// =============================================================================
+
+model TireCosto {
+  id     String   @id @default(uuid())
+  tireId String
+  valor  Float
+  fecha  DateTime
+
+  createdAt DateTime @default(now())
+
+  tire Tire @relation(fields: [tireId], references: [id], onDelete: Cascade)
+
+  @@index([tireId, fecha])
+  @@map("tire_costos")
+}
+
+// =============================================================================
+// COMPANY SNAPSHOT — Time-series fleet analytics (refreshed nightly via cron)
+// This is your data-company differentiator: historical fleet intelligence
+// =============================================================================
+
+model CompanySnapshot {
+  id        String   @id @default(uuid())
+  companyId String
+  fecha     DateTime @db.Date // daily granularity
+
+  // Fleet health
+  totalTires       Int
+  tiresOk          Int
+  tiresWatch       Int
+  tiresWarning     Int
+  tiresCritical    Int
+  avgHealthScore   Float?
+
+  // CPK / CPT analytics
+  avgCpk           Float?
+  medianCpk        Float?
+  avgCpt           Float?
+  stddevCpk        Float?
+
+  // Cost intelligence
+  totalFleetCost         Float?
+  projectedMonthlyCost   Float?
+  avgCostPerVehicle      Float?
+
+  // Performance leaders (denormalized for fast dashboards)
+  bestBrand            String?
+  worstBrand           String?
+  bestDiseno           String?
+  avgKmPerTire         Float?
+
+  // Counts
+  totalVehicles    Int
+  activeUsers      Int
+
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, fecha])
+  @@index([companyId, fecha])
+  @@map("company_snapshots")
+}
+
+// =============================================================================
+// NOTIFICATION
+// =============================================================================
+
+model Notification {
+  id        String           @id @default(uuid())
+  title     String
+  message   String
+  type      NotificationType
+  seen      Boolean          @default(false)
+  createdAt DateTime         @default(now()) // removed duplicate `date` field
+
+  tireId    String?
+  vehicleId String?
+  companyId String?
+
+  tire    Tire?    @relation(fields: [tireId], references: [id], onDelete: SetNull)
+  vehicle Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([companyId, seen])    // "unread notifications for company X"
+  @@index([vehicleId])
+  @@index([tireId])
+}
+
+// =============================================================================
+// EXTRA (vehicle accessories/maintenance items)
+// =============================================================================
+
+model Extra {
+  id           String   @id @default(uuid())
+  vehicleId    String
+  type         String
+  brand        String
+  purchaseDate DateTime
+  cost         Float
+  notes        String?
+  createdAt    DateTime @default(now())
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId])
+  @@map("extras")
+}
+
+// =============================================================================
+// BLOG / CONTENT
+// =============================================================================
+
+model Article {
+  id         Int      @id @default(autoincrement())
+  title      String
+  subtitle   String
+  content    String   @db.Text
+  coverImage String
+  category   String
+  hashtags   String[] @default([])
+  slug       String   @unique
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([category])
+  @@index([slug])
+  @@map("articles")
+}
+
+// =============================================================================
+// ADMIN / AUTH UTILS
+// =============================================================================
+
+model AdminPassword {
+  id        Int      @id @default(autoincrement())
+  password  String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  used      Boolean  @default(false)
+
+  @@map("admin_passwords")
+}
+
+model BlogPassword {
+  id        Int      @id @default(autoincrement())
+  password  String
+  expiresAt DateTime
+  isUsed    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("blog_passwords")
+}
+
+// =============================================================================
+// COMMUNITY CHAT
+// =============================================================================
+
+model Chat {
+  id           String    @id @default(uuid())
+  title        String
+  category     String
+  content      String
+  emoji        String
+  messageCount Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  messages Message[]
+}
+
+model Message {
+  id         String   @id @default(uuid())
+  chatId     String
+  authorId   String?
+  authorName String
+  content    String
+  createdAt  DateTime @default(now())
+
+  author User? @relation(fields: [authorId], references: [id])
+  chat   Chat  @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt])
+}
+
+// =============================================================================
+// COUPONS
+// =============================================================================
+
+model Coupon {
+  id             String         @id @default(uuid())
+  titleKey       String
+  descriptionKey String
+  discount       String
+  category       CouponCategory
+  validUntil     DateTime
+  code           String         @unique
+  color          String
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([category])
+  @@index([validUntil])
+  @@map("coupons")
+}
+
+// =============================================================================
+// INCOME (user revenue tracking)
+// =============================================================================
+
+model Income {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  date      DateTime
+  amount    Float
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+}

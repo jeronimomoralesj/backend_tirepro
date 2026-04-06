@@ -638,68 +638,34 @@ async sendWelcomeEmail(to: string, name: string) {
       </head>
       <body style="margin:0;padding:0;background-color:#F1F5F9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#F1F5F9;padding:40px 20px;">
-          <tr>
-            <td align="center">
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:560px;background-color:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(10,24,58,0.06);">
-                <!-- Header -->
-                <tr>
-                  <td style="background:linear-gradient(135deg,#0A183A 0%,#173D68 50%,#1E76B6 100%);padding:32px 40px;text-align:left;">
-                    <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.3px;">TirePro</h1>
-                    <p style="margin:4px 0 0;color:#348CCB;font-size:12px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;">Gestion Inteligente de Llantas</p>
-                  </td>
-                </tr>
-
-                <!-- Body -->
-                <tr>
-                  <td style="padding:40px;">
-                    <h2 style="margin:0 0 16px;color:#0A183A;font-size:24px;font-weight:800;letter-spacing:-0.4px;">Restablecer tu contrasena</h2>
-                    <p style="margin:0 0 12px;color:#475569;font-size:15px;line-height:1.6;">${greeting}</p>
-                    <p style="margin:0 0 24px;color:#475569;font-size:15px;line-height:1.6;">
-                      Recibimos una solicitud para restablecer la contrasena de tu cuenta TirePro.
-                      Haz clic en el boton de abajo para crear una nueva contrasena:
-                    </p>
-
-                    <!-- CTA Button -->
-                    <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:0 auto 24px;">
-                      <tr>
-                        <td align="center" style="border-radius:12px;background:linear-gradient(135deg,#1E76B6 0%,#173D68 100%);box-shadow:0 4px 12px rgba(30,118,182,0.25);">
-                          <a href="${resetLink}" target="_blank" style="display:inline-block;padding:14px 36px;color:#ffffff;text-decoration:none;font-size:15px;font-weight:700;border-radius:12px;">
-                            Restablecer contrasena &rarr;
-                          </a>
-                        </td>
-                      </tr>
-                    </table>
-
-                    <!-- Security info -->
-                    <div style="margin-top:8px;padding:16px;background-color:#F0F7FF;border-left:3px solid #348CCB;border-radius:8px;">
-                      <p style="margin:0 0 6px;color:#0A183A;font-size:13px;font-weight:700;">Por tu seguridad:</p>
-                      <ul style="margin:0;padding-left:18px;color:#475569;font-size:12px;line-height:1.7;">
-                        <li>Este enlace expira en <strong>1 hora</strong></li>
-                        <li>Solo puede usarse <strong>una vez</strong></li>
-                        <li>Si no solicitaste este cambio, puedes ignorar este mensaje</li>
-                      </ul>
-                    </div>
-
-                    <!-- Fallback link -->
-                    <p style="margin:24px 0 0;color:#94A3B8;font-size:12px;line-height:1.6;">
-                      Si el boton no funciona, copia y pega este enlace en tu navegador:<br/>
-                      <a href="${resetLink}" style="color:#1E76B6;word-break:break-all;">${resetLink}</a>
-                    </p>
-                  </td>
-                </tr>
-
-                <!-- Footer -->
-                <tr>
-                  <td style="padding:24px 40px;background-color:#F8FAFC;border-top:1px solid #E2E8F0;">
-                    <p style="margin:0;color:#94A3B8;font-size:11px;line-height:1.6;text-align:center;">
-                      Este es un correo automatico, por favor no respondas directamente.<br/>
-                      &copy; ${new Date().getFullYear()} TirePro &middot; Gestion inteligente de llantas
-                    </p>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
+          <tr><td align="center">
+            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:560px;background-color:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(10,24,58,0.06);">
+              <tr><td style="background:linear-gradient(135deg,#0A183A 0%,#173D68 50%,#1E76B6 100%);padding:32px 40px;text-align:left;">
+                <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.3px;">TirePro</h1>
+                <p style="margin:4px 0 0;color:#348CCB;font-size:12px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;">Gestion Inteligente de Llantas</p>
+              </td></tr>
+              <tr><td style="padding:40px;">
+                <h2 style="margin:0 0 16px;color:#0A183A;font-size:24px;font-weight:800;letter-spacing:-0.4px;">Restablecer tu contrasena</h2>
+                <p style="margin:0 0 12px;color:#475569;font-size:15px;line-height:1.6;">${greeting}</p>
+                <p style="margin:0 0 24px;color:#475569;font-size:15px;line-height:1.6;">Recibimos una solicitud para restablecer la contrasena de tu cuenta TirePro. Haz clic en el boton de abajo para crear una nueva contrasena:</p>
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:0 auto 24px;"><tr><td align="center" style="border-radius:12px;background:linear-gradient(135deg,#1E76B6 0%,#173D68 100%);box-shadow:0 4px 12px rgba(30,118,182,0.25);">
+                  <a href="${resetLink}" target="_blank" style="display:inline-block;padding:14px 36px;color:#ffffff;text-decoration:none;font-size:15px;font-weight:700;border-radius:12px;">Restablecer contrasena &rarr;</a>
+                </td></tr></table>
+                <div style="margin-top:8px;padding:16px;background-color:#F0F7FF;border-left:3px solid #348CCB;border-radius:8px;">
+                  <p style="margin:0 0 6px;color:#0A183A;font-size:13px;font-weight:700;">Por tu seguridad:</p>
+                  <ul style="margin:0;padding-left:18px;color:#475569;font-size:12px;line-height:1.7;">
+                    <li>Este enlace expira en <strong>1 hora</strong></li>
+                    <li>Solo puede usarse <strong>una vez</strong></li>
+                    <li>Si no solicitaste este cambio, puedes ignorar este mensaje</li>
+                  </ul>
+                </div>
+                <p style="margin:24px 0 0;color:#94A3B8;font-size:12px;line-height:1.6;">Si el boton no funciona, copia y pega este enlace en tu navegador:<br/><a href="${resetLink}" style="color:#1E76B6;word-break:break-all;">${resetLink}</a></p>
+              </td></tr>
+              <tr><td style="padding:24px 40px;background-color:#F8FAFC;border-top:1px solid #E2E8F0;">
+                <p style="margin:0;color:#94A3B8;font-size:11px;line-height:1.6;text-align:center;">Este es un correo automatico, por favor no respondas directamente.<br/>&copy; ${new Date().getFullYear()} TirePro &middot; Gestion inteligente de llantas</p>
+              </td></tr>
+            </table>
+          </td></tr>
         </table>
       </body>
       </html>

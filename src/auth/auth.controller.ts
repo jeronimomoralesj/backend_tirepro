@@ -93,7 +93,6 @@ export class AuthController {
 
   // ─── PASSWORD RESET ────────────────────────────────────────────────────────
 
-  /** Request a password reset email — always returns success (anti-enumeration). */
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -108,14 +107,12 @@ export class AuthController {
     };
   }
 
-  /** Validate a reset token (used by the reset page on load). */
   @Post('validate-reset-token')
   @HttpCode(HttpStatus.OK)
   async validateResetToken(@Body() body: { token: string }): Promise<{ valid: boolean; email?: string }> {
     return this.authService.validateResetToken(body?.token);
   }
 
-  /** Consume a reset token and set a new password. */
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })

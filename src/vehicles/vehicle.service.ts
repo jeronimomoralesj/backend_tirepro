@@ -1,0 +1,345 @@
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  Logger,
+  Inject
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
+import { CreateVehicleDto } from './dto/create-vehicle.dto';
+import { UpdateVehicleDto } from './dto/update-vehicle.dto';
+import { DriverDto } from './dto/driver.dto';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { Cache } from 'cache-manager';
+
+const VEHICLE_SELECT = {
+  id:                true,
+  placa:             true,
+  kilometrajeActual: true,
+  carga:             true,
+  pesoCarga:         true,
+  tipovhc:           true,
+  companyId:         true,
+  union:             true,
+  cliente:           true,
+  tipoOperacion:     true,
+  configuracion:     true,
+  presionesRecomendadas: true,
+  createdAt:         true,
+  updatedAt:         true,
+  _count: { select: { tires: true } },
+} satisfies Prisma.VehicleSelect;
+
+@Injectable()
+export class VehicleService {
+  private readonly logger = new Logger(VehicleService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(CACHE_MANAGER) private cache: Cache,
+  ) {}
+
+  private vehicleKey(companyId: string) {
+    return `vehicles:${companyId}`;
+  }
+
+  private async invalidateVehicleCache(companyId: string) {
+    await this.cache.del(this.vehicleKey(companyId));
+  }
+
+  // ── Create ────────────────────────────────────────────────────────────────
+
+  async createVehicle(dto: CreateVehicleDto) {
+    const { placa, kilometrajeActual, carga, pesoCarga, tipovhc, companyId, cliente, tipoOperacion, configuracion, drivers } = dto;
+
+    const [company, duplicate] = await Promise.all([
+      this.prisma.company.findUnique({ where: { id: companyId }, select: { id: true } }),
+      this.prisma.vehicle.findFirst({ where: { placa }, select: { id: true } }),
+    ]);
+
+    if (!company)  throw new BadRequestException('Invalid companyId provided');
+    if (duplicate) throw new BadRequestException('A vehicle with this placa already exists');
+
+    const vehicle = await this.prisma.$transaction(async (tx) => {
+      const v = await tx.vehicle.create({
+        data: {
+          placa,
+          kilometrajeActual,
+          carga,
+          pesoCarga,
+          tipovhc,
+          companyId,
+          cliente: cliente ?? null,
+          tipoOperacion: tipoOperacion ?? null,
+          configuracion: configuracion ?? null,
+          union:   [],
+        },
+        select: VEHICLE_SELECT,
+      });
+
+      if (drivers?.length) {
+        await tx.vehicleDriver.createMany({
+          data: drivers.map((d) => ({
+            vehicleId: v.id,
+            nombre:    d.nombre,
+            telefono:  d.telefono,
+            isPrimary: d.isPrimary ?? false,
+          })),
+        });
+      }
+
+      return v;
+    });
+
+    await this.invalidateVehicleCache(vehicle.companyId);
+    return vehicle;
+  }
+
+  // ── Read ──────────────────────────────────────────────────────────────────
+
+  async findVehiclesByCompany(companyId: string) {
+    const cached = await this.cache.get(this.vehicleKey(companyId));
+    if (cached) return cached;
+
+    const vehicles = await this.prisma.vehicle.findMany({
+      where:   { companyId },
+      select:  { ...VEHICLE_SELECT, drivers: true },
+      orderBy: { placa: 'asc' },
+    });
+
+    await this.cache.set(this.vehicleKey(companyId), vehicles, 60 * 60 * 1000);
+    return vehicles;
+  }
+
+  async findAllVehicles() {
+    return this.prisma.vehicle.findMany({
+      select:  VEHICLE_SELECT,
+      orderBy: { placa: 'asc' },
+    });
+  }
+
+  async findByPlaca(placa: string) {
+    const vehicle = await this.prisma.vehicle.findFirst({
+      where:  { placa: { equals: placa, mode: 'insensitive' } },
+      select: { ...VEHICLE_SELECT, drivers: true },
+    });
+    if (!vehicle) throw new NotFoundException(`Vehicle with placa "${placa}" not found`);
+    return vehicle;
+  }
+
+  // ── Update ────────────────────────────────────────────────────────────────
+
+  async updateVehicle(vehicleId: string, dto: UpdateVehicleDto) {
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where:  { id: vehicleId },
+      select: { id: true, placa: true, kilometrajeActual: true, companyId: true }, // ← companyId added
+    });
+    if (!vehicle) throw new NotFoundException('Vehicle not found');
+
+    if (dto.placa && dto.placa !== vehicle.placa) {
+      const conflict = await this.prisma.vehicle.findFirst({
+        where:  { placa: dto.placa, id: { not: vehicleId } },
+        select: { id: true },
+      });
+      if (conflict) throw new BadRequestException('A vehicle with this placa already exists');
+    }
+
+    if (
+      dto.kilometrajeActual !== undefined &&
+      dto.kilometrajeActual < vehicle.kilometrajeActual
+    ) {
+      throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al actual');
+    }
+
+    const updated = await this.prisma.vehicle.update({
+  where: { id: vehicleId },
+  data:  {
+    ...(dto.placa             !== undefined && { placa:             dto.placa             }),
+    ...(dto.kilometrajeActual !== undefined && { kilometrajeActual: dto.kilometrajeActual }),
+    ...(dto.carga             !== undefined && { carga:             dto.carga             }),
+    ...(dto.pesoCarga         !== undefined && { pesoCarga:         dto.pesoCarga         }),
+    ...(dto.tipovhc           !== undefined && { tipovhc:           dto.tipovhc           }),
+    ...(dto.cliente           !== undefined && { cliente:           dto.cliente           }),
+    ...(dto.tipoOperacion    !== undefined && { tipoOperacion:     dto.tipoOperacion     }),
+    ...(dto.configuracion    !== undefined && { configuracion:     dto.configuracion     }),
+    ...(dto.companyId         !== undefined && { companyId:         dto.companyId         }),
+  },
+  select: VEHICLE_SELECT,
+});
+
+// Invalidate BOTH old and new company caches if company changed
+if (dto.companyId && dto.companyId !== vehicle.companyId) {
+  await this.invalidateVehicleCache(dto.companyId);  // ← ADD
+}
+await this.invalidateVehicleCache(vehicle.companyId);
+
+    await this.invalidateVehicleCache(vehicle.companyId); // ← added
+    return updated;
+  }
+
+  async updateKilometraje(vehicleId: string, newKilometraje: number) {
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where:  { id: vehicleId },
+      select: { id: true, kilometrajeActual: true, companyId: true }, // ← companyId added
+    });
+    if (!vehicle) throw new NotFoundException('Vehicle not found');
+
+    if (newKilometraje < vehicle.kilometrajeActual) {
+      throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al actual');
+    }
+
+    const updated = await this.prisma.vehicle.update({
+      where:  { id: vehicleId },
+      data:   { kilometrajeActual: newKilometraje },
+      select: VEHICLE_SELECT,
+    });
+
+    await this.invalidateVehicleCache(vehicle.companyId); // ← added
+    return updated;
+  }
+
+  // ── Delete ────────────────────────────────────────────────────────────────
+
+  async deleteVehicle(vehicleId: string) {
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where:  { id: vehicleId },
+      select: { id: true, companyId: true },
+    });
+    if (!vehicle) throw new NotFoundException('Vehicle not found');
+
+    const deleted = await this.prisma.vehicle.delete({ where: { id: vehicleId } });
+    await this.invalidateVehicleCache(vehicle.companyId); // ← added
+    return deleted;
+  }
+
+  // ── Union (trailer coupling) ──────────────────────────────────────────────
+
+  async addToUnion(vehicleId: string, otherPlaca: string) {
+    const [v1, v2] = await Promise.all([
+      this.prisma.vehicle.findUnique({
+        where:  { id: vehicleId },
+        select: { id: true, placa: true, union: true, companyId: true }, // ← companyId added
+      }),
+      this.prisma.vehicle.findFirst({
+        where:  { placa: otherPlaca },
+        select: { id: true, placa: true, union: true, companyId: true }, // ← companyId added
+      }),
+    ]);
+
+    if (!v1) throw new NotFoundException(`Vehicle ${vehicleId} not found`);
+    if (!v2) throw new NotFoundException(`Vehicle with placa "${otherPlaca}" not found`);
+    if (v1.id === v2.id) throw new BadRequestException('Cannot union a vehicle with itself');
+
+    const union1 = v1.union as string[];
+    const union2 = v2.union as string[];
+
+    if (union1.includes(v2.placa) || union2.includes(v1.placa)) {
+      throw new BadRequestException('These vehicles are already united');
+    }
+
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.vehicle.update({
+        where:  { id: v1.id },
+        data:   { union: [...union1, v2.placa] },
+        select: VEHICLE_SELECT,
+      }),
+      this.prisma.vehicle.update({
+        where: { id: v2.id },
+        data:  { union: [...union2, v1.placa] },
+      }),
+    ]);
+
+    // Invalidate both companies — they may differ if vehicles belong to different companies
+    await Promise.all([
+      this.invalidateVehicleCache(v1.companyId),
+      this.invalidateVehicleCache(v2.companyId),
+    ]);
+    return updated;
+  }
+
+  // ── Drivers ──────────────────────────────────────────────────────────────
+
+  async getDriversForVehicle(vehicleId: string) {
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where:  { id: vehicleId },
+      select: { id: true },
+    });
+    if (!vehicle) throw new NotFoundException('Vehicle not found');
+
+    return this.prisma.vehicleDriver.findMany({
+      where:   { vehicleId },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  async updateDrivers(vehicleId: string, drivers: DriverDto[]) {
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where:  { id: vehicleId },
+      select: { id: true, companyId: true },
+    });
+    if (!vehicle) throw new NotFoundException('Vehicle not found');
+
+    await this.prisma.$transaction([
+      this.prisma.vehicleDriver.deleteMany({ where: { vehicleId } }),
+      this.prisma.vehicleDriver.createMany({
+        data: drivers.map((d) => ({
+          vehicleId,
+          nombre:    d.nombre,
+          telefono:  d.telefono,
+          isPrimary: d.isPrimary ?? false,
+        })),
+      }),
+    ]);
+
+    await this.invalidateVehicleCache(vehicle.companyId);
+
+    return this.prisma.vehicleDriver.findMany({
+      where:   { vehicleId },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  // ── Union (trailer coupling) ──────────────────────────────────────────────
+
+  async removeFromUnion(vehicleId: string, otherPlaca: string) {
+    const [v1, v2] = await Promise.all([
+      this.prisma.vehicle.findUnique({
+        where:  { id: vehicleId },
+        select: { id: true, placa: true, union: true, companyId: true }, // ← companyId added
+      }),
+      this.prisma.vehicle.findFirst({
+        where:  { placa: otherPlaca },
+        select: { id: true, placa: true, union: true, companyId: true }, // ← companyId added
+      }),
+    ]);
+
+    if (!v1) throw new NotFoundException(`Vehicle ${vehicleId} not found`);
+    if (!v2) throw new NotFoundException(`Vehicle with placa "${otherPlaca}" not found`);
+
+    const union1 = v1.union as string[];
+    const union2 = v2.union as string[];
+
+    if (!union1.includes(v2.placa)) {
+      throw new BadRequestException('These vehicles are not currently united');
+    }
+
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.vehicle.update({
+        where:  { id: v1.id },
+        data:   { union: union1.filter(p => p !== v2.placa) },
+        select: VEHICLE_SELECT,
+      }),
+      this.prisma.vehicle.update({
+        where: { id: v2.id },
+        data:  { union: union2.filter(p => p !== v1.placa) },
+      }),
+    ]);
+
+    await Promise.all([
+      this.invalidateVehicleCache(v1.companyId),
+      this.invalidateVehicleCache(v2.companyId),
+    ]);
+    return updated;
+  }
+}
