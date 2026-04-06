@@ -3361,12 +3361,26 @@ export class TireService {
       // This is handled in refreshTireAnalyticsCache with a dual lookup
     }
 
-    // 9. CPK
+    // 9. CPK — only evaluate CPK alerts when the tire has meaningful wear.
+    // A barely-used tire (e.g. 16mm left out of 22mm) naturally has very high
+    // CPK because km is low. We need at least ~50% of usable depth worn to
+    // have a meaningful CPK signal.
+    const usableDepthForCpk = tire.profundidadInicial - C.LIMITE_LEGAL_MM;
+    const mmWornForCpk      = tire.profundidadInicial - minDepth;
+    const wearFraction      = usableDepthForCpk > 0 ? mmWornForCpk / usableDepthForCpk : 0;
+    const hasMeaningfulWear = wearFraction >= 0.5; // at least 50% of usable tread worn
+
     const cpk = latest.cpk ?? null;
-    if (cpk != null && cpk < 5) {
-      recomendaciones.push({ priority: 90, msg: 'Evaluar reemplazo. CPK elevado — esta llanta genera sobrecostos.' });
+    // Use cpkProyectado for the comparison since it accounts for remaining life.
+    // Threshold: compare against market-average CPK (roughly 150-200 COP/km for
+    // truck tires). Only alert if BOTH the projected CPK is high AND the tire
+    // has actual wear to validate the calculation.
+    const cpkProy = latest.cpkProyectado ?? null;
+    if (hasMeaningfulWear && cpkProy != null && cpkProy > 250) {
+      recomendaciones.push({ priority: 90, msg: `Evaluar reemplazo. CPK proyectado ${Math.round(cpkProy)} COP/km — por encima del promedio.` });
     }
-    if (cpkTrend != null && cpkTrend > 0.1) {
+    // CPK trend: only meaningful when there's wear to compare
+    if (hasMeaningfulWear && cpkTrend != null && cpkTrend > 0.1) {
       recomendaciones.push({ priority: 75, msg: 'Investigar causa de degradacion. CPK esta aumentando.' });
     }
 
