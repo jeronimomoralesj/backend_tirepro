@@ -1502,6 +1502,19 @@ export class TireService {
           ? (vidaValor as VidaValue)
           : VidaValue.nueva;
 
+        // ── Explicit replacement signal from "Novedad" column ────────────────
+        // If the user writes "cambio", "cambiada", "reemplazo", etc. in the
+        // novedad column, treat this row as an explicit tire replacement:
+        // dispose the old tire at that position and create a new one, even
+        // if depths happen to match the previous inspection.
+        const novedadRaw = normalize(get(row, 'novedad') || '');
+        const forceReplacement =
+          novedadRaw.includes('cambio') ||
+          novedadRaw.includes('cambiada') ||
+          novedadRaw.includes('reemplaz') ||
+          novedadRaw.includes('nueva llanta') ||
+          novedadRaw === 'cambiar';
+
         // ── Existing tire lookup ──────────────────────────────────────────────
         let existing: any = null;
         if (!needsIdGeneration(rawId)) {
@@ -1545,7 +1558,8 @@ export class TireService {
                 profCen === prevCen &&
                 profExt === prevExt;
 
-              if (exactMatch) {
+              // If user marked novedad = "cambio", never treat as duplicate
+              if (exactMatch && !forceReplacement) {
                 // Duplicate upload — same tire, same depths → skip entirely
                 warnings.push(`Row ${rowNum}: llanta "${tirePlaca}" pos ${posicion} — profundidades idénticas a última inspección, omitida (duplicado).`);
                 continue;
@@ -1557,12 +1571,15 @@ export class TireService {
                 (profCen - prevCen) > REPLACEMENT_THRESHOLD_MM &&
                 (profExt - prevExt) > REPLACEMENT_THRESHOLD_MM;
 
-              if (allDeeper) {
+              // Explicit replacement forces the dispose path, even without depth delta
+              if (allDeeper || forceReplacement) {
                 // Tire replaced — dispose old tire, then fall through to Branch B
                 // to create the new tire in its position.
+                const reason = forceReplacement
+                  ? `novedad="${novedadRaw}" (reemplazo explícito)`
+                  : `profundidades mucho mayores (${prevInt}/${prevCen}/${prevExt} → ${profInt}/${profCen}/${profExt})`;
                 warnings.push(
-                  `Row ${rowNum}: llanta "${tirePlaca}" pos ${posicion} — profundidades mucho mayores ` +
-                  `(${prevInt}/${prevCen}/${prevExt} → ${profInt}/${profCen}/${profExt}). ` +
+                  `Row ${rowNum}: llanta "${tirePlaca}" pos ${posicion} — ${reason}. ` +
                   `Llanta anterior desmontada, nueva llanta creada.`
                 );
 
