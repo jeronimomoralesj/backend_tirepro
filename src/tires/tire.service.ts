@@ -1516,13 +1516,18 @@ export class TireService {
           novedadRaw === 'cambiar';
 
         // ── Existing tire lookup ──────────────────────────────────────────────
+        // CRITICAL: must be scoped to companyId, otherwise a tire ID like "1157"
+        // in another company would be mistakenly found and updated, leaking data
+        // and preventing the target company from getting its own tire.
         let existing: any = null;
         if (!needsIdGeneration(rawId)) {
-          existing = await this.prisma.tire.findFirst({ where: { placa: tirePlaca } });
+          existing = await this.prisma.tire.findFirst({
+            where: { placa: tirePlaca, companyId },
+          });
         }
         if (!existing && vehicle && posicion > 0) {
           existing = await this.prisma.tire.findFirst({
-            where: { vehicleId: vehicle.id, posicion },
+            where: { vehicleId: vehicle.id, posicion, companyId },
           });
         }
 
