@@ -143,6 +143,9 @@ model User {
   puntos            Int      @default(0)
   isVerified        Boolean  @default(false)
   verificationToken String?
+  // Password reset
+  resetToken        String?
+  resetTokenExpiry  DateTime?
   preferredLanguage String   @default("es")
   userPlan          String   @default("free") // "free" | "plus" — for users without a company
 

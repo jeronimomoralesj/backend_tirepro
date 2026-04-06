@@ -12,12 +12,14 @@ import { CompanyScopeGuard } from './guards/company-scope.guard';
 import { UsersModule } from '../users/users.module';
 import { DatabaseModule } from '../database/database.module';
 import { PrismaService } from '../prisma/prisma.service';
+import { EmailModule } from '../email/email.module';
 
 @Module({
   imports: [
     forwardRef(() => UsersModule),
     DatabaseModule,
     ConfigModule,
+    EmailModule,
 
     PassportModule.register({ defaultStrategy: 'jwt' }),
 

@@ -9,6 +9,7 @@ import { PrismaService } from '../database/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { MailerService } from '@nestjs-modules/mailer';
+import { EmailService } from '../email/email.service';
 import { UserRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
@@ -58,6 +59,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly mailerService: MailerService,
     private readonly configService: ConfigService,
+    private readonly emailService: EmailService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -351,5 +353,96 @@ export class AuthService {
       this.logger.error('verifyBlogPassword error: ' + err.message);
       return false;
     }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // PASSWORD RESET FLOW
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Generate a one-time reset token, store it on the user, and email a link.
+   * Always returns success to prevent email enumeration attacks.
+   */
+  async requestPasswordReset(email: string): Promise<void> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await this.prisma.user.findUnique({ where: { email: normalizedEmail } });
+
+    // Don't reveal whether the email exists — always succeed silently
+    if (!user) {
+      this.logger.log(`Password reset requested for non-existent email: ${normalizedEmail}`);
+      return;
+    }
+
+    // Generate a cryptographically random token
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data:  { resetToken: token, resetTokenExpiry: expiry },
+    });
+
+    try {
+      await this.emailService.sendPasswordResetEmail(user.email, token, user.name);
+      this.logger.log(`Password reset email sent to ${user.email}`);
+    } catch (err: any) {
+      this.logger.error(`Failed to send reset email to ${user.email}: ${err.message}`);
+      // Don't throw — don't reveal email-sending failures to the client
+    }
+  }
+
+  /**
+   * Validate a reset token without consuming it (for the reset page to verify
+   * the link is valid before showing the password form).
+   */
+  async validateResetToken(token: string): Promise<{ valid: boolean; email?: string }> {
+    if (!token || typeof token !== 'string') return { valid: false };
+
+    const user = await this.prisma.user.findFirst({
+      where: {
+        resetToken: token,
+        resetTokenExpiry: { gt: new Date() },
+      },
+      select: { email: true },
+    });
+
+    if (!user) return { valid: false };
+    return { valid: true, email: user.email };
+  }
+
+  /**
+   * Consume a reset token and set a new password.
+   */
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    if (!token || typeof token !== 'string') {
+      throw new BadRequestException('Token inválido.');
+    }
+    if (!newPassword || newPassword.length < 8) {
+      throw new BadRequestException('La contraseña debe tener al menos 8 caracteres.');
+    }
+
+    const user = await this.prisma.user.findFirst({
+      where: {
+        resetToken: token,
+        resetTokenExpiry: { gt: new Date() },
+      },
+    });
+
+    if (!user) {
+      throw new BadRequestException('Token inválido o expirado. Solicita un nuevo enlace.');
+    }
+
+    const hashed = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password:         hashed,
+        resetToken:       null,
+        resetTokenExpiry: null,
+      },
+    });
+
+    this.logger.log(`Password reset completed for ${user.email}`);
   }
 }

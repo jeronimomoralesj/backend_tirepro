@@ -90,4 +90,39 @@ export class AuthController {
       ? { success: true,  message: 'Acceso de distribuidor verificado.' }
       : { success: false, message: 'Contraseña inválida o expirada.' };
   }
+
+  // ─── PASSWORD RESET ────────────────────────────────────────────────────────
+
+  /** Request a password reset email — always returns success (anti-enumeration). */
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async forgotPassword(@Body() body: { email: string }): Promise<{ success: boolean; message: string }> {
+    if (!body?.email) {
+      return { success: true, message: 'Si el correo existe, recibirás un enlace.' };
+    }
+    await this.authService.requestPasswordReset(body.email);
+    return {
+      success: true,
+      message: 'Si el correo existe, recibirás un enlace para restablecer tu contraseña.',
+    };
+  }
+
+  /** Validate a reset token (used by the reset page on load). */
+  @Post('validate-reset-token')
+  @HttpCode(HttpStatus.OK)
+  async validateResetToken(@Body() body: { token: string }): Promise<{ valid: boolean; email?: string }> {
+    return this.authService.validateResetToken(body?.token);
+  }
+
+  /** Consume a reset token and set a new password. */
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async resetPassword(
+    @Body() body: { token: string; password: string },
+  ): Promise<{ success: boolean; message: string }> {
+    await this.authService.resetPassword(body?.token, body?.password);
+    return { success: true, message: 'Contraseña actualizada correctamente.' };
+  }
 }
