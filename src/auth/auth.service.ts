@@ -360,23 +360,37 @@ export class AuthService {
   // ───────────────────────────────────────────────────────────────────────────
 
   async requestPasswordReset(email: string): Promise<void> {
-    const normalizedEmail = email.trim().toLowerCase();
-    const user = await this.prisma.user.findUnique({ where: { email: normalizedEmail } });
-    if (!user) {
-      this.logger.log(`Password reset requested for non-existent email: ${normalizedEmail}`);
-      return;
-    }
-    const token = crypto.randomBytes(32).toString('hex');
-    const expiry = new Date(Date.now() + 60 * 60 * 1000);
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data:  { resetToken: token, resetTokenExpiry: expiry },
-    });
+    // Wrap everything in try/catch — never throw to the client.
+    // This prevents 500s AND prevents email enumeration via error messages.
     try {
-      await this.emailService.sendPasswordResetEmail(user.email, token, user.name);
-      this.logger.log(`Password reset email sent to ${user.email}`);
+      const normalizedEmail = email.trim().toLowerCase();
+      const user = await this.prisma.user.findUnique({ where: { email: normalizedEmail } });
+      if (!user) {
+        this.logger.log(`Password reset requested for non-existent email: ${normalizedEmail}`);
+        return;
+      }
+
+      const token = crypto.randomBytes(32).toString('hex');
+      const expiry = new Date(Date.now() + 60 * 60 * 1000);
+
+      try {
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data:  { resetToken: token, resetTokenExpiry: expiry },
+        });
+      } catch (dbErr: any) {
+        this.logger.error(`Reset DB update failed for ${user.email}: ${dbErr.message}`);
+        return;
+      }
+
+      try {
+        await this.emailService.sendPasswordResetEmail(user.email, token, user.name);
+        this.logger.log(`Password reset email sent to ${user.email}`);
+      } catch (mailErr: any) {
+        this.logger.error(`Failed to send reset email to ${user.email}: ${mailErr.message}`);
+      }
     } catch (err: any) {
-      this.logger.error(`Failed to send reset email to ${user.email}: ${err.message}`);
+      this.logger.error(`requestPasswordReset top-level error: ${err.message}`);
     }
   }
 
