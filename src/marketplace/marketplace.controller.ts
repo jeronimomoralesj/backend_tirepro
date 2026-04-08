@@ -107,12 +107,13 @@ export class MarketplaceController {
     @Query('minPrice') minPrice?: string,
     @Query('maxPrice') maxPrice?: string,
     @Query('search') search?: string,
+    @Query('rimSizes') rimSizes?: string,
     @Query('sortBy') sortBy?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
     return this.svc.searchListings({
-      dimension, marca, eje, tipo, distributorId, ciudad, search, sortBy,
+      dimension, marca, eje, tipo, distributorId, ciudad, search, rimSizes, sortBy,
       minPrice: minPrice ? Number(minPrice) : undefined,
       maxPrice: maxPrice ? Number(maxPrice) : undefined,
       page: page ? Number(page) : undefined,
@@ -280,6 +281,26 @@ export class MarketplaceController {
     @Body() body: { distributorId: string; status: string; cancelReason?: string },
   ) {
     return this.svc.updateOrderStatus(id, body.distributorId, body.status, body.cancelReason);
+  }
+
+  // Buyer requests a return on a delivered/shipped order
+  @Post('orders/:id/return-request')
+  @UseGuards(JwtAuthGuard)
+  requestOrderReturn(
+    @Param('id') id: string,
+    @Body() body: { userId: string; reason: string },
+  ) {
+    return this.svc.requestOrderReturn(id, body.userId, body.reason);
+  }
+
+  // Distributor approves or rejects a pending return request
+  @Patch('orders/:id/return-status')
+  @UseGuards(JwtAuthGuard)
+  updateOrderReturnStatus(
+    @Param('id') id: string,
+    @Body() body: { distributorId: string; returnStatus: 'aprobada' | 'rechazada' },
+  ) {
+    return this.svc.updateOrderReturnStatus(id, body.distributorId, body.returnStatus);
   }
 
   @Get('sales/distributor')

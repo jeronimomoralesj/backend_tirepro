@@ -1341,6 +1341,12 @@ model MarketplaceOrder {
   paymentStatus   String?  // approved | declined | error | voided | pending
   totalWithIva    Float?
 
+  // Return request (initiated by buyer)
+  returnRequestedAt DateTime?
+  returnReason      String?  @db.Text
+  returnStatus      String?  // pendiente | aprobada | rechazada
+  returnResolvedAt  DateTime?
+
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

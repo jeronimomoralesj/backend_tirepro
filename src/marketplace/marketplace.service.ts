@@ -331,6 +331,7 @@ export class MarketplaceService {
     minPrice?: number;
     maxPrice?: number;
     search?: string;
+    rimSizes?: string;
     sortBy?: string;
     page?: number;
     limit?: number;
@@ -365,6 +366,28 @@ export class MarketplaceService {
         { dimension: { contains: filters.search, mode: 'insensitive' } },
         { distributor: { name: { contains: filters.search, mode: 'insensitive' } } },
       ];
+    }
+    // Category filter — comma-separated list of rim sizes (e.g. "17.5,19.5,22.5").
+    // Matches dimensions that contain "R<rim>" (case-insensitive). The
+    // dimension column stores values like "295/80 R22.5" so a contains
+    // search on "R22.5" yields all 22.5" tires.
+    if (filters.rimSizes) {
+      const rims = filters.rimSizes
+        .split(',')
+        .map((r) => r.trim())
+        .filter(Boolean);
+      if (rims.length > 0) {
+        const rimOr = rims.map((r) => ({
+          dimension: { contains: `R${r}`, mode: 'insensitive' as const },
+        }));
+        // If a search is also active, AND the two OR groups together.
+        if (where.OR) {
+          where.AND = [{ OR: where.OR }, { OR: rimOr }];
+          delete where.OR;
+        } else {
+          where.OR = rimOr;
+        }
+      }
     }
 
     let orderBy: any;
@@ -776,6 +799,52 @@ export class MarketplaceService {
       where: { distributorId },
       orderBy: { createdAt: 'desc' },
       include: { listing: { select: { marca: true, modelo: true, dimension: true, imageUrls: true, coverIndex: true } } },
+    });
+  }
+
+  // -- Return requests -------------------------------------------------------
+  async requestOrderReturn(orderId: string, userId: string, reason: string) {
+    const trimmed = (reason ?? '').trim();
+    if (!trimmed) throw new BadRequestException('Reason is required');
+
+    const order = await this.prisma.marketplaceOrder.findUnique({
+      where: { id: orderId },
+      select: { id: true, userId: true, buyerEmail: true, status: true, returnStatus: true, listing: { select: { marca: true, modelo: true } } },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    // Only the buyer that placed the order may request the return.
+    if (order.userId && order.userId !== userId) {
+      throw new BadRequestException('Not your order');
+    }
+    if (order.returnStatus) {
+      throw new BadRequestException('Return already requested for this order');
+    }
+    if (order.status !== 'enviado' && order.status !== 'entregado') {
+      throw new BadRequestException('Solo se puede solicitar devolución una vez el pedido haya sido enviado o entregado');
+    }
+
+    return this.prisma.marketplaceOrder.update({
+      where: { id: orderId },
+      data: {
+        returnStatus: 'pendiente',
+        returnReason: trimmed,
+        returnRequestedAt: new Date(),
+      },
+    });
+  }
+
+  async updateOrderReturnStatus(orderId: string, distributorId: string, returnStatus: 'aprobada' | 'rechazada') {
+    if (returnStatus !== 'aprobada' && returnStatus !== 'rechazada') {
+      throw new BadRequestException('Invalid return status');
+    }
+    const order = await this.prisma.marketplaceOrder.findUnique({ where: { id: orderId } });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.distributorId !== distributorId) throw new BadRequestException('Not your order');
+    if (order.returnStatus !== 'pendiente') throw new BadRequestException('No pending return request');
+
+    return this.prisma.marketplaceOrder.update({
+      where: { id: orderId },
+      data: { returnStatus, returnResolvedAt: new Date() },
     });
   }
 
