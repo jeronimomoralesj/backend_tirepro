@@ -1402,6 +1402,10 @@ model BrandInfo {
   description     String?  @db.Text
   plants          Json?    // Array of { city, country }
   parentCompany   String?
+  // Quality tier: 'premium' (Michelin, Bridgestone, etc.) | 'mid' (Hankook,
+  // Yokohama…) | 'value' (everything else). Rendered on the brand page as
+  // a star rating + label.
+  tier            String?
   // Free-form extra facts the scraper picked up
   facts           Json?
   source          String?  // 'wikipedia', 'manual', 'scraped'

@@ -34,6 +34,26 @@ const WIKI_BASES = [
   'https://en.wikipedia.org',
 ];
 
+// Hand-curated tier list — applied during scrape so the brand page can show
+// a Premium / Mid / Value badge. Anything not listed defaults to 'value'.
+const TIERS: Record<string, 'premium' | 'mid' | 'value'> = {
+  michelin: 'premium', bridgestone: 'premium', continental: 'premium',
+  goodyear: 'premium', pirelli: 'premium', dunlop: 'premium',
+  bfgoodrich: 'premium', firestone: 'premium',
+
+  hankook: 'mid', yokohama: 'mid', kumho: 'mid', cooper: 'mid',
+  maxxis: 'mid', toyo: 'mid', falken: 'mid', nexen: 'mid',
+  general: 'mid',
+
+  triangle: 'value', aeolus: 'value', linglong: 'value', 'double coin': 'value',
+  westlake: 'value', sailun: 'value', roadmaster: 'value', windforce: 'value',
+  cachland: 'value', sunfull: 'value', kapsen: 'value', techshield: 'value',
+};
+
+function tierFor(name: string): 'premium' | 'mid' | 'value' {
+  return TIERS[name.toLowerCase().trim()] ?? 'value';
+}
+
 interface ScrapedBrand {
   name: string;
   slug: string;
@@ -44,6 +64,7 @@ interface ScrapedBrand {
   website: string | null;
   description: string | null;
   parentCompany: string | null;
+  tier: 'premium' | 'mid' | 'value';
   source: string;
   sourceUrl: string | null;
 }
@@ -99,6 +120,12 @@ async function scrape(brand: string): Promise<ScrapedBrand | null> {
       const website = findField('website') || findField('homepage') || findField('url') || findField('sitioweb');
       const parent = findField('parent') || findField('owner') || findField('propietario') || findField('matriz');
 
+      const sourceUrl: string | null = summary.content_urls?.desktop?.page ?? null;
+      // Hard guarantee: only Wikipedia URLs are ever stored. Defensive check
+      // in case REST ever returns a redirect to a non-wiki host.
+      if (sourceUrl && !/^https?:\/\/[a-z]{2,3}\.wikipedia\.org\//i.test(sourceUrl)) {
+        continue;
+      }
       return {
         name: brand,
         slug: slugify(brand),
@@ -109,8 +136,9 @@ async function scrape(brand: string): Promise<ScrapedBrand | null> {
         website: website?.replace(/^https?:\/\//, 'https://').split(/\s/)[0] || null,
         description: summary.extract ?? null,
         parentCompany: parent?.replace(/\{\{[^}]+\}\}/g, '').trim() || null,
+        tier: tierFor(brand),
         source: 'wikipedia',
-        sourceUrl: summary.content_urls?.desktop?.page ?? null,
+        sourceUrl,
       };
     }
   }
@@ -129,6 +157,7 @@ async function upsert(scraped: ScrapedBrand) {
       website: scraped.website ?? undefined,
       description: scraped.description ?? undefined,
       parentCompany: scraped.parentCompany ?? undefined,
+      tier: scraped.tier,
       source: scraped.source,
       sourceUrl: scraped.sourceUrl ?? undefined,
       lastScrapedAt: new Date(),
@@ -143,6 +172,7 @@ async function upsert(scraped: ScrapedBrand) {
       website: scraped.website,
       description: scraped.description,
       parentCompany: scraped.parentCompany,
+      tier: scraped.tier,
       source: scraped.source,
       sourceUrl: scraped.sourceUrl,
       lastScrapedAt: new Date(),
@@ -176,7 +206,9 @@ async function main() {
       const scraped = await scrape(brand);
       if (!scraped) { console.log('miss'); miss++; continue; }
       await upsert(scraped);
-      console.log(`ok (${scraped.foundedYear ?? '?'} · ${scraped.country ?? '?'})`);
+      console.log(
+        `ok · tier=${scraped.tier} · ${scraped.foundedYear ?? '?'} · ${scraped.country ?? '?'}\n     ${scraped.sourceUrl ?? '(no source)'}`,
+      );
       ok++;
     } catch (err) {
       console.log(`error: ${(err as Error).message}`);
