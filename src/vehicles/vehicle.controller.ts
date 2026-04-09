@@ -14,6 +14,7 @@ import {
   ValidationPipe,
   BadRequestException,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CompanyScopeGuard } from '../auth/guards/company-scope.guard';
 import { VehicleService } from './vehicle.service';
@@ -59,6 +60,23 @@ getByPlaca(@Query('placa') placa: string) {  // ← 'placa' not 'by-placa'
   @HttpCode(HttpStatus.CREATED)
   createVehicle(@Body() dto: CreateVehicleDto) {
     return this.vehicleService.createVehicle(dto);
+  }
+
+  // Bulk vehicle creation. Sent as a single request so the throttler only
+  // counts it once. The frontend uses this for the carga masiva flow.
+  // Returns { ok: number, failed: { placa, error }[] } so the UI can show
+  // which rows succeeded and which need fixing.
+  @Post('bulk-create')
+  @SkipThrottle()
+  @HttpCode(HttpStatus.OK)
+  async bulkCreateVehicles(@Body() body: { vehicles: CreateVehicleDto[] }) {
+    if (!Array.isArray(body?.vehicles) || body.vehicles.length === 0) {
+      throw new BadRequestException('vehicles array is required');
+    }
+    if (body.vehicles.length > 500) {
+      throw new BadRequestException('Maximum 500 vehicles per bulk request');
+    }
+    return this.vehicleService.bulkCreateVehicles(body.vehicles);
   }
 
   // ── Read ──────────────────────────────────────────────────────────────────

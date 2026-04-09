@@ -96,6 +96,67 @@ export class VehicleService {
     return vehicle;
   }
 
+  // ── Bulk create ───────────────────────────────────────────────────────────
+  async bulkCreateVehicles(dtos: CreateVehicleDto[]) {
+    const created: any[] = [];
+    const failed: { placa: string; error: string }[] = [];
+    const companyIdsTouched = new Set<string>();
+
+    // Pre-fetch existing placas for all unique companies in the payload so
+    // we can dedupe in O(1) per row instead of one query each.
+    const placas = dtos.map((d) => d.placa).filter(Boolean);
+    const existing = placas.length > 0
+      ? await this.prisma.vehicle.findMany({ where: { placa: { in: placas } }, select: { placa: true } })
+      : [];
+    const existingSet = new Set(existing.map((v) => v.placa));
+    const seenInBatch = new Set<string>();
+
+    // Validate companies in one shot
+    const companyIds = Array.from(new Set(dtos.map((d) => d.companyId).filter(Boolean)));
+    const validCompanies = companyIds.length > 0
+      ? await this.prisma.company.findMany({ where: { id: { in: companyIds } }, select: { id: true } })
+      : [];
+    const validCompanyIds = new Set(validCompanies.map((c) => c.id));
+
+    for (const dto of dtos) {
+      const placa = (dto.placa ?? '').trim();
+      if (!placa) { failed.push({ placa: '(vacío)', error: 'Sin placa' }); continue; }
+      if (!validCompanyIds.has(dto.companyId)) { failed.push({ placa, error: 'companyId inválido' }); continue; }
+      if (existingSet.has(placa) || seenInBatch.has(placa)) {
+        failed.push({ placa, error: 'Una placa con este nombre ya existe' });
+        continue;
+      }
+      seenInBatch.add(placa);
+
+      try {
+        const v = await this.prisma.vehicle.create({
+          data: {
+            placa,
+            kilometrajeActual: dto.kilometrajeActual ?? 0,
+            carga: dto.carga ?? 'n/a',
+            pesoCarga: dto.pesoCarga ?? 0,
+            tipovhc: dto.tipovhc ?? '2_ejes_trailer',
+            companyId: dto.companyId,
+            cliente: dto.cliente ?? null,
+            tipoOperacion: dto.tipoOperacion ?? null,
+            configuracion: dto.configuracion ?? null,
+            union: [],
+          },
+          select: VEHICLE_SELECT,
+        });
+        created.push(v);
+        companyIdsTouched.add(dto.companyId);
+      } catch (err: any) {
+        failed.push({ placa, error: err?.message ?? 'Error inesperado' });
+      }
+    }
+
+    // Invalidate the cache once per touched company instead of per row.
+    await Promise.all(Array.from(companyIdsTouched).map((id) => this.invalidateVehicleCache(id)));
+
+    return { ok: created.length, created, failed };
+  }
+
   // ── Read ──────────────────────────────────────────────────────────────────
 
   async findVehiclesByCompany(companyId: string) {
