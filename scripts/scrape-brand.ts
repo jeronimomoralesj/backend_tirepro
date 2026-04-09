@@ -90,20 +90,24 @@ async function fetchJson(url: string): Promise<any | null> {
 }
 
 async function scrape(brand: string): Promise<ScrapedBrand | null> {
-  const queries = [`${brand} (empresa)`, `${brand} (company)`, `${brand} tires`, `${brand} llantas`, brand];
+  const queries = [`${brand} (empresa)`, `${brand} (company)`, `${brand} Tire`, `${brand} tires`, `${brand} llantas`, brand];
   for (const base of WIKI_BASES) {
     for (const q of queries) {
       const summary = await fetchJson(`${base}/api/rest_v1/page/summary/${encodeURIComponent(q)}`);
       if (!summary || summary.type === 'disambiguation' || !summary.title) continue;
-      // Make sure it's actually a tire/rubber/automotive company before saving
-      const blob = `${summary.extract ?? ''} ${summary.description ?? ''}`.toLowerCase();
-      if (!/tire|tyre|llanta|neum|rubber|caucho|automot/.test(blob)) continue;
 
-      // Pull the structured infobox via action=parse
+      // Pull the raw wikitext (not parsetree XML — wikitext is what the
+      // infobox regexes below expect).
       const parsed = await fetchJson(
-        `${base}/w/api.php?action=parse&page=${encodeURIComponent(summary.title)}&prop=parsetree&format=json&origin=*`,
+        `${base}/w/api.php?action=parse&page=${encodeURIComponent(summary.title)}&prop=wikitext&format=json&origin=*`,
       );
-      const infoboxText: string = parsed?.parse?.parsetree?.['*'] ?? '';
+      const infoboxText: string = parsed?.parse?.wikitext?.['*'] ?? '';
+
+      // Topic filter — check the wikitext + summary, not just the summary,
+      // so brands like Continental (whose Spanish lead doesn't mention
+      // tires) still pass when the body of the article does.
+      const blob = `${summary.extract ?? ''} ${summary.description ?? ''} ${infoboxText.slice(0, 4000)}`.toLowerCase();
+      if (!/tire|tyre|llanta|neum|rubber|caucho|automot|industry\s*=\s*[^|]*tire|automotriz/.test(blob)) continue;
 
       const findField = (field: string): string | null => {
         const re = new RegExp(`\\|\\s*${field}[^=]*=\\s*([^|}]+)`, 'i');
@@ -199,17 +203,38 @@ async function main() {
     process.exit(1);
   }
 
-  let ok = 0, miss = 0;
+  let ok = 0, miss = 0, stub = 0;
   for (const brand of brands) {
     process.stdout.write(`  ${brand} … `);
     try {
       const scraped = await scrape(brand);
-      if (!scraped) { console.log('miss'); miss++; continue; }
-      await upsert(scraped);
-      console.log(
-        `ok · tier=${scraped.tier} · ${scraped.foundedYear ?? '?'} · ${scraped.country ?? '?'}\n     ${scraped.sourceUrl ?? '(no source)'}`,
-      );
-      ok++;
+      if (scraped) {
+        await upsert(scraped);
+        console.log(
+          `ok · tier=${scraped.tier} · ${scraped.foundedYear ?? '?'} · ${scraped.country ?? '?'}\n     ${scraped.sourceUrl ?? '(no source)'}`,
+        );
+        ok++;
+      } else {
+        // No Wikipedia hit — create a stub row so the brand page still
+        // exists with name + slug + tier. Operator can fill the rest by
+        // hand later via SQL or admin UI.
+        await upsert({
+          name: brand,
+          slug: slugify(brand),
+          logoUrl: null,
+          country: null,
+          headquarters: null,
+          foundedYear: null,
+          website: null,
+          description: null,
+          parentCompany: null,
+          tier: tierFor(brand),
+          source: 'manual',
+          sourceUrl: null,
+        });
+        console.log(`stub · tier=${tierFor(brand)} (no Wikipedia hit)`);
+        stub++;
+      }
     } catch (err) {
       console.log(`error: ${(err as Error).message}`);
       miss++;
@@ -217,7 +242,7 @@ async function main() {
     // Be polite to Wikipedia
     await new Promise((r) => setTimeout(r, 250));
   }
-  console.log(`\nDone. ${ok} ok, ${miss} miss.`);
+  console.log(`\nDone. ${ok} ok, ${stub} stub, ${miss} error.`);
   await prisma.$disconnect();
 }
 
