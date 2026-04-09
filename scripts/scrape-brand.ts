@@ -130,10 +130,27 @@ async function scrape(brand: string): Promise<ScrapedBrand | null> {
       if (sourceUrl && !/^https?:\/\/[a-z]{2,3}\.wikipedia\.org\//i.test(sourceUrl)) {
         continue;
       }
+
+      // Logo extraction. The REST summary `originalimage` is hit-or-miss
+      // (often missing for Spanish company pages). Hit the action API
+      // pageimages extension as a fallback — it returns the page's main
+      // image which for company articles is reliably the logo.
+      let logoUrl: string | null = summary.originalimage?.source ?? summary.thumbnail?.source ?? null;
+      if (!logoUrl) {
+        const pi = await fetchJson(
+          `${base}/w/api.php?action=query&titles=${encodeURIComponent(summary.title)}&prop=pageimages&format=json&pithumbsize=400&origin=*`,
+        );
+        const pages = pi?.query?.pages;
+        if (pages) {
+          const page: any = Object.values(pages)[0];
+          logoUrl = page?.thumbnail?.source ?? null;
+        }
+      }
+
       return {
         name: brand,
         slug: slugify(brand),
-        logoUrl: summary.originalimage?.source ?? summary.thumbnail?.source ?? null,
+        logoUrl,
         country: country?.replace(/\{\{[^}]+\}\}/g, '').trim() || null,
         headquarters: headquarters?.replace(/\{\{[^}]+\}\}/g, '').trim() || null,
         foundedYear,
