@@ -340,6 +340,19 @@ export class MarketplaceController {
     return this.svc.getDistributorMapData();
   }
 
+  // -- Brand pages ----------------------------------------------------------
+  @Get('brands')
+  @Header('Cache-Control', 'public, max-age=900, stale-while-revalidate=1800')
+  listBrands() {
+    return this.svc.listBrands();
+  }
+
+  @Get('brands/:slug')
+  @Header('Cache-Control', 'public, max-age=900, stale-while-revalidate=1800')
+  getBrand(@Param('slug') slug: string) {
+    return this.svc.getBrandBySlug(slug);
+  }
+
   @Get('recommendations')
   @Header('Cache-Control', 'public, max-age=300, stale-while-revalidate=600')
   getRecommendations(@Query('userId') userId?: string) {

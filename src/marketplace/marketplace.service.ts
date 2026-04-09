@@ -26,6 +26,33 @@ class MemCache {
   clear() { this.store.clear(); }
 }
 
+// Classic iterative Levenshtein distance — O(n*m) time, O(min(n,m)) space.
+// Used for fuzzy brand matching in searchListings so typos like
+// "techseled" still find "Techshield".
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  // Always iterate over the shorter string in the inner loop.
+  if (a.length > b.length) [a, b] = [b, a];
+  const prev = new Array(a.length + 1);
+  const curr = new Array(a.length + 1);
+  for (let i = 0; i <= a.length; i++) prev[i] = i;
+  for (let j = 1; j <= b.length; j++) {
+    curr[0] = j;
+    for (let i = 1; i <= a.length; i++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[i] = Math.min(
+        curr[i - 1] + 1,        // insertion
+        prev[i] + 1,            // deletion
+        prev[i - 1] + cost,     // substitution
+      );
+    }
+    for (let i = 0; i <= a.length; i++) prev[i] = curr[i];
+  }
+  return prev[a.length];
+}
+
 @Injectable()
 export class MarketplaceService {
   private readonly logger = new Logger(MarketplaceService.name);
@@ -321,6 +348,85 @@ export class MarketplaceService {
   // DISTRIBUTOR LISTINGS — Ecommerce
   // ===========================================================================
 
+  // -- Fuzzy brand matching --------------------------------------------------
+  // The full brand list is small (~50 entries) so caching it for an hour is
+  // cheap and lets us run a Levenshtein distance against every marca per
+  // query without hitting the DB more than once an hour.
+  private brandListCache: { brands: string[]; expiresAt: number } | null = null;
+
+  private async getDistinctBrands(): Promise<string[]> {
+    if (this.brandListCache && this.brandListCache.expiresAt > Date.now()) {
+      return this.brandListCache.brands;
+    }
+    const rows = await this.prisma.distributorListing.findMany({
+      where: { isActive: true, marca: { not: '' } },
+      distinct: ['marca'],
+      select: { marca: true },
+    });
+    const brands = rows.map((r) => r.marca).filter(Boolean);
+    this.brandListCache = { brands, expiresAt: Date.now() + 60 * 60 * 1000 };
+    return brands;
+  }
+
+  // -- Brand info pages ------------------------------------------------------
+  async listBrands() {
+    // Return every brand we have editorial info for plus a count of how
+    // many active listings each one has, sorted by listing count.
+    const brands = await this.prisma.brandInfo.findMany({
+      orderBy: { name: 'asc' },
+    });
+    const counts = await this.prisma.distributorListing.groupBy({
+      by: ['marca'],
+      where: { isActive: true },
+      _count: { _all: true },
+    });
+    const countByMarca = new Map(counts.map((c) => [c.marca.toLowerCase(), c._count._all]));
+    return brands.map((b) => ({
+      ...b,
+      listingCount: countByMarca.get(b.name.toLowerCase()) ?? 0,
+    }));
+  }
+
+  async getBrandBySlug(slug: string) {
+    const brand = await this.prisma.brandInfo.findUnique({ where: { slug } });
+    if (!brand) throw new NotFoundException('Brand not found');
+
+    // Pull a sample of active listings for this brand
+    const listings = await this.prisma.distributorListing.findMany({
+      where: { isActive: true, marca: { equals: brand.name, mode: 'insensitive' } },
+      orderBy: [{ imageQualityScore: 'desc' }, { createdAt: 'desc' }],
+      take: 24,
+      include: {
+        distributor: { select: { id: true, name: true, profileImage: true } },
+        catalog: { select: { id: true, terreno: true, kmEstimadosReales: true, cpkEstimado: true, crowdAvgCpk: true } },
+        _count: { select: { reviews: true, orders: true } },
+        reviews: { select: { rating: true }, take: 10 },
+      },
+    });
+    const total = await this.prisma.distributorListing.count({
+      where: { isActive: true, marca: { equals: brand.name, mode: 'insensitive' } },
+    });
+    return { ...brand, listings, total };
+  }
+
+  private async fuzzyMatchBrands(query: string): Promise<string[]> {
+    const q = query.trim().toLowerCase();
+    if (q.length < 3) return [];
+    const brands = await this.getDistinctBrands();
+    const scored = brands
+      .map((b) => ({ brand: b, distance: levenshtein(q, b.toLowerCase()) }))
+      .filter(({ brand, distance }) => {
+        // Tolerance scales with brand length: short names allow 1 typo,
+        // longer names up to 30% of the length (rounded down).
+        const tolerance = Math.max(1, Math.min(3, Math.floor(brand.length * 0.3)));
+        return distance > 0 && distance <= tolerance;
+      })
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 5);
+    return scored.map((s) => s.brand);
+  }
+
+
   async searchListings(filters: {
     dimension?: string;
     marca?: string;
@@ -373,8 +479,17 @@ export class MarketplaceService {
         dimension: { contains: v, mode: 'insensitive' as const },
       }));
 
+      // Fuzzy brand matching — pull every distinct marca, score them
+      // against the query with a Levenshtein distance, and add brands
+      // within tolerance to the OR. Handles "techseled" → "Techshield",
+      // "michellin" → "Michelin", "bridgstone" → "Bridgestone", etc.
+      const fuzzyBrands = await this.fuzzyMatchBrands(raw);
+
       where.OR = [
         { marca:  { contains: raw, mode: 'insensitive' } },
+        ...(fuzzyBrands.length > 0
+          ? fuzzyBrands.map((b) => ({ marca: { equals: b, mode: 'insensitive' as const } }))
+          : []),
         { modelo: { contains: raw, mode: 'insensitive' } },
         ...dimensionOr,
         { distributor: { name: { contains: raw, mode: 'insensitive' } } },

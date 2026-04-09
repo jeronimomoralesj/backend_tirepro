@@ -1382,3 +1382,34 @@ model PlateCache {
   @@index([placa])
   @@map("plate_cache")
 }
+
+// =============================================================================
+// BRAND INFO — editorial / scraped facts about each tire brand
+// =============================================================================
+
+model BrandInfo {
+  id              String   @id @default(uuid())
+  // Canonical brand name as stored on listings (case-insensitive lookup)
+  name            String   @unique
+  // URL-safe slug for /marketplace/brand/[slug]
+  slug            String   @unique
+  // Editorial fields (filled by the scraper script and/or manually)
+  logoUrl         String?
+  country         String?  // Country of origin
+  headquarters    String?  // City, country
+  foundedYear     Int?
+  website         String?
+  description     String?  @db.Text
+  plants          Json?    // Array of { city, country }
+  parentCompany   String?
+  // Free-form extra facts the scraper picked up
+  facts           Json?
+  source          String?  // 'wikipedia', 'manual', 'scraped'
+  sourceUrl       String?
+  lastScrapedAt   DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([slug])
+  @@map("brand_info")
+}
