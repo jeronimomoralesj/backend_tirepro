@@ -24,12 +24,27 @@ async function bootstrap() {
     crossOriginEmbedderPolicy: false,
   }));
 
-  // ── Request logging (4xx/5xx) ───────────────────────────────────────────
+  // ── Bot-scan short-circuit ───────────────────────────────────────────────
+  // Drop the connection immediately for the most common WordPress / config
+  // / shell-upload probes so they never reach the Nest router and never
+  // generate log noise.
+  const BOT_SCAN_RE = /^\/(?:wp-|wordpress|xmlrpc\.php|\.env|\.git|phpmyadmin|owa\/|autodiscover|\.aws|\.ssh|admin\.php|administrator|backup|config\.|shell\.|webdav|cgi-bin|fckeditor|tinymce|formmail|fileman|composer\.|setup\.|install\.|test\.|database\.)/i;
+  app.use((req, res, next) => {
+    if (BOT_SCAN_RE.test(req.url) || (req.url === '/' && req.method === 'POST')) {
+      res.status(404).end();
+      return;
+    }
+    next();
+  });
+
+  // ── Request logging (4xx/5xx, excluding scan paths) ─────────────────────
   app.use((req, res, next) => {
     const start = Date.now();
     res.on('finish', () => {
       const duration = Date.now() - start;
-      if (res.statusCode >= 400) {
+      // Suppress logs for the bot scan paths the short-circuit above caught,
+      // plus any 404 that doesn't start with /api (people fishing the host).
+      if (res.statusCode >= 400 && req.url.startsWith('/api')) {
         Logger.warn(
           `${req.method} ${req.url} ${res.statusCode} ${duration}ms — IP: ${req.ip}`,
           'HTTP',
