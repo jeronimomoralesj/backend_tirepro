@@ -260,6 +260,16 @@ async function main() {
     await new Promise((r) => setTimeout(r, 250));
   }
   console.log(`\nDone. ${ok} ok, ${stub} stub, ${miss} error.`);
+
+  // Bust the in-process cache on the running Nest server so the new
+  // brand data shows up without restarting pm2. Best-effort — ignored
+  // if the API isn't reachable from where the script runs.
+  const apiBase = process.env.API_BASE_URL || 'http://localhost:3001/api';
+  try {
+    const res = await fetch(`${apiBase}/marketplace/brands/cache/invalidate`, { method: 'POST' });
+    if (res.ok) console.log('Brand cache invalidated.');
+  } catch { /* ignore */ }
+
   await prisma.$disconnect();
 }
 

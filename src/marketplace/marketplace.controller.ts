@@ -353,6 +353,12 @@ export class MarketplaceController {
     return this.svc.getBrandBySlug(slug);
   }
 
+  @Post('brands/cache/invalidate')
+  invalidateBrandCache() {
+    this.svc.invalidateBrandCaches();
+    return { ok: true };
+  }
+
   @Get('recommendations')
   @Header('Cache-Control', 'public, max-age=300, stale-while-revalidate=600')
   getRecommendations(@Query('userId') userId?: string) {

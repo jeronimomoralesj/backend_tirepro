@@ -369,9 +369,13 @@ export class MarketplaceService {
   }
 
   // -- Brand info pages ------------------------------------------------------
+  // Cache for 15 minutes — brand info rarely changes and the frontend hits
+  // these on every product page load.
+  private readonly BRAND_TTL = 15 * 60 * 1000;
+
   async listBrands() {
-    // Return every brand we have editorial info for plus a count of how
-    // many active listings each one has, sorted by listing count.
+    const cached = this.cache.get<any>('brands:list');
+    if (cached) return cached;
     const brands = await this.prisma.brandInfo.findMany({
       orderBy: { name: 'asc' },
     });
@@ -381,17 +385,22 @@ export class MarketplaceService {
       _count: { _all: true },
     });
     const countByMarca = new Map(counts.map((c) => [c.marca.toLowerCase(), c._count._all]));
-    return brands.map((b) => ({
+    const result = brands.map((b) => ({
       ...b,
       listingCount: countByMarca.get(b.name.toLowerCase()) ?? 0,
     }));
+    this.cache.set('brands:list', result, this.BRAND_TTL);
+    return result;
   }
 
   async getBrandBySlug(slug: string) {
+    const cacheKey = `brands:slug:${slug}`;
+    const cached = this.cache.get<any>(cacheKey);
+    if (cached) return cached;
+
     const brand = await this.prisma.brandInfo.findUnique({ where: { slug } });
     if (!brand) throw new NotFoundException('Brand not found');
 
-    // Pull a sample of active listings for this brand
     const listings = await this.prisma.distributorListing.findMany({
       where: { isActive: true, marca: { equals: brand.name, mode: 'insensitive' } },
       orderBy: [{ imageQualityScore: 'desc' }, { createdAt: 'desc' }],
@@ -406,7 +415,13 @@ export class MarketplaceService {
     const total = await this.prisma.distributorListing.count({
       where: { isActive: true, marca: { equals: brand.name, mode: 'insensitive' } },
     });
-    return { ...brand, listings, total };
+    const result = { ...brand, listings, total };
+    this.cache.set(cacheKey, result, this.BRAND_TTL);
+    return result;
+  }
+
+  invalidateBrandCaches() {
+    this.cache.invalidate('brands:');
   }
 
   private async fuzzyMatchBrands(query: string): Promise<string[]> {
