@@ -360,11 +360,24 @@ export class MarketplaceService {
       if (filters.maxPrice) where.precioCop.lte = filters.maxPrice;
     }
     if (filters.search) {
+      const raw = filters.search.trim();
+      // Build dimension variants so users can type "295/80r22.5",
+      // "295/80R22.5", "295/80 R22.5" or "295 80 R22 5" and still match
+      // however we happen to store the value.
+      const compact = raw.replace(/\s+/g, '').toUpperCase();
+      const withSpaceR = compact.replace(/R/, ' R');
+      const noSpaceR   = compact.replace(/\s+R/i, 'R');
+      const dimensionVariants = Array.from(new Set([raw, compact, withSpaceR, noSpaceR]));
+
+      const dimensionOr = dimensionVariants.map((v) => ({
+        dimension: { contains: v, mode: 'insensitive' as const },
+      }));
+
       where.OR = [
-        { marca: { contains: filters.search, mode: 'insensitive' } },
-        { modelo: { contains: filters.search, mode: 'insensitive' } },
-        { dimension: { contains: filters.search, mode: 'insensitive' } },
-        { distributor: { name: { contains: filters.search, mode: 'insensitive' } } },
+        { marca:  { contains: raw, mode: 'insensitive' } },
+        { modelo: { contains: raw, mode: 'insensitive' } },
+        ...dimensionOr,
+        { distributor: { name: { contains: raw, mode: 'insensitive' } } },
       ];
     }
     // Category filter — comma-separated list of rim sizes (e.g. "17.5,19.5,22.5").
