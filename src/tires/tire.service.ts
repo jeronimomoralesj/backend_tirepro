@@ -1851,8 +1851,48 @@ export class TireService {
       success:  processedIds.size,
       errors:   errors.length,
       warnings: warnings.length,
+      // IDs of tires actually created/touched in this run — used by the UI to
+      // support undoing the last bulk upload.
+      createdTireIds: [...tireIdsToRefresh],
       details:  { errors, warnings },
     };
+  }
+
+  /**
+   * Bulk-delete tires by ID. Used by the "undo last bulk upload" feature.
+   * Cascades to inspecciones / eventos / costos / vida snapshots via Prisma.
+   * Scoped to companyId so a tenant cannot delete another tenant's tires.
+   */
+  async bulkDeleteTires(tireIds: string[], companyId: string) {
+    if (!Array.isArray(tireIds) || tireIds.length === 0) {
+      return { deleted: 0 };
+    }
+
+    // Capture affected vehicles BEFORE deletion so we can invalidate their
+    // caches afterwards.
+    const tires = await this.prisma.tire.findMany({
+      where: { id: { in: tireIds }, companyId },
+      select: { id: true, vehicleId: true },
+    });
+    const affectedVehicleIds = new Set(
+      tires.map(t => t.vehicleId).filter((v): v is string => !!v),
+    );
+
+    const result = await this.prisma.tire.deleteMany({
+      where: { id: { in: tireIds }, companyId },
+    });
+
+    await Promise.allSettled([
+      this.invalidateCompanyCache(companyId),
+      ...[...affectedVehicleIds].map(vid =>
+        Promise.allSettled([
+          this.invalidateVehicleCache(vid),
+          this.cache.del(`analysis:${vid}`),
+        ]),
+      ),
+    ]);
+
+    return { deleted: result.count };
   }
 
   // ===========================================================================

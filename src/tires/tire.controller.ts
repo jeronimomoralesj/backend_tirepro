@@ -18,6 +18,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
+import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CompanyScopeGuard } from '../auth/guards/company-scope.guard';
 import { EditTireDto, TireService } from './tire.service';
@@ -118,6 +119,7 @@ export class TireController {
   // ── Bulk upload ───────────────────────────────────────────────────────────
 
   @Post('bulk-upload')
+  @SkipThrottle()
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
   bulkUpload(
     @UploadedFile() file: Express.Multer.File,
@@ -126,6 +128,19 @@ export class TireController {
     if (!companyId) throw new BadRequestException('companyId is required');
     if (!file?.buffer) throw new BadRequestException('No file received');
     return this.tireService.bulkUploadTires(file, companyId);
+  }
+
+  // Undo a prior bulk upload — deletes the supplied tire IDs (scoped to the
+  // caller's company). Used by the "Cargas recientes" panel in the UI.
+  @Post('bulk-delete')
+  @SkipThrottle()
+  @HttpCode(HttpStatus.OK)
+  bulkDelete(@Body() body: { tireIds: string[]; companyId: string }) {
+    if (!body?.companyId) throw new BadRequestException('companyId is required');
+    if (!Array.isArray(body?.tireIds) || body.tireIds.length === 0) {
+      throw new BadRequestException('tireIds (array) is required');
+    }
+    return this.tireService.bulkDeleteTires(body.tireIds, body.companyId);
   }
 
   // ── Assign / unassign ─────────────────────────────────────────────────────
