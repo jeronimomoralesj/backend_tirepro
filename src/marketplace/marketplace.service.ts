@@ -465,19 +465,23 @@ export class MarketplaceService {
       });
       if (catalog) data.catalogId = catalog.id;
     }
-    // If catalogId provided, enrich from catalog
+    // If catalogId provided, enrich from catalog. If the supplied id doesn't
+    // exist (stale frontend cache, manual paste, etc.) drop it so Prisma
+    // doesn't blow up with a P2003 foreign-key violation.
     if (data.catalogId) {
       const catalog = await this.prisma.tireMasterCatalog.findUnique({ where: { id: data.catalogId } });
       if (catalog) {
         data.marca = data.marca || catalog.marca;
         data.modelo = data.modelo || catalog.modelo;
         data.dimension = data.dimension || catalog.dimension;
+      } else {
+        data.catalogId = undefined;
       }
     }
 
     const imageQualityScore = await this.scoreImageQuality(data.imageUrls ?? null);
 
-    return this.prisma.distributorListing.create({
+    const result = await this.prisma.distributorListing.create({
       data: {
         distributorId: data.distributorId,
         catalogId: data.catalogId ?? null,
