@@ -2079,7 +2079,38 @@ export class TireService {
         tire.inspecciones[tire.inspecciones.length - 1].kmActualVehiculo
         ?? vehicle.kilometrajeActual
         ?? 0;
-      kilometrosRecorridos = priorTireKm + Math.max(newVehicleKm - lastKnownVehicleKm, 0);
+      const rawDelta = Math.max(newVehicleKm - lastKnownVehicleKm, 0);
+
+      // ── GUARD: detect unreasonable km/mm ratio ──────────────────────────
+      // When tires are bulk-uploaded the vehicle km is often set to 0.
+      // The first real inspection then produces a huge delta that dwarfs
+      // the actual wear, destroying CPK and all derived metrics.
+      // If delta_km / mm_worn >= 10 000 we fall back to wear-based
+      // estimation — the same formula used by bulk upload.
+      const newMinDepth  = calcMinDepth(dto.profundidadInt, dto.profundidadCen, dto.profundidadExt);
+      const prevLastInsp = tire.inspecciones[tire.inspecciones.length - 1];
+      const prevMinDepth = prevLastInsp
+        ? calcMinDepth(prevLastInsp.profundidadInt, prevLastInsp.profundidadCen, prevLastInsp.profundidadExt)
+        : tire.profundidadInicial;
+      const mmWornSinceLastInsp = Math.max(prevMinDepth - newMinDepth, 0);
+
+      const KM_PER_MM_SANITY = 10_000; // above this ratio the delta is suspect
+      const deltaIsUnreasonable =
+        mmWornSinceLastInsp > 0 && rawDelta / mmWornSinceLastInsp >= KM_PER_MM_SANITY;
+
+      if (deltaIsUnreasonable) {
+        // Estimate km from wear (same as bulk upload fallback)
+        const usableDepth      = tire.profundidadInicial - C.LIMITE_LEGAL_MM;
+        const totalMmWorn      = Math.max(tire.profundidadInicial - newMinDepth, 0);
+        const expectedLifetime = C.STANDARD_TIRE_EXPECTED_KM; // 80 000
+        const estimatedTotalKm = usableDepth > 0
+          ? Math.round((expectedLifetime / usableDepth) * totalMmWorn)
+          : priorTireKm;
+        // Never regress — take the higher of estimate vs prior
+        kilometrosRecorridos = Math.max(estimatedTotalKm, priorTireKm);
+      } else {
+        kilometrosRecorridos = priorTireKm + rawDelta;
+      }
     } else {
       kilometrosRecorridos = priorTireKm;
     }
