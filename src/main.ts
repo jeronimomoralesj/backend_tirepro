@@ -83,7 +83,7 @@ async function bootstrap() {
       callback(new Error(`CORS: origin "${incomingOrigin}" not allowed`), false);
     },
     methods:              'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders:       'Content-Type,Authorization',
+    allowedHeaders:       'Content-Type,Authorization,x-admin-password',
     credentials:          true,
     optionsSuccessStatus: HttpStatus.NO_CONTENT,
   });
