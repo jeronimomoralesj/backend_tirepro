@@ -424,6 +424,64 @@ export class MarketplaceService {
     this.cache.invalidate('brands:');
   }
 
+  // -- Admin brand editor ----------------------------------------------------
+
+  private readonly adminBrandFields = [
+    'name', 'slug', 'logoUrl', 'country', 'headquarters', 'foundedYear',
+    'website', 'description', 'parentCompany', 'tier', 'sourceUrl',
+    'primaryColor', 'accentColor', 'heroImageUrl', 'tagline', 'published',
+  ];
+
+  private pickBrand(data: Record<string, any>) {
+    const out: Record<string, any> = {};
+    for (const k of this.adminBrandFields) {
+      if (k in data) {
+        const v = data[k];
+        out[k] = v === '' ? null : v;
+      }
+    }
+    if (out.foundedYear != null && typeof out.foundedYear === 'string') {
+      const n = parseInt(out.foundedYear, 10);
+      out.foundedYear = Number.isFinite(n) ? n : null;
+    }
+    return out;
+  }
+
+  async adminListBrands() {
+    return this.prisma.brandInfo.findMany({ orderBy: { name: 'asc' } });
+  }
+
+  async adminGetBrand(id: string) {
+    const brand = await this.prisma.brandInfo.findUnique({ where: { id } });
+    if (!brand) throw new NotFoundException('Brand not found');
+    return brand;
+  }
+
+  async adminCreateBrand(data: Record<string, any>) {
+    const payload = this.pickBrand(data);
+    if (!payload.name || !payload.slug) {
+      throw new BadRequestException('name and slug are required');
+    }
+    const created = await this.prisma.brandInfo.create({
+      data: { ...payload, source: payload.source ?? 'manual' },
+    });
+    this.invalidateBrandCaches();
+    return created;
+  }
+
+  async adminUpdateBrand(id: string, data: Record<string, any>) {
+    const payload = this.pickBrand(data);
+    const updated = await this.prisma.brandInfo.update({ where: { id }, data: payload });
+    this.invalidateBrandCaches();
+    return updated;
+  }
+
+  async adminDeleteBrand(id: string) {
+    await this.prisma.brandInfo.delete({ where: { id } });
+    this.invalidateBrandCaches();
+    return { ok: true };
+  }
+
   private async fuzzyMatchBrands(query: string): Promise<string[]> {
     const q = query.trim().toLowerCase();
     if (q.length < 3) return [];

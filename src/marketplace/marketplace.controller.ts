@@ -5,6 +5,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MarketplaceService } from './marketplace.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { AdminPasswordGuard } from '../auth/guards/admin-password.guard';
 import { S3Service } from '../companies/s3.service';
 import { PlateLookupService } from './plate-lookup.service';
 import { WompiService } from './wompi.service';
@@ -357,6 +358,40 @@ export class MarketplaceController {
   invalidateBrandCache() {
     this.svc.invalidateBrandCaches();
     return { ok: true };
+  }
+
+  // -- Admin brand editor ---------------------------------------------------
+
+  @Get('admin/brands')
+  @UseGuards(AdminPasswordGuard)
+  adminListBrands() {
+    return this.svc.adminListBrands();
+  }
+
+  @Get('admin/brands/:id')
+  @UseGuards(AdminPasswordGuard)
+  adminGetBrand(@Param('id') id: string) {
+    return this.svc.adminGetBrand(id);
+  }
+
+  @Post('admin/brands')
+  @UseGuards(AdminPasswordGuard)
+  adminCreateBrand(@Body() body: any) {
+    const { __adminPassword, ...data } = body ?? {};
+    return this.svc.adminCreateBrand(data);
+  }
+
+  @Patch('admin/brands/:id')
+  @UseGuards(AdminPasswordGuard)
+  adminUpdateBrand(@Param('id') id: string, @Body() body: any) {
+    const { __adminPassword, ...data } = body ?? {};
+    return this.svc.adminUpdateBrand(id, data);
+  }
+
+  @Delete('admin/brands/:id')
+  @UseGuards(AdminPasswordGuard)
+  adminDeleteBrand(@Param('id') id: string) {
+    return this.svc.adminDeleteBrand(id);
   }
 
   @Get('recommendations')

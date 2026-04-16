@@ -1411,6 +1411,14 @@ model BrandInfo {
   source          String?  // 'wikipedia', 'manual', 'scraped'
   sourceUrl       String?
   lastScrapedAt   DateTime?
+
+  // ─── Admin-editable customization ────────────────────────────────────────
+  // Overrides applied on the public brand page in the marketplace.
+  primaryColor    String?  // hex like "#E30613" — hero/accents tint
+  accentColor     String?  // hex — secondary color for badges/ctas
+  heroImageUrl    String?  // optional background banner
+  tagline         String?  // short marketing line under the brand name
+  published       Boolean  @default(true) // hide unfinished brand pages
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

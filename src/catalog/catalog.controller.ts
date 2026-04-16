@@ -1,6 +1,7 @@
-import { Controller, Get, Post, Query, Body } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Query, Body, Param, UseGuards } from '@nestjs/common';
 import { CatalogService } from './catalog.service';
 import { EjeType } from '@prisma/client';
+import { AdminPasswordGuard } from '../auth/guards/admin-password.guard';
 
 @Controller('catalog')
 export class CatalogController {
@@ -76,5 +77,52 @@ export class CatalogController {
     },
   ) {
     return this.catalogService.crowdsourceUpsert(body);
+  }
+
+  // ─── ADMIN ENDPOINTS (TireMasterCatalog CRUD) ────────────────────────────
+
+  /** Paginated list for admin grid — no precioCop filter, all SKUs visible */
+  @Get('admin/skus')
+  @UseGuards(AdminPasswordGuard)
+  adminList(
+    @Query('q') query?: string,
+    @Query('marca') marca?: string,
+    @Query('dimension') dimension?: string,
+    @Query('page') page = '1',
+    @Query('pageSize') pageSize = '50',
+  ) {
+    return this.catalogService.adminList({
+      query,
+      marca,
+      dimension,
+      page: Number(page),
+      pageSize: Number(pageSize),
+    });
+  }
+
+  @Get('admin/skus/:id')
+  @UseGuards(AdminPasswordGuard)
+  adminGet(@Param('id') id: string) {
+    return this.catalogService.adminGet(id);
+  }
+
+  @Post('admin/skus')
+  @UseGuards(AdminPasswordGuard)
+  adminCreate(@Body() body: any) {
+    const { __adminPassword, ...data } = body ?? {};
+    return this.catalogService.adminCreate(data);
+  }
+
+  @Put('admin/skus/:id')
+  @UseGuards(AdminPasswordGuard)
+  adminUpdate(@Param('id') id: string, @Body() body: any) {
+    const { __adminPassword, ...data } = body ?? {};
+    return this.catalogService.adminUpdate(id, data);
+  }
+
+  @Delete('admin/skus/:id')
+  @UseGuards(AdminPasswordGuard)
+  adminDelete(@Param('id') id: string) {
+    return this.catalogService.adminDelete(id);
   }
 }

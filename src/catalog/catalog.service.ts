@@ -422,6 +422,90 @@ export class CatalogService {
     return { action: 'created', catalog: created, stats };
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ADMIN CRUD
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private readonly adminEditableFields = [
+    'marca', 'modelo', 'dimension', 'skuRef',
+    'anchoMm', 'perfil', 'rin',
+    'posicion', 'ejeTirePro', 'terreno', 'pctPavimento', 'pctDestapado',
+    'rtdMm', 'indiceCarga', 'indiceVelocidad', 'psiRecomendado', 'pesoKg',
+    'kmEstimadosReales', 'kmEstimadosFabrica',
+    'reencauchable', 'vidasReencauche',
+    'precioCop', 'cpkEstimado',
+    'segmento', 'tipo', 'construccion',
+    'notasColombia', 'fuente', 'url',
+  ];
+
+  private pickEditable(data: Record<string, any>) {
+    const out: Record<string, any> = {};
+    for (const k of this.adminEditableFields) {
+      if (k in data) out[k] = data[k] === '' ? null : data[k];
+    }
+    return out;
+  }
+
+  async adminList(params: { query?: string; marca?: string; dimension?: string; page: number; pageSize: number }) {
+    const where: any = {};
+    if (params.marca) where.marca = { equals: params.marca, mode: 'insensitive' };
+    if (params.dimension) where.dimension = { contains: params.dimension, mode: 'insensitive' };
+    if (params.query) {
+      where.OR = [
+        { marca: { contains: params.query, mode: 'insensitive' } },
+        { modelo: { contains: params.query, mode: 'insensitive' } },
+        { dimension: { contains: params.query, mode: 'insensitive' } },
+        { skuRef: { contains: params.query, mode: 'insensitive' } },
+      ];
+    }
+    const page = Math.max(1, params.page);
+    const pageSize = Math.min(200, Math.max(1, params.pageSize));
+    const [total, items] = await Promise.all([
+      this.prisma.tireMasterCatalog.count({ where }),
+      this.prisma.tireMasterCatalog.findMany({
+        where,
+        orderBy: [{ marca: 'asc' }, { modelo: 'asc' }, { dimension: 'asc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+    ]);
+    return { total, page, pageSize, items };
+  }
+
+  async adminGet(id: string) {
+    const sku = await this.prisma.tireMasterCatalog.findUnique({ where: { id } });
+    if (!sku) throw new Error('SKU not found');
+    return sku;
+  }
+
+  async adminCreate(data: Record<string, any>) {
+    const payload = this.pickEditable(data);
+    if (!payload.marca || !payload.modelo || !payload.dimension || !payload.skuRef) {
+      throw new Error('marca, modelo, dimension and skuRef are required');
+    }
+    const created = await this.prisma.tireMasterCatalog.create({
+      data: { ...payload, fuente: payload.fuente ?? 'admin' },
+    });
+    await Promise.all([this.cache.del('catalog:brands'), this.cache.del('catalog:dimensions')]);
+    return created;
+  }
+
+  async adminUpdate(id: string, data: Record<string, any>) {
+    const payload = this.pickEditable(data);
+    const updated = await this.prisma.tireMasterCatalog.update({
+      where: { id },
+      data: payload,
+    });
+    await Promise.all([this.cache.del('catalog:brands'), this.cache.del('catalog:dimensions')]);
+    return updated;
+  }
+
+  async adminDelete(id: string) {
+    await this.prisma.tireMasterCatalog.delete({ where: { id } });
+    await Promise.all([this.cache.del('catalog:brands'), this.cache.del('catalog:dimensions')]);
+    return { ok: true };
+  }
+
   /**
    * Called after every tire creation + inspection to keep crowd stats fresh.
    * Lightweight — skips if updated within the last hour.
