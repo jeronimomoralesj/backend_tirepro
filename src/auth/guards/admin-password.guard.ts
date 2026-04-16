@@ -11,7 +11,7 @@ export class AdminPasswordGuard implements CanActivate {
     const bodyPwd = (req.body && req.body.__adminPassword) as string | undefined;
     const pwd = headerPwd ?? bodyPwd;
     if (!pwd) throw new UnauthorizedException('Admin password required');
-    const ok = await this.authService.verifyBlogPassword(pwd);
+    const ok = await this.authService.isAdminPasswordActive(pwd);
     if (!ok) throw new UnauthorizedException('Admin password invalid or expired');
     return true;
   }

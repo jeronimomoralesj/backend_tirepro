@@ -355,6 +355,25 @@ export class AuthService {
     }
   }
 
+  // Non-consuming variant used by AdminPasswordGuard. The admin login flow
+  // above burns the password (isUsed=true), so subsequent requests from the
+  // /blog/admin panels can't re-verify it. We accept any password that
+  // matches the active record regardless of isUsed, still bounded by
+  // expiresAt. No mutation — safe to call on every request.
+  async isAdminPasswordActive(password: string): Promise<boolean> {
+    try {
+      const record = await this.prisma.blogPassword.findFirst({
+        where: { expiresAt: { gt: new Date() } },
+        orderBy: { createdAt: 'desc' },
+      });
+      const hashToCompare = record?.password ?? DUMMY_HASH;
+      return await bcrypt.compare(password, hashToCompare);
+    } catch (err) {
+      this.logger.error('isAdminPasswordActive error: ' + err.message);
+      return false;
+    }
+  }
+
   // ───────────────────────────────────────────────────────────────────────────
   // PASSWORD RESET FLOW
   // ───────────────────────────────────────────────────────────────────────────
