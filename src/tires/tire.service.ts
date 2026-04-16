@@ -674,11 +674,16 @@ function buildVidaSnapshotPayload(params: {
   const presionMin  = presionData.length ? Math.min(...presionData) : null;
   const presionMax  = presionData.length ? Math.max(...presionData) : null;
 
+  // Dinero perdido = tread value that went to the trash.
+  //   = mm_remaining × (costo_vida / profundidad_inicial_vida)
+  //
+  // "costo_vida" is the purchase price for a new tire or the retread price
+  // for a reencauche vida. "profundidad_inicial_vida" is the usable tread
+  // at the start of this vida (first inspection, else the tire baseline).
   let desechoRemanente: number | null = null;
   const desechoMilimetros = desechoData?.milimetrosDesechados ?? null;
-  if (desechoMilimetros != null && lastInsp?.cpk && kmTotales > 0 && mmDesgastados > 0) {
-    const kmPerMm    = kmTotales / mmDesgastados;
-    desechoRemanente = parseFloat((lastInsp.cpk * kmPerMm * desechoMilimetros).toFixed(2));
+  if (desechoMilimetros != null && desechoMilimetros > 0 && costoInicial > 0 && profundidadInicial > 0) {
+    desechoRemanente = parseFloat(((costoInicial / profundidadInicial) * desechoMilimetros).toFixed(2));
   }
 
   return {
@@ -2540,7 +2545,10 @@ export class TireService {
       updateData.desechos = toJson({
         causales:             desechoData.causales,
         milimetrosDesechados: desechoData.milimetrosDesechados,
-        remanente:            snapshotPayload.desechoRemanente ?? 0,
+        // remanente = mm of tread still left when the tire was discarded.
+        // dineroPerdido = COP value of that wasted tread.
+        remanente:            desechoData.milimetrosDesechados ?? 0,
+        dineroPerdido:        snapshotPayload.desechoRemanente ?? 0,
         fecha:                now.toISOString(),
         imageUrls:            finalDesechoImageUrls,
       });
