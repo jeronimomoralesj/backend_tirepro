@@ -2472,6 +2472,17 @@ export class TireService {
 
     if (banda?.trim()) updateData.diseno = banda.trim();
 
+    // On retread the carcass keeps its casing but the new tread band has its
+    // own brand (e.g. Michelin carcass + Contitread band = Continental brand).
+    // We denormalize the new brand onto Tire.marca so fleet reports and the
+    // marketplace reflect the retread brand. Fallback: if no explicit marca
+    // was captured, use the banda name (customer-facing terminology
+    // sometimes treats band name and brand as synonymous).
+    if (normalizedValor.startsWith('reencauche')) {
+      const newMarca = bandaMarca?.trim() || banda?.trim();
+      if (newMarca) updateData.marca = newMarca;
+    }
+
     if (normalizedValor.startsWith('reencauche')) {
       const costoValue = typeof costo === 'number' && costo > 0
         ? costo
