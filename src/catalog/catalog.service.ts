@@ -434,7 +434,7 @@ export class CatalogService {
     'kmEstimadosReales', 'kmEstimadosFabrica',
     'reencauchable', 'vidasReencauche',
     'precioCop', 'cpkEstimado',
-    'segmento', 'tipo', 'construccion',
+    'categoria', 'segmento', 'tipo', 'construccion',
     'notasColombia', 'fuente', 'url',
   ];
 
@@ -446,10 +446,11 @@ export class CatalogService {
     return out;
   }
 
-  async adminList(params: { query?: string; marca?: string; dimension?: string; page: number; pageSize: number }) {
+  async adminList(params: { query?: string; marca?: string; dimension?: string; categoria?: string; page: number; pageSize: number }) {
     const where: any = {};
     if (params.marca) where.marca = { equals: params.marca, mode: 'insensitive' };
     if (params.dimension) where.dimension = { contains: params.dimension, mode: 'insensitive' };
+    if (params.categoria) where.categoria = { equals: params.categoria, mode: 'insensitive' };
     if (params.query) {
       where.OR = [
         { marca: { contains: params.query, mode: 'insensitive' } },

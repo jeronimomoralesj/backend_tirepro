@@ -1134,6 +1134,7 @@ model TireMasterCatalog {
   cpkEstimado         Float?  // computed: precioCop / kmEstimadosReales
 
   // Classification
+  categoria           String? // "nueva" | "reencauche" — distinguishes new tires from retread bands
   segmento            String? // "Tractomula | Bus_Interurbano"
   tipo                String? // Radial, Convencional
   construccion        String? // Acero, Nylon, etc.
@@ -1175,6 +1176,7 @@ model TireMasterCatalog {
   @@index([dimension, ejeTirePro])
   @@index([cpkEstimado])
   @@index([fuente])
+  @@index([categoria])
   @@map("tire_master_catalog")
 
   listings DistributorListing[]

@@ -88,6 +88,7 @@ export class CatalogController {
     @Query('q') query?: string,
     @Query('marca') marca?: string,
     @Query('dimension') dimension?: string,
+    @Query('categoria') categoria?: string,
     @Query('page') page = '1',
     @Query('pageSize') pageSize = '50',
   ) {
@@ -95,6 +96,7 @@ export class CatalogController {
       query,
       marca,
       dimension,
+      categoria,
       page: Number(page),
       pageSize: Number(pageSize),
     });

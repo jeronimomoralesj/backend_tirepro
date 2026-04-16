@@ -1903,10 +1903,11 @@ export class TireService {
     const tire = await this.prisma.tire.findUnique({
       where: { id },
       include: {
-        inspecciones: { orderBy: { fecha: 'desc' } },
-        costos:       { orderBy: { fecha: 'asc' } },
-        eventos:      { orderBy: { fecha: 'desc' } },
-        vehicle:      { select: { placa: true, tipovhc: true, tipoOperacion: true } },
+        inspecciones:  { orderBy: { fecha: 'desc' } },
+        costos:        { orderBy: { fecha: 'asc' } },
+        eventos:       { orderBy: { fecha: 'desc' } },
+        vehicle:       { select: { placa: true, tipovhc: true, tipoOperacion: true } },
+        vidaSnapshots: { orderBy: { fechaInicio: 'asc' } },
       },
     });
     if (!tire) throw new NotFoundException('Tire not found');
@@ -2019,9 +2020,10 @@ export class TireService {
     const tires = await this.prisma.tire.findMany({
       where:   { vehicleId },
       include: {
-        inspecciones: { orderBy: { fecha: 'desc' } },
-        costos:       { orderBy: { fecha: 'asc'  } },
-        eventos:      { orderBy: { fecha: 'asc'  } },
+        inspecciones:  { orderBy: { fecha: 'desc' } },
+        costos:        { orderBy: { fecha: 'asc'  } },
+        eventos:       { orderBy: { fecha: 'asc'  } },
+        vidaSnapshots: { orderBy: { fechaInicio: 'asc' } },
       },
     });
 
