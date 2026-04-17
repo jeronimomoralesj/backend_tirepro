@@ -103,6 +103,25 @@ export class TireController {
     return this.tireService.analyzeTires(placa);
   }
 
+  // Inspector KPI — aggregated counts per inspector across a date range.
+  // Defaults: last 90 days. Use ?from=YYYY-MM-DD&to=YYYY-MM-DD to scope.
+  // MUST stay above @Get(':id') so the route matches before the wildcard.
+  @Get('inspections/stats-by-inspector')
+  inspectorStats(
+    @Query('companyId') companyId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('groupBy') groupBy?: 'total' | 'month',
+  ) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    return this.tireService.getInspectorStats({
+      companyId,
+      from: from || undefined,
+      to:   to   || undefined,
+      groupBy: groupBy === 'month' ? 'month' : 'total',
+    });
+  }
+
   @Get(':id')
   getTireById(@Param('id') id: string) {
     return this.tireService.findTireById(id);

@@ -2050,6 +2050,112 @@ export class TireService {
   }
 
   // ===========================================================================
+  // INSPECTOR KPIs — used by the distributor dashboard to track who
+  // inspected what and how often. Aggregates by inspeccionadoPorId when
+  // present, otherwise by normalised name (lowercased, trimmed) so a
+  // technician who inspected a few without being logged in still gets
+  // credited. Returns per-inspector totals and (optionally) per-month
+  // breakdowns.
+  // ===========================================================================
+  async getInspectorStats(params: {
+    companyId: string;
+    from?: string;
+    to?: string;
+    groupBy: 'total' | 'month';
+  }) {
+    const rangeFrom = params.from ? new Date(params.from) : new Date(Date.now() - 90 * 86_400_000);
+    const rangeTo   = params.to   ? new Date(params.to)   : new Date();
+    // Include the whole "to" day so the caller can pass YYYY-MM-DD.
+    rangeTo.setHours(23, 59, 59, 999);
+
+    const rows = await this.prisma.inspeccion.findMany({
+      where: {
+        fecha: { gte: rangeFrom, lte: rangeTo },
+        tire:  { companyId: params.companyId },
+      },
+      select: {
+        fecha:                  true,
+        inspeccionadoPorId:     true,
+        inspeccionadoPorNombre: true,
+        tire: { select: { vehicleId: true, placa: true } },
+      },
+      orderBy: { fecha: 'desc' },
+    });
+
+    // Build per-inspector aggregate. Key preference: userId > normalised
+    // name > "(Sin identificar)" for rows that never captured either.
+    type Bucket = {
+      key: string;
+      inspeccionadoPorId: string | null;
+      nombre: string;
+      count: number;
+      tires: Set<string>;
+      vehicles: Set<string>;
+      firstInspection: Date | null;
+      lastInspection: Date | null;
+      byMonth: Map<string, number>;
+    };
+
+    const buckets = new Map<string, Bucket>();
+    for (const r of rows) {
+      const id    = r.inspeccionadoPorId ?? null;
+      const name  = (r.inspeccionadoPorNombre ?? '').trim();
+      const key   = id ?? (name ? `name:${name.toLowerCase()}` : 'unknown');
+      const label = id
+        ? (name || 'Usuario')
+        : (name || '(Sin identificar)');
+
+      let b = buckets.get(key);
+      if (!b) {
+        b = {
+          key,
+          inspeccionadoPorId: id,
+          nombre: label,
+          count: 0,
+          tires: new Set(),
+          vehicles: new Set(),
+          firstInspection: null,
+          lastInspection: null,
+          byMonth: new Map(),
+        };
+        buckets.set(key, b);
+      }
+      b.count += 1;
+      b.tires.add(r.tire.placa);
+      if (r.tire.vehicleId) b.vehicles.add(r.tire.vehicleId);
+      const f = new Date(r.fecha);
+      if (!b.firstInspection || f < b.firstInspection) b.firstInspection = f;
+      if (!b.lastInspection  || f > b.lastInspection)  b.lastInspection  = f;
+      const monthKey = f.toISOString().slice(0, 7); // YYYY-MM
+      b.byMonth.set(monthKey, (b.byMonth.get(monthKey) ?? 0) + 1);
+    }
+
+    const inspectors = Array.from(buckets.values())
+      .map((b) => ({
+        inspeccionadoPorId: b.inspeccionadoPorId,
+        nombre:             b.nombre,
+        totalInspecciones:  b.count,
+        llantasUnicas:      b.tires.size,
+        vehiculosUnicos:    b.vehicles.size,
+        firstInspection:    b.firstInspection,
+        lastInspection:     b.lastInspection,
+        porMes: params.groupBy === 'month'
+          ? Array.from(b.byMonth.entries())
+              .sort(([a], [c]) => (a < c ? -1 : 1))
+              .map(([mes, count]) => ({ mes, count }))
+          : undefined,
+      }))
+      .sort((a, b) => b.totalInspecciones - a.totalInspecciones);
+
+    return {
+      from:  rangeFrom.toISOString(),
+      to:    rangeTo.toISOString(),
+      total: rows.length,
+      inspectors,
+    };
+  }
+
+  // ===========================================================================
   // UPDATE INSPECTION  (bug fixes noted inline)
   // ===========================================================================
 
