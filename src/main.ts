@@ -24,6 +24,17 @@ async function bootstrap() {
     crossOriginEmbedderPolicy: false,
   }));
 
+  // ── gzip compression ───────────────────────────────────────────────────
+  // For fleets with 5k+ tires the JSON payload of /api/tires dominates page
+  // load time. gzip typically shrinks these responses 10-20x.
+  try {
+    const compression = require('compression');
+    app.use(compression({ threshold: 1024 }));
+    logger.log('Response compression enabled');
+  } catch {
+    logger.warn('compression module not installed — run `npm i compression` to enable gzip');
+  }
+
   // ── Bot-scan short-circuit ───────────────────────────────────────────────
   // Drop the connection immediately for the most common WordPress / config
   // / shell-upload probes so they never reach the Nest router and never

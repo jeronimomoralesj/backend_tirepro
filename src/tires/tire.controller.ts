@@ -49,9 +49,14 @@ export class TireController {
   // ── Read ──────────────────────────────────────────────────────────────────
 
   @Get()
-  getTires(@Query('companyId') companyId: string) {
+  getTires(
+    @Query('companyId') companyId: string,
+    @Query('slim')      slim?: string,
+  ) {
     if (!companyId) throw new BadRequestException('companyId is required');
-    return this.tireService.findTiresByCompany(companyId);
+    return this.tireService.findTiresByCompany(companyId, {
+      slim: slim === 'true' || slim === '1',
+    });
   }
 
   @Get('all')

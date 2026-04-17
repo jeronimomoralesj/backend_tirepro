@@ -984,7 +984,8 @@ export class TireService {
   private static readonly TTL_BENCHMARK = 24 * 60 * 60 * 1000;
 
   private async invalidateCompanyCache(companyId: string) {
-    await this.cache.del(this.tireKey(companyId));
+    const base = this.tireKey(companyId);
+    await Promise.all([this.cache.del(base), this.cache.del(`${base}:slim`)]);
   }
 
   private async invalidateVehicleCache(vehicleId: string) {
@@ -2252,21 +2253,62 @@ export class TireService {
     return tire;
   }
 
-  async findTiresByCompany(companyId: string) {
-    const cached = await this.cache.get(this.tireKey(companyId));
+  async findTiresByCompany(companyId: string, opts: { slim?: boolean } = {}) {
+    const cacheKey = opts.slim ? `${this.tireKey(companyId)}:slim` : this.tireKey(companyId);
+    const cached = await this.cache.get(cacheKey);
     if (cached) return cached;
 
-    const tires = await this.prisma.tire.findMany({
-      where: { companyId },
-      include: {
-        inspecciones: { orderBy: { fecha: 'desc' } },
-        costos:       true,
-        eventos:      true,
-        vehicle:      { select: { placa: true, tipovhc: true, tipoOperacion: true } },
-      },
-    });
+    // Slim mode projects only the fields the Resumen / DetallesLlantas pages
+    // actually read. For a 5k-tire company this cuts the payload from ~50 MB
+    // (full history with every depth, pressure, image URL, etc.) down to a
+    // few MB.  The frontend shape (costos, inspecciones, eventos arrays with
+    // the usual names) is preserved so no component needs to change.
+    const tires = opts.slim
+      ? await this.prisma.tire.findMany({
+          where: { companyId },
+          select: {
+            id: true, placa: true, marca: true, diseno: true, dimension: true, eje: true,
+            posicion: true, vehicleId: true, vidaActual: true, profundidadInicial: true,
+            kilometrosRecorridos: true, currentCpk: true, lifetimeCpk: true, currentCpt: true,
+            currentProfundidad: true, currentPresionPsi: true, projectedProfundidad: true,
+            projectedAlertLevel: true, projectedHealthScore: true, projectedDaysToLimit: true,
+            projectedKmRemaining: true, projectedDateEOL: true, healthScore: true,
+            alertLevel: true, lastInspeccionDate: true, fechaInstalacion: true,
+            createdAt: true, updatedAt: true,
+            costos: {
+              orderBy: { fecha: 'desc' },
+              select: { valor: true, fecha: true, concepto: true },
+            },
+            inspecciones: {
+              orderBy: { fecha: 'desc' },
+              take: 12, // last year-ish of inspections is plenty for charts
+              select: {
+                fecha: true, cpk: true, cpkProyectado: true, kmProyectado: true,
+                kilometrosEstimados: true, profundidadInt: true, profundidadCen: true,
+                profundidadExt: true, vidaAlMomento: true,
+              },
+            },
+            eventos: {
+              where: { tipo: 'montaje' }, // only the vida-history ones the UI cares about
+              select: { tipo: true, fecha: true, notas: true },
+            },
+            vehicle: { select: { placa: true, tipovhc: true, tipoOperacion: true } },
+          },
+        })
+      : await this.prisma.tire.findMany({
+          where: { companyId },
+          include: {
+            inspecciones: { orderBy: { fecha: 'desc' } },
+            costos:       true,
+            eventos:      true,
+            vehicle:      { select: { placa: true, tipovhc: true, tipoOperacion: true } },
+          },
+        });
 
-    await this.cache.set(this.tireKey(companyId), tires, TireService.TTL_COMPANY);
+    // Slim cache lives shorter — a user typically reloads the page within
+    // minutes of an edit, and the slim projection is cheap to rebuild.
+    const ttl = opts.slim ? 10 * 60 * 1000 : TireService.TTL_COMPANY;
+    await this.cache.set(cacheKey, tires, ttl);
     return tires;
   }
 
