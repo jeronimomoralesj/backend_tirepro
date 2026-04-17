@@ -54,7 +54,7 @@ export class EditInspectionDto {
   // absent from this list is deleted from S3.
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(2, { message: 'Maximum 2 photos allowed' })
+  @ArrayMaxSize(3, { message: 'Maximum 3 photos allowed' })
   @IsString({ each: true })
   imageUrls?: string[];
 }

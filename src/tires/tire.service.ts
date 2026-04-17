@@ -2533,7 +2533,7 @@ export class TireService {
     // URL (preserved) or a data:image/... payload (uploaded to S3).
     const rawImages: string[] = [];
     if (Array.isArray(dto.imageUrls) && dto.imageUrls.length > 0) {
-      rawImages.push(...dto.imageUrls.slice(0, 2));
+      rawImages.push(...dto.imageUrls.slice(0, 3));
     } else if (dto.imageUrl) {
       rawImages.push(dto.imageUrl);
     }
@@ -3153,7 +3153,7 @@ export class TireService {
     // inspection but missing from the new list is deleted from S3 so we
     // don't leak storage.
     if (updates.imageUrls !== undefined) {
-      const slice = updates.imageUrls.slice(0, 2);
+      const slice = updates.imageUrls.slice(0, 3);
       const newUrls = await Promise.all(
         slice.map(async (img, idx) => {
           if (img?.startsWith('data:')) {
