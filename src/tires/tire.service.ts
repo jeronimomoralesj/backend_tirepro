@@ -358,6 +358,52 @@ function calcMinDepth(i: number, c: number, e: number): number {
   return Math.min(i, c, e);
 }
 
+/**
+ * Estimate how many km the tire accumulated since its last inspection
+ * when the user didn't provide a reliable odometer delta. Uses wear
+ * (mm worn) and calendar time (days elapsed) — averages both estimates
+ * when available so outliers in either signal get dampened.
+ *
+ * Returns 0 when neither signal is strong enough.
+ */
+function estimateKmDelta(params: {
+  mmWorn: number;
+  daysElapsed: number;
+  usableDepth: number;
+  expectedLifetimeKm: number;
+  // Optional crowd-derived wear rate (mm per 1000 km) — when present it's
+  // the most accurate source; otherwise we extrapolate from the tire's
+  // expected lifetime vs its usable depth.
+  catalogWearMmPer1000Km?: number | null;
+  // Optional per-day km for this vehicle derived from its own history.
+  // Falls back to a conservative fleet average when absent.
+  vehicleKmPerDay?: number | null;
+}): number {
+  const { mmWorn, daysElapsed, usableDepth, expectedLifetimeKm, catalogWearMmPer1000Km, vehicleKmPerDay } = params;
+
+  let wearEst = 0;
+  if (mmWorn > 0) {
+    if (catalogWearMmPer1000Km && catalogWearMmPer1000Km > 0) {
+      wearEst = (mmWorn / catalogWearMmPer1000Km) * 1000;
+    } else if (expectedLifetimeKm > 0 && usableDepth > 0) {
+      wearEst = (expectedLifetimeKm / usableDepth) * mmWorn;
+    }
+  }
+
+  let daysEst = 0;
+  if (daysElapsed > 0) {
+    const kmPerDay = vehicleKmPerDay && vehicleKmPerDay > 0
+      ? vehicleKmPerDay
+      : C.KM_POR_MES / 30; // conservative fallback
+    daysEst = daysElapsed * kmPerDay;
+  }
+
+  if (wearEst > 0 && daysEst > 0) return Math.round((wearEst + daysEst) / 2);
+  if (wearEst > 0) return Math.round(wearEst);
+  if (daysEst > 0) return Math.round(daysEst);
+  return 0;
+}
+
 function toDateOnly(iso: string): string {
   return new Date(iso).toISOString().slice(0, 10);
 }
@@ -2183,6 +2229,36 @@ export class TireService {
     let kilometrosRecorridos: number;
     const kmDelta = dto.kmDelta ?? 0;
 
+    // ── Precompute signals used by both the "unreasonable delta" guard
+    // and the new "km missing / no growth" fallback. ─────────────────────
+    const newMinDepth  = calcMinDepth(dto.profundidadInt, dto.profundidadCen, dto.profundidadExt);
+    const prevLastInsp = tire.inspecciones.length > 0
+      ? tire.inspecciones[tire.inspecciones.length - 1]
+      : null;
+    const prevMinDepth = prevLastInsp
+      ? calcMinDepth(prevLastInsp.profundidadInt, prevLastInsp.profundidadCen, prevLastInsp.profundidadExt)
+      : tire.profundidadInicial;
+    const mmWornSinceLast = prevLastInsp
+      ? Math.max(prevMinDepth - newMinDepth, 0)
+      : Math.max(tire.profundidadInicial - newMinDepth, 0);
+    const daysSinceLastInsp = prevLastInsp
+      ? Math.max(
+          Math.floor(
+            ((dto.fecha ? new Date(dto.fecha).getTime() : Date.now()) -
+              new Date(prevLastInsp.fecha).getTime()) / C.MS_POR_DIA,
+          ),
+          0,
+        )
+      : Math.max(
+          Math.floor(
+            ((dto.fecha ? new Date(dto.fecha).getTime() : Date.now()) -
+              new Date(tire.fechaInstalacion ?? tire.createdAt).getTime()) / C.MS_POR_DIA,
+          ),
+          0,
+        );
+    const usableDepthForEst = Math.max(tire.profundidadInicial - C.LIMITE_LEGAL_MM, 1);
+    const expectedLifetimeKm = C.STANDARD_TIRE_EXPECTED_KM; // 80 000
+
     if (dto.forceKm !== undefined && dto.forceKm >= 0) {
       kilometrosRecorridos = dto.forceKm;
     } else if (kmDelta > 0) {
@@ -2194,38 +2270,43 @@ export class TireService {
         ?? 0;
       const rawDelta = Math.max(newVehicleKm - lastKnownVehicleKm, 0);
 
-      // ── GUARD: detect unreasonable km/mm ratio ──────────────────────────
-      // When tires are bulk-uploaded the vehicle km is often set to 0.
-      // The first real inspection then produces a huge delta that dwarfs
-      // the actual wear, destroying CPK and all derived metrics.
-      // If delta_km / mm_worn >= 10 000 we fall back to wear-based
-      // estimation — the same formula used by bulk upload.
-      const newMinDepth  = calcMinDepth(dto.profundidadInt, dto.profundidadCen, dto.profundidadExt);
-      const prevLastInsp = tire.inspecciones[tire.inspecciones.length - 1];
-      const prevMinDepth = prevLastInsp
-        ? calcMinDepth(prevLastInsp.profundidadInt, prevLastInsp.profundidadCen, prevLastInsp.profundidadExt)
-        : tire.profundidadInicial;
-      const mmWornSinceLastInsp = Math.max(prevMinDepth - newMinDepth, 0);
-
       const KM_PER_MM_SANITY = 10_000; // above this ratio the delta is suspect
       const deltaIsUnreasonable =
-        mmWornSinceLastInsp > 0 && rawDelta / mmWornSinceLastInsp >= KM_PER_MM_SANITY;
+        mmWornSinceLast > 0 && rawDelta / mmWornSinceLast >= KM_PER_MM_SANITY;
 
-      if (deltaIsUnreasonable) {
-        // Estimate km from wear (same as bulk upload fallback)
-        const usableDepth      = tire.profundidadInicial - C.LIMITE_LEGAL_MM;
-        const totalMmWorn      = Math.max(tire.profundidadInicial - newMinDepth, 0);
-        const expectedLifetime = C.STANDARD_TIRE_EXPECTED_KM; // 80 000
-        const estimatedTotalKm = usableDepth > 0
-          ? Math.round((expectedLifetime / usableDepth) * totalMmWorn)
+      if (rawDelta <= 0) {
+        // User entered the same vehicle odometer as last time (or lower).
+        // Estimate movement from wear + days — averaging when both exist.
+        const estimated = estimateKmDelta({
+          mmWorn: mmWornSinceLast,
+          daysElapsed: daysSinceLastInsp,
+          usableDepth: usableDepthForEst,
+          expectedLifetimeKm,
+        });
+        kilometrosRecorridos = priorTireKm + estimated;
+      } else if (deltaIsUnreasonable) {
+        // Known bulk-upload issue: vehicle km starts at 0 so the first
+        // real delta is enormous. Fall back to wear-based extrapolation
+        // but never regress the tire odometer.
+        const totalMmWorn = Math.max(tire.profundidadInicial - newMinDepth, 0);
+        const estimatedTotalKm = usableDepthForEst > 0
+          ? Math.round((expectedLifetimeKm / usableDepthForEst) * totalMmWorn)
           : priorTireKm;
-        // Never regress — take the higher of estimate vs prior
         kilometrosRecorridos = Math.max(estimatedTotalKm, priorTireKm);
       } else {
         kilometrosRecorridos = priorTireKm + rawDelta;
       }
     } else {
-      kilometrosRecorridos = priorTireKm;
+      // No odometer provided AND no explicit delta. Estimate using the
+      // same wear + days signal so the tire's km keeps moving forward
+      // inspection to inspection — otherwise CPK is stuck.
+      const estimated = estimateKmDelta({
+        mmWorn: mmWornSinceLast,
+        daysElapsed: daysSinceLastInsp,
+        usableDepth: usableDepthForEst,
+        expectedLifetimeKm,
+      });
+      kilometrosRecorridos = priorTireKm + estimated;
     }
 
     const now              = dto.fecha ? new Date(dto.fecha) : new Date();
@@ -2289,14 +2370,30 @@ export class TireService {
     const inspeccionadoPorId:     string | null = dto.inspeccionadoPorId     ?? null;
     const inspeccionadoPorNombre: string | null = dto.inspeccionadoPorNombre ?? null;
 
-    let finalImageUrl = dto.imageUrl ?? null;
-    if (dto.imageUrl?.startsWith('data:')) {
-      const [header, b64] = dto.imageUrl.split(',');
-      const mime = header.match(/data:(image\/\w+);/)?.[1] ?? 'image/jpeg';
-      finalImageUrl = await this.s3.uploadInspectionImage(
-        Buffer.from(b64, 'base64'), tireId, mime,
-      );
+    // Handle up to 2 photos per inspection. dto.imageUrls is the new
+    // canonical path; dto.imageUrl is kept for older clients still
+    // posting a single photo. Each entry may be either an existing S3
+    // URL (preserved) or a data:image/... payload (uploaded to S3).
+    const rawImages: string[] = [];
+    if (Array.isArray(dto.imageUrls) && dto.imageUrls.length > 0) {
+      rawImages.push(...dto.imageUrls.slice(0, 2));
+    } else if (dto.imageUrl) {
+      rawImages.push(dto.imageUrl);
     }
+
+    const finalImageUrls = await Promise.all(
+      rawImages.map(async (img, idx) => {
+        if (img?.startsWith('data:')) {
+          const [header, b64] = img.split(',');
+          const mime = header.match(/data:(image\/\w+);/)?.[1] ?? 'image/jpeg';
+          return this.s3.uploadInspectionImage(
+            Buffer.from(b64, 'base64'), tireId, mime, idx,
+          );
+        }
+        return img;
+      }),
+    );
+    const finalImageUrl = finalImageUrls[0] ?? null;
 
     const cvProfundidadInt: number | null = dto.cvProfundidadInt ?? null;
     const cvProfundidadCen: number | null = dto.cvProfundidadCen ?? null;
@@ -2323,6 +2420,7 @@ export class TireService {
         kmEfectivos:           effectiveKm,
         kmProyectado:          metrics.projectedKm,
         imageUrl:              finalImageUrl,
+        imageUrls:             finalImageUrls,
         presionPsi,
         presionRecomendadaPsi: presionRecomendada,
         presionDelta,
@@ -2790,7 +2888,10 @@ export class TireService {
       profundidadCen?: number;
       profundidadExt?: number;
       inspeccionadoPorNombre?: string;
+      inspeccionadoPorId?: string;
       kilometrosEstimados?: number;
+      presionPsi?: number;
+      imageUrls?: string[];
       fechaInstalacion?: string;
     },
   ) {
@@ -2871,9 +2972,42 @@ export class TireService {
     if (updates.profundidadCen !== undefined) data.profundidadCen = updates.profundidadCen;
     if (updates.profundidadExt !== undefined) data.profundidadExt = updates.profundidadExt;
     if (updates.inspeccionadoPorNombre !== undefined) data.inspeccionadoPorNombre = updates.inspeccionadoPorNombre;
+    if (updates.inspeccionadoPorId !== undefined) data.inspeccionadoPorId = updates.inspeccionadoPorId;
+    if (updates.presionPsi !== undefined) {
+      data.presionPsi = updates.presionPsi;
+      if (insp.presionRecomendadaPsi != null) {
+        data.presionDelta = updates.presionPsi - insp.presionRecomendadaPsi;
+      }
+    }
     if (updates.kilometrosEstimados !== undefined) {
       data.kilometrosEstimados = updates.kilometrosEstimados;
       data.kmEfectivos = updates.kilometrosEstimados;
+    }
+
+    // Replace the photo set. Accepts existing S3 URLs (preserved) and
+    // data:image/... payloads (uploaded here). Any URL present on the old
+    // inspection but missing from the new list is deleted from S3 so we
+    // don't leak storage.
+    if (updates.imageUrls !== undefined) {
+      const slice = updates.imageUrls.slice(0, 2);
+      const newUrls = await Promise.all(
+        slice.map(async (img, idx) => {
+          if (img?.startsWith('data:')) {
+            const [header, b64] = img.split(',');
+            const mime = header.match(/data:(image\/\w+);/)?.[1] ?? 'image/jpeg';
+            return this.s3.uploadInspectionImage(
+              Buffer.from(b64, 'base64'), tireId, mime, idx,
+            );
+          }
+          return img;
+        }),
+      );
+      const oldUrls = insp.imageUrls?.length ? insp.imageUrls : (insp.imageUrl ? [insp.imageUrl] : []);
+      const keepSet = new Set(newUrls);
+      const orphans = oldUrls.filter((u) => u && !keepSet.has(u));
+      await Promise.allSettled(orphans.map((u) => this.s3.deleteByUrl(u)));
+      data.imageUrls = newUrls;
+      data.imageUrl  = newUrls[0] ?? null;
     }
 
     // Recalculate CPK if depths OR km changed

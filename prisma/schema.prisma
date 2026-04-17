@@ -492,8 +492,12 @@ model Inspeccion {
   kmProyectado        Float?   // projected km to legal limit
 
   // ── Image and provenance ──────────────────────────────────────────────────
-  imageUrl String?
-  source   InspeccionSource @default(manual)
+  // imageUrl is kept for legacy reads only. New writes populate imageUrls
+  // (up to 2 photos per tire). UI reads imageUrls ?? [imageUrl] for older
+  // rows that never got migrated.
+  imageUrl  String?
+  imageUrls String[] @default([])
+  source    InspeccionSource @default(manual)
 
   // ── Computer vision model output fields ───────────────────────────────────
   // Stored alongside the human measurement so model accuracy is trackable

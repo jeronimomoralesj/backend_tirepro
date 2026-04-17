@@ -4,6 +4,8 @@ import {
   IsString,
   IsOptional,
   IsEnum,
+  IsArray,
+  ArrayMaxSize,
   Min,
   Max,
 } from 'class-validator';
@@ -55,11 +57,21 @@ export class UpdateInspectionDto {
   @Min(0)
   kmDelta?: number;
 
-  // ── Image ─────────────────────────────────────────────────────────────────
+  // ── Image(s) ──────────────────────────────────────────────────────────────
+  // imageUrl is the legacy single-photo path (kept for older clients).
+  // imageUrls carries up to 2 photos per tire. Each entry may be either an
+  // existing S3 URL (preserved on edit) or a data:image/... base64 URL
+  // (uploaded to S3 by the service on save).
 
   @IsOptional()
   @IsString()
   imageUrl?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(2, { message: 'Maximum 2 photos allowed' })
+  @IsString({ each: true })
+  imageUrls?: string[];
 
   // ── Pressure ──────────────────────────────────────────────────────────────
 

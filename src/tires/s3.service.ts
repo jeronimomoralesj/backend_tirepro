@@ -1,6 +1,6 @@
 import { Injectable, InternalServerErrorException, BadRequestException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 
 @Injectable()
 export class S3Service {
@@ -39,11 +39,31 @@ export class S3Service {
     buffer: Buffer,
     tireId: string,
     contentType: string,
+    index?: number,
   ): Promise<string> {
     this.validateImage(buffer);
     const ext = contentType.split('/')[1] ?? 'jpg';
-    const key = `tire-inspections/${tireId}-${Date.now()}.${ext}`;
+    const suffix = typeof index === 'number' ? `-${index}` : '';
+    const key = `tire-inspections/${tireId}${suffix}-${Date.now()}.${ext}`;
     return this.upload(buffer, key, contentType);
+  }
+
+  /**
+   * Delete a single S3 object given its public URL. Used when an
+   * inspection is edited and its old photos are replaced — we want the
+   * orphaned objects gone so we don't leak storage cost.
+   */
+  async deleteByUrl(url: string): Promise<void> {
+    if (!url) return;
+    const expectedPrefix = `https://${this.bucket}.s3.${this.region}.amazonaws.com/`;
+    if (!url.startsWith(expectedPrefix)) return; // not one of ours — skip
+    const key = url.slice(expectedPrefix.length);
+    if (!key) return;
+    try {
+      await this.s3.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+    } catch (err) {
+      this.logger.warn(`S3 delete failed for key ${key}: ${(err as Error).message}`);
+    }
   }
 
   async uploadBulkFile(buffer: Buffer, companyId: string): Promise<string> {
