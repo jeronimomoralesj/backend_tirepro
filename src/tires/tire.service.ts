@@ -104,16 +104,39 @@ function normalizeMatchKey(s: string): string {
 }
 
 /**
+ * Multiset character-overlap ratio: |intersection| / max(|a|, |b|).
+ * Used to distinguish typos (high overlap) from coincidentally
+ * similar-length names (low overlap). "contiennetal" vs "continental"
+ * shares 11/12 chars ≈ 0.92; "retectire" vs "nexentire" shares 6/9 ≈ 0.67.
+ */
+function charOverlapRatio(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const count = (s: string) => {
+    const m: Record<string, number> = {};
+    for (const ch of s) m[ch] = (m[ch] ?? 0) + 1;
+    return m;
+  };
+  const ca = count(a), cb = count(b);
+  let inter = 0;
+  for (const k in ca) if (cb[k]) inter += Math.min(ca[k], cb[k]);
+  return inter / Math.max(a.length, b.length);
+}
+
+/**
  * Find the best match from a list of known values. Returns the match if
  * the edit distance is within the tolerance threshold, otherwise null.
  *
  * Matching tiers (first hit wins):
  *  1. Case-insensitive exact match
  *  2. Normalized-key exact match (ignores spaces / +, -, /, etc.)
- *  3. Levenshtein on normalized keys, with threshold scaled by length:
- *       len ≤ 4  → max 1 edit
- *       len ≤ 8  → max 2 edits
- *       len > 8  → max 3 edits
+ *  3. Levenshtein on normalized keys, with layered guards:
+ *       - first character must match (brand typos almost never flip the
+ *         leading letter; this alone kills most false positives)
+ *       - length delta ≤ 2
+ *       - absolute distance ≤ 2 (distance = 3 allowed only when the
+ *         multiset char-overlap is ≥ 0.85, covering 3-letter shuffles
+ *         like "Contiennetal" → "Continental" without catching
+ *         "retectire" → "nexentire")
  */
 function fuzzyMatch(input: string, known: string[]): string | null {
   if (!input) return null;
@@ -125,23 +148,37 @@ function fuzzyMatch(input: string, known: string[]): string | null {
 
   // 2. Punctuation-insensitive match — handles "HDR2 SA" ↔ "HDR2+SA"
   const normInput = normalizeMatchKey(input);
-  if (normInput) {
-    const punctMatch = known.find(k => normalizeMatchKey(k) === normInput);
-    if (punctMatch) return punctMatch;
-  }
-
-  // 3. Levenshtein on normalized keys — catches typos even with separators
   if (!normInput) return null;
-  const maxDist = lo.length <= 4 ? 1 : lo.length <= 8 ? 2 : 3;
+  const punctMatch = known.find(k => normalizeMatchKey(k) === normInput);
+  if (punctMatch) return punctMatch;
+
+  // 3. Levenshtein on normalized keys — only for strings long enough to
+  // have real typos. Short product codes like "HDR2" vs "HDR3" or
+  // "KMAX" vs "KMAXD" are distinct SKUs, not typos, so we skip fuzzy
+  // matching when the normalized input is ≤ 5 chars.
+  if (normInput.length <= 5) return null;
+
   let bestMatch: string | null = null;
   let bestDist  = Infinity;
 
   for (const candidate of known) {
     const normCand = normalizeMatchKey(candidate);
-    if (!normCand) continue;
-    if (Math.abs(normCand.length - normInput.length) > maxDist) continue;
+    if (!normCand || normCand.length <= 5) continue;
+    if (normCand[0] !== normInput[0]) continue;
+    if (Math.abs(normCand.length - normInput.length) > 2) continue;
+
     const dist = levenshtein(normInput, normCand);
-    if (dist < bestDist && dist <= maxDist) {
+    if (dist > 3) continue;
+
+    if (dist <= 2) {
+      if (charOverlapRatio(normInput, normCand) < 0.6) continue;
+    } else {
+      // dist === 3: only accept when multisets are nearly identical
+      // ("Contiennetal" → "Continental" yes, "retectire" → "nexentire" no).
+      if (charOverlapRatio(normInput, normCand) < 0.85) continue;
+    }
+
+    if (dist < bestDist) {
       bestDist  = dist;
       bestMatch = candidate;
     }
