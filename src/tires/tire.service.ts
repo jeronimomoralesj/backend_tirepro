@@ -1693,6 +1693,29 @@ export class TireService {
           });
         }
 
+        // ── Cross-vehicle ID collision guard ─────────────────────────────────
+        // Real-world fleet spreadsheets occasionally reuse a tire ID across
+        // two different physical tires on different vehicles (same sticker
+        // number, lazy data entry). When we find an existing tire whose
+        // current mount is a DIFFERENT vehicle than this row targets, we
+        // must not merge — otherwise the "deeper depths → replace" detection
+        // below wrongly disposes the original tire. Treat it as a new tire
+        // with a suffixed placa instead.
+        if (
+          existing &&
+          vehicle &&
+          existing.vehicleId &&
+          existing.vehicleId !== vehicle.id
+        ) {
+          warnings.push(
+            `Row ${rowNum}: ID "${tirePlaca}" ya está montada en otro vehículo ` +
+            `(${existing.placa} → vehicleId ${existing.vehicleId}); creando nueva llanta con sufijo "*".`,
+          );
+          existing = null;
+          // finalTirePlaca suffix logic downstream will add the * when it
+          // detects the remaining placa collision.
+        }
+
         // ── Branch A: existing tire — smart duplicate detection ─────────────
         let existingFull: any = null;
         if (existing) {
