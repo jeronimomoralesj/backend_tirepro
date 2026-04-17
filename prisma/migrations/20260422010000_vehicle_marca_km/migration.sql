@@ -1,0 +1,4 @@
+ALTER TABLE "Vehicle"
+  ADD COLUMN IF NOT EXISTS "marca"             TEXT,
+  ADD COLUMN IF NOT EXISTS "kmMensualEstimado" INTEGER,
+  ADD COLUMN IF NOT EXISTS "kmMensualReal"     DOUBLE PRECISION;

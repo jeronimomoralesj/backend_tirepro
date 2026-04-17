@@ -37,6 +37,15 @@ export class UpdateVehicleDto {
   configuracion?: string | null;
 
   @IsOptional()
+  @IsString()
+  marca?: string | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  kmMensualEstimado?: number | null;
+
+  @IsOptional()
   @IsUUID()
   companyId?: string;
 }

@@ -25,6 +25,9 @@ const VEHICLE_SELECT = {
   cliente:           true,
   tipoOperacion:     true,
   configuracion:     true,
+  marca:              true,
+  kmMensualEstimado:  true,
+  kmMensualReal:      true,
   presionesRecomendadas: true,
   createdAt:         true,
   updatedAt:         true,
@@ -51,7 +54,11 @@ export class VehicleService {
   // ── Create ────────────────────────────────────────────────────────────────
 
   async createVehicle(dto: CreateVehicleDto) {
-    const { placa, kilometrajeActual, carga, pesoCarga, tipovhc, companyId, cliente, tipoOperacion, configuracion, drivers } = dto;
+    const {
+      placa, kilometrajeActual, carga, pesoCarga, tipovhc, companyId,
+      cliente, tipoOperacion, configuracion, drivers,
+      marca, kmMensualEstimado,
+    } = dto;
 
     const [company, duplicate] = await Promise.all([
       this.prisma.company.findUnique({ where: { id: companyId }, select: { id: true } }),
@@ -70,9 +77,11 @@ export class VehicleService {
           pesoCarga,
           tipovhc,
           companyId,
-          cliente: cliente ?? null,
-          tipoOperacion: tipoOperacion ?? null,
-          configuracion: configuracion ?? null,
+          cliente:        cliente ?? null,
+          tipoOperacion:  tipoOperacion ?? null,
+          configuracion:  configuracion ?? null,
+          marca:              marca ?? null,
+          kmMensualEstimado:  kmMensualEstimado ?? null,
           union:   [],
         },
         select: VEHICLE_SELECT,
@@ -224,6 +233,8 @@ export class VehicleService {
     ...(dto.cliente           !== undefined && { cliente:           dto.cliente           }),
     ...(dto.tipoOperacion    !== undefined && { tipoOperacion:     dto.tipoOperacion     }),
     ...(dto.configuracion    !== undefined && { configuracion:     dto.configuracion     }),
+    ...(dto.marca             !== undefined && { marca:             dto.marca             }),
+    ...(dto.kmMensualEstimado !== undefined && { kmMensualEstimado: dto.kmMensualEstimado }),
     ...(dto.companyId         !== undefined && { companyId:         dto.companyId         }),
   },
   select: VEHICLE_SELECT,
@@ -242,7 +253,7 @@ await this.invalidateVehicleCache(vehicle.companyId);
   async updateKilometraje(vehicleId: string, newKilometraje: number) {
     const vehicle = await this.prisma.vehicle.findUnique({
       where:  { id: vehicleId },
-      select: { id: true, kilometrajeActual: true, companyId: true }, // ← companyId added
+      select: { id: true, kilometrajeActual: true, companyId: true, createdAt: true },
     });
     if (!vehicle) throw new NotFoundException('Vehicle not found');
 
@@ -250,13 +261,22 @@ await this.invalidateVehicleCache(vehicle.companyId);
       throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al actual');
     }
 
+    // kmMensualReal = total km accumulated by this vehicle / months tracked.
+    // We use createdAt as the start anchor because we don't have a separate
+    // "fecha ingreso" column. Months are clamped to >= 1 to avoid divide-by-
+    // zero on brand-new vehicles.
+    const now = new Date();
+    const msSinceStart = Math.max(now.getTime() - vehicle.createdAt.getTime(), 30 * 86400_000);
+    const monthsTracked = msSinceStart / (30 * 86400_000);
+    const kmMensualReal = Math.round((newKilometraje / monthsTracked) * 100) / 100;
+
     const updated = await this.prisma.vehicle.update({
       where:  { id: vehicleId },
-      data:   { kilometrajeActual: newKilometraje },
+      data:   { kilometrajeActual: newKilometraje, kmMensualReal },
       select: VEHICLE_SELECT,
     });
 
-    await this.invalidateVehicleCache(vehicle.companyId); // ← added
+    await this.invalidateVehicleCache(vehicle.companyId);
     return updated;
   }
 

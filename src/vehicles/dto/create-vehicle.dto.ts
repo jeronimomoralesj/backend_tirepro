@@ -41,6 +41,15 @@ export class CreateVehicleDto {
   configuracion?: string;  // "4-4", "6-4", "2-2-2"
 
   @IsOptional()
+  @IsString()
+  marca?: string;          // Kenworth, Volvo, International, ...
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  kmMensualEstimado?: number; // User's initial declared monthly km target
+
+  @IsOptional()
   @IsArray()
   @ArrayMaxSize(3)
   @ValidateNested({ each: true })

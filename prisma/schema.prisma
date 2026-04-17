@@ -289,6 +289,17 @@ model Vehicle {
   companyId         String
   cliente           String?
 
+  // Vehicle make / manufacturer (Kenworth, Volvo, International…)
+  marca String?
+
+  // User-declared expected km per month at onboarding. Stays fixed once set
+  // so we can compare it against the real observed value below.
+  kmMensualEstimado Int?
+
+  // Real average km/month derived from inspections / kilometrajeActual
+  // history. Recomputed by refreshVehicleKmMensual on every odometer update.
+  kmMensualReal Float?
+
   // NUEVO 🔽
   tipoOperacion String? // formato: "90-10" (pavimento-trocha)
 
