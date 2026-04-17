@@ -1,8 +1,15 @@
-import { Injectable, Inject, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Inject,
+  Logger,
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
-import { EjeType } from '@prisma/client';
+import { EjeType, Prisma } from '@prisma/client';
 
 // ─── Statistical helpers ─────────────────────────────────────────────────────
 
@@ -582,30 +589,86 @@ export class CatalogService {
 
   async adminGet(id: string) {
     const sku = await this.prisma.tireMasterCatalog.findUnique({ where: { id } });
-    if (!sku) throw new Error('SKU not found');
+    if (!sku) throw new NotFoundException('SKU not found');
     return sku;
   }
 
   async adminCreate(data: Record<string, any>) {
     const payload = this.pickEditable(data);
     if (!payload.marca || !payload.modelo || !payload.dimension || !payload.skuRef) {
-      throw new Error('marca, modelo, dimension and skuRef are required');
+      throw new BadRequestException('marca, modelo, dimension and skuRef are required');
     }
-    const created = await this.prisma.tireMasterCatalog.create({
-      data: { ...payload, fuente: payload.fuente ?? 'admin' },
+
+    const skuRef = String(payload.skuRef).trim();
+    const existing = await this.prisma.tireMasterCatalog.findUnique({
+      where: { skuRef },
+      select: { id: true, marca: true, modelo: true, dimension: true },
     });
-    await Promise.all([this.cache.del('catalog:brands'), this.cache.del('catalog:dimensions')]);
-    return created;
+    if (existing) {
+      throw new ConflictException({
+        message: `skuRef "${skuRef}" already exists`,
+        code: 'SKU_REF_TAKEN',
+        existing,
+      });
+    }
+
+    try {
+      const created = await this.prisma.tireMasterCatalog.create({
+        data: { ...payload, skuRef, fuente: payload.fuente ?? 'admin' },
+      });
+      await Promise.all([this.cache.del('catalog:brands'), this.cache.del('catalog:dimensions')]);
+      return created;
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        throw new ConflictException({
+          message: `skuRef "${skuRef}" already exists`,
+          code: 'SKU_REF_TAKEN',
+        });
+      }
+      throw e;
+    }
   }
 
   async adminUpdate(id: string, data: Record<string, any>) {
     const payload = this.pickEditable(data);
-    const updated = await this.prisma.tireMasterCatalog.update({
-      where: { id },
-      data: payload,
-    });
-    await Promise.all([this.cache.del('catalog:brands'), this.cache.del('catalog:dimensions')]);
-    return updated;
+
+    if (payload.skuRef) {
+      const skuRef = String(payload.skuRef).trim();
+      payload.skuRef = skuRef;
+      const clash = await this.prisma.tireMasterCatalog.findUnique({
+        where: { skuRef },
+        select: { id: true },
+      });
+      if (clash && clash.id !== id) {
+        throw new ConflictException({
+          message: `skuRef "${skuRef}" already belongs to another SKU`,
+          code: 'SKU_REF_TAKEN',
+          existingId: clash.id,
+        });
+      }
+    }
+
+    try {
+      const updated = await this.prisma.tireMasterCatalog.update({
+        where: { id },
+        data: payload,
+      });
+      await Promise.all([this.cache.del('catalog:brands'), this.cache.del('catalog:dimensions')]);
+      return updated;
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError) {
+        if (e.code === 'P2002') {
+          throw new ConflictException({
+            message: 'skuRef collision',
+            code: 'SKU_REF_TAKEN',
+          });
+        }
+        if (e.code === 'P2025') {
+          throw new NotFoundException('SKU not found');
+        }
+      }
+      throw e;
+    }
   }
 
   async adminDelete(id: string) {

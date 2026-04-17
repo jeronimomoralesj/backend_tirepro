@@ -95,29 +95,52 @@ function levenshtein(a: string, b: string): number {
 }
 
 /**
+ * Collapse a name to its alphanumeric core so punctuation / separator
+ * variants compare equal. "HDR2 SA", "HDR2+SA", "HDR2-SA", "hdr2sa"
+ * all normalize to "hdr2sa".
+ */
+function normalizeMatchKey(s: string): string {
+  return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
  * Find the best match from a list of known values. Returns the match if
  * the edit distance is within the tolerance threshold, otherwise null.
  *
- * Threshold scales with string length:
- *  - len ≤ 4  → max 1 edit
- *  - len ≤ 8  → max 2 edits
- *  - len > 8  → max 3 edits
+ * Matching tiers (first hit wins):
+ *  1. Case-insensitive exact match
+ *  2. Normalized-key exact match (ignores spaces / +, -, /, etc.)
+ *  3. Levenshtein on normalized keys, with threshold scaled by length:
+ *       len ≤ 4  → max 1 edit
+ *       len ≤ 8  → max 2 edits
+ *       len > 8  → max 3 edits
  */
 function fuzzyMatch(input: string, known: string[]): string | null {
   if (!input) return null;
   const lo = input.toLowerCase();
-  // Exact match first (fast path)
+
+  // 1. Case-insensitive exact match (fast path)
   const exact = known.find(k => k.toLowerCase() === lo);
   if (exact) return exact;
 
+  // 2. Punctuation-insensitive match — handles "HDR2 SA" ↔ "HDR2+SA"
+  const normInput = normalizeMatchKey(input);
+  if (normInput) {
+    const punctMatch = known.find(k => normalizeMatchKey(k) === normInput);
+    if (punctMatch) return punctMatch;
+  }
+
+  // 3. Levenshtein on normalized keys — catches typos even with separators
+  if (!normInput) return null;
   const maxDist = lo.length <= 4 ? 1 : lo.length <= 8 ? 2 : 3;
   let bestMatch: string | null = null;
   let bestDist  = Infinity;
 
   for (const candidate of known) {
-    // Skip candidates where length diff alone exceeds threshold
-    if (Math.abs(candidate.length - lo.length) > maxDist) continue;
-    const dist = levenshtein(lo, candidate.toLowerCase());
+    const normCand = normalizeMatchKey(candidate);
+    if (!normCand) continue;
+    if (Math.abs(normCand.length - normInput.length) > maxDist) continue;
+    const dist = levenshtein(normInput, normCand);
     if (dist < bestDist && dist <= maxDist) {
       bestDist  = dist;
       bestMatch = candidate;
@@ -153,16 +176,27 @@ function normalizeDimension(raw: string): string {
 
 /**
  * Match a user-provided dimension against known catalog dimensions.
- * First normalizes both, then tries exact match, then fuzzy.
+ * Tiers: format-normalized exact → punctuation-insensitive exact →
+ * Levenshtein fuzzy on normalized forms.
  */
 function matchDimension(input: string, known: string[]): string | null {
   if (!input) return null;
   const normInput = normalizeDimension(input).toLowerCase();
-  // Build a map of normalized → original
+
+  // 1. Format-normalized exact match
   for (const k of known) {
     if (normalizeDimension(k).toLowerCase() === normInput) return k;
   }
-  // Fuzzy fallback: try matching the normalized forms
+
+  // 2. Punctuation-insensitive match — catches "295/80R22.5" ↔ "295 80 R 22 5"
+  const keyInput = normalizeMatchKey(input);
+  if (keyInput) {
+    for (const k of known) {
+      if (normalizeMatchKey(k) === keyInput) return k;
+    }
+  }
+
+  // 3. Fuzzy on format-normalized forms
   const normKnown = known.map(k => normalizeDimension(k).toLowerCase());
   const maxDist = 2;
   let bestMatch: string | null = null;
