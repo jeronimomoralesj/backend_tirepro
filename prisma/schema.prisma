@@ -156,6 +156,14 @@ model User {
   // Easter egg
   saturnVUnlocked Boolean @default(false)
 
+  // Login tracking — denormalized for fast "last active" lookups; detailed
+  // per-session rows live in UserLoginLog for analytics.
+  lastLoginAt DateTime?
+  loginCount  Int       @default(0)
+  // De-duplicated set of IPs this user has ever logged in from. Used for
+  // anomaly detection ("new IP" alerts) and future security reviews.
+  knownIps    String[]  @default([])
+
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -166,6 +174,7 @@ model User {
   inspecciones  Inspeccion[]        // inspections this user performed
   reviews           DistributorReview[]
   marketplaceOrders MarketplaceOrder[]
+  loginLogs         UserLoginLog[]
 
   @@index([companyId])
   @@index([email])
@@ -183,6 +192,22 @@ model UserVehicleAccess {
   @@index([userId])
   @@index([vehicleId])
   @@map("user_vehicle_access")
+}
+
+// One row per successful login — used for cohort / retention analysis in
+// Metabase. Deliberately lightweight so we can keep every row forever.
+model UserLoginLog {
+  id        String   @id @default(uuid())
+  userId    String
+  fecha     DateTime @default(now())
+  ip        String?
+  userAgent String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, fecha])
+  @@index([fecha])
+  @@map("user_login_logs")
 }
 
 // =============================================================================

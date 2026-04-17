@@ -6,7 +6,9 @@ import {
   HttpStatus,
   UsePipes,
   ValidationPipe,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { Throttle } from '@nestjs/throttler';
 import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
@@ -47,8 +49,14 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async login(
     @Body() dto: LoginDto,
+    @Req()  req: Request,
   ): Promise<{ access_token: string; user: AuthUser }> {
-    return this.authService.login(dto.email, dto.password);
+    // Trust the first public hop in X-Forwarded-For when we're behind
+    // nginx / ALB; fall back to the raw socket address otherwise.
+    const fwd = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim();
+    const ip  = fwd || req.ip || (req.socket as any)?.remoteAddress || null;
+    const userAgent = (req.headers['user-agent'] as string | undefined) ?? null;
+    return this.authService.login(dto.email, dto.password, { ip, userAgent });
   }
 
   // ── Blog password ─────────────────────────────────────────────────────────

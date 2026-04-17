@@ -126,6 +126,7 @@ export class AuthService {
   async login(
     email: string,
     password: string,
+    meta: { ip?: string | null; userAgent?: string | null } = {},
   ): Promise<{ access_token: string; user: AuthUser }> {
     const user = await this.prisma.user.findUnique({
       where: { email },
@@ -138,6 +139,7 @@ export class AuthService {
         companyId: true,
         isVerified: true,
         userPlan: true,
+        knownIps: true,
         company: {
           select: {
             id: true,
@@ -168,6 +170,29 @@ export class AuthService {
       companyId: user.companyId ?? '',
       role: user.role,
     });
+
+    // ── Login tracking ───────────────────────────────────────────────────
+    // Bump the denormalized counters on User and append a per-session row
+    // to user_login_logs. Fire-and-forget: a tracking failure must never
+    // block the login response.
+    const ip = meta.ip?.trim() || null;
+    const userAgent = meta.userAgent?.trim()?.slice(0, 500) || null;
+    const knownIps = Array.isArray(user.knownIps) ? user.knownIps : [];
+    const needNewIp = ip && !knownIps.includes(ip);
+
+    Promise.all([
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          lastLoginAt: new Date(),
+          loginCount:  { increment: 1 },
+          ...(needNewIp ? { knownIps: { push: ip } } : {}),
+        },
+      }),
+      this.prisma.userLoginLog.create({
+        data: { userId: user.id, ip, userAgent },
+      }),
+    ]).catch(err => this.logger.warn(`Login tracking failed for ${user.id}: ${err.message}`));
 
     return {
       access_token,
