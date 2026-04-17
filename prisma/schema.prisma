@@ -273,6 +273,11 @@ model Vehicle {
   union Json @default("[]")
   presionesRecomendadas Json @default("[]")
 
+  // ─── External system dedup key ───────────────────────────────────────────
+  // Populated by integrators (e.g. MERQUEPRO migration) so re-running an
+  // import doesn't duplicate rows. Null for anything created natively.
+  externalSourceId String? @unique
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -422,7 +427,10 @@ model Tire {
   lastVehicleId      String?
   lastVehiclePlaca   String?
   lastPosicion       Int?
-  inventoryEnteredAt DateTime?   
+  inventoryEnteredAt DateTime?
+
+  // External system dedup key — same contract as Vehicle.externalSourceId.
+  externalSourceId String? @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -512,6 +520,9 @@ model Inspeccion {
   // ── Who performed this inspection ─────────────────────────────────────────
   inspeccionadoPorId     String?  // FK to User (null for bulk uploads)
   inspeccionadoPorNombre String?  // free-text fallback when no user account
+
+  // External system dedup key — populated by integrations.
+  externalSourceId String? @unique
 
   createdAt DateTime @default(now())
 
