@@ -223,6 +223,7 @@ model Company {
   vidaSnapshots   TireVidaSnapshot[]
   recommendations TireRecommendation[]
   inventoryBuckets TireInventoryBucket[]
+  bulkUploadSnapshots BulkUploadSnapshot[]
   orders          PurchaseOrder[] @relation("CompanyOrders")
   receivedOrders  PurchaseOrder[] @relation("DistributorOrders")
 
@@ -1434,4 +1435,34 @@ model BrandInfo {
 
   @@index([slug])
   @@map("brand_info")
+}
+
+// =============================================================================
+// BULK UPLOAD SNAPSHOT
+// Keeps a 1-week rewindable record of each bulk-tire-upload so users can
+// revert or edit-and-reapply before the data is considered "committed".
+// Snapshots are invalidated the moment any of their tires gets an
+// inspection or vida change — that signals someone already used the data
+// and a blind revert would destroy real work.
+// =============================================================================
+
+model BulkUploadSnapshot {
+  id                String    @id @default(uuid())
+  companyId         String
+  userId            String?    // FK to User; null for legacy uploads
+  uploadedAt        DateTime  @default(now())
+  expiresAt         DateTime  // uploadedAt + 7 days, computed at create time
+  fileName          String?
+  tireCount         Int       @default(0)
+  tireIds           String[]
+  rawRows           Json      // original Excel rows as parsed JSON — enables edit+reapply
+  invalidated       Boolean   @default(false)
+  invalidatedAt     DateTime?
+  invalidatedReason String?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, uploadedAt])
+  @@index([expiresAt])
+  @@map("bulk_upload_snapshots")
 }

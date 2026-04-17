@@ -143,10 +143,15 @@ export class TireController {
   bulkUpload(
     @UploadedFile() file: Express.Multer.File,
     @Query('companyId') companyId: string,
+    @Query('userId') userId?: string,
   ) {
     if (!companyId) throw new BadRequestException('companyId is required');
     if (!file?.buffer) throw new BadRequestException('No file received');
-    return this.tireService.bulkUploadTires(file, companyId);
+    return this.tireService.bulkUploadTires(
+      file,
+      companyId,
+      { userId, fileName: file.originalname },
+    );
   }
 
   // Undo a prior bulk upload — deletes the supplied tire IDs (scoped to the
@@ -160,6 +165,45 @@ export class TireController {
       throw new BadRequestException('tireIds (array) is required');
     }
     return this.tireService.bulkDeleteTires(body.tireIds, body.companyId);
+  }
+
+  // ─── Bulk upload snapshots — 7-day rewind window ─────────────────────────
+
+  @Get('bulk-upload/recent')
+  listRecentBulkUploads(@Query('companyId') companyId: string) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    return this.tireService.listRecentBulkUploads(companyId);
+  }
+
+  @Get('bulk-upload/:id')
+  getBulkUpload(
+    @Param('id') id: string,
+    @Query('companyId') companyId: string,
+  ) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    return this.tireService.getBulkUpload(id, companyId);
+  }
+
+  @Post('bulk-upload/:id/revert')
+  @HttpCode(HttpStatus.OK)
+  revertBulkUpload(
+    @Param('id') id: string,
+    @Body() body: { companyId: string },
+  ) {
+    if (!body?.companyId) throw new BadRequestException('companyId is required');
+    return this.tireService.revertBulkUpload(id, body.companyId);
+  }
+
+  @Post('bulk-upload/:id/reapply')
+  @SkipThrottle()
+  @HttpCode(HttpStatus.OK)
+  reapplyBulkUpload(
+    @Param('id') id: string,
+    @Body() body: { companyId: string; rows: Record<string, any>[]; userId?: string },
+  ) {
+    if (!body?.companyId) throw new BadRequestException('companyId is required');
+    if (!Array.isArray(body?.rows)) throw new BadRequestException('rows (array) is required');
+    return this.tireService.reapplyBulkUpload(id, body.companyId, body.rows, body.userId);
   }
 
   // ── Assign / unassign ─────────────────────────────────────────────────────

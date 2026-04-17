@@ -1150,7 +1150,11 @@ export class TireService {
   //    instead of re-querying.
   // ===========================================================================
 
-  async bulkUploadTires(file: { buffer: Buffer }, companyId: string) {
+  async bulkUploadTires(
+    file: { buffer: Buffer },
+    companyId: string,
+    opts: { userId?: string; fileName?: string; recordSnapshot?: boolean } = {},
+  ) {
     const wb    = XLSX.read(file.buffer, { type: 'buffer' });
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const rows: Record<string, string>[] = XLSX.utils.sheet_to_json(sheet, {
@@ -1897,6 +1901,34 @@ export class TireService {
       ),
     ]);
 
+    const createdTireIds = [...tireIdsToRefresh];
+
+    // Snapshot the upload so the user has a 7-day window to revert or
+    // re-apply with edits. Only records when we actually created/touched
+    // tires and the caller asked for it (the default).
+    let snapshotId: string | undefined;
+    if (opts.recordSnapshot !== false && createdTireIds.length > 0) {
+      try {
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        const snap = await this.prisma.bulkUploadSnapshot.create({
+          data: {
+            companyId,
+            userId:     opts.userId ?? null,
+            fileName:   opts.fileName ?? null,
+            tireCount:  createdTireIds.length,
+            tireIds:    createdTireIds,
+            rawRows:    rows as any,
+            expiresAt,
+          },
+          select: { id: true },
+        });
+        snapshotId = snap.id;
+      } catch (err) {
+        // Snapshot failure must not break the upload itself.
+        this.logger.warn(`Bulk snapshot record failed: ${(err as Error).message}`);
+      }
+    }
+
     return {
       message:  `Carga completada. ${processedIds.size} llantas procesadas. ${warnings.length} advertencias. ${errors.length} errores.`,
       success:  processedIds.size,
@@ -1904,7 +1936,8 @@ export class TireService {
       warnings: warnings.length,
       // IDs of tires actually created/touched in this run — used by the UI to
       // support undoing the last bulk upload.
-      createdTireIds: [...tireIdsToRefresh],
+      createdTireIds,
+      snapshotId,
       details:  { errors, warnings },
     };
   }
@@ -1914,6 +1947,130 @@ export class TireService {
    * Cascades to inspecciones / eventos / costos / vida snapshots via Prisma.
    * Scoped to companyId so a tenant cannot delete another tenant's tires.
    */
+  // ===========================================================================
+  // BULK UPLOAD SNAPSHOTS — 1-week rewind window for bulk uploads
+  // ===========================================================================
+
+  /** List non-expired, non-invalidated snapshots for a company. */
+  async listRecentBulkUploads(companyId: string) {
+    const now = new Date();
+    const rows = await this.prisma.bulkUploadSnapshot.findMany({
+      where: {
+        companyId,
+        expiresAt:  { gt: now },
+        invalidated: false,
+      },
+      orderBy: { uploadedAt: 'desc' },
+      select: {
+        id: true, uploadedAt: true, expiresAt: true, fileName: true,
+        tireCount: true, userId: true, tireIds: true,
+      },
+      take: 20,
+    });
+    return rows;
+  }
+
+  async getBulkUpload(id: string, companyId: string) {
+    const snap = await this.prisma.bulkUploadSnapshot.findFirst({
+      where: { id, companyId },
+    });
+    if (!snap) throw new NotFoundException('Bulk upload snapshot not found');
+    const expired = snap.expiresAt.getTime() <= Date.now();
+    return { ...snap, expired };
+  }
+
+  /**
+   * Delete all tires captured by the snapshot and remove the snapshot.
+   * Fails fast if the snapshot is already invalidated (a tire was
+   * touched) or expired — caller should refresh the list.
+   */
+  async revertBulkUpload(id: string, companyId: string) {
+    const snap = await this.prisma.bulkUploadSnapshot.findFirst({
+      where: { id, companyId },
+    });
+    if (!snap) throw new NotFoundException('Bulk upload snapshot not found');
+    if (snap.invalidated) {
+      throw new BadRequestException(
+        'Esta carga ya no se puede revertir — se inspeccionó o modificó una llanta de la carga.',
+      );
+    }
+    if (snap.expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestException('Esta carga expiró (ventana de 7 días).');
+    }
+
+    const res = await this.bulkDeleteTires(snap.tireIds, companyId);
+    await this.prisma.bulkUploadSnapshot.delete({ where: { id } });
+    return { reverted: res.deleted };
+  }
+
+  /**
+   * Delete the current tires then re-run the upload with edited rows.
+   * Produces a fresh snapshot; the old one is replaced.
+   */
+  async reapplyBulkUpload(
+    id: string,
+    companyId: string,
+    editedRows: Record<string, any>[],
+    userId?: string,
+  ) {
+    const snap = await this.prisma.bulkUploadSnapshot.findFirst({
+      where: { id, companyId },
+    });
+    if (!snap) throw new NotFoundException('Bulk upload snapshot not found');
+    if (snap.invalidated) {
+      throw new BadRequestException(
+        'Esta carga ya no se puede re-aplicar — se inspeccionó o modificó una llanta de la carga.',
+      );
+    }
+    if (snap.expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestException('Esta carga expiró (ventana de 7 días).');
+    }
+    if (!Array.isArray(editedRows) || editedRows.length === 0) {
+      throw new BadRequestException('No se recibieron filas para re-aplicar');
+    }
+
+    // Delete previously-created tires first so the new run is a clean slate.
+    await this.bulkDeleteTires(snap.tireIds, companyId);
+    await this.prisma.bulkUploadSnapshot.delete({ where: { id } });
+
+    // Serialise the edited rows back into an xlsx buffer so the existing
+    // parser consumes them the same way as a fresh upload.
+    const ws = XLSX.utils.json_to_sheet(editedRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    return this.bulkUploadTires(
+      { buffer },
+      companyId,
+      { userId, fileName: snap.fileName ?? `reapplied-${Date.now()}.xlsx` },
+    );
+  }
+
+  /**
+   * Invalidate every active snapshot that contains this tire — called
+   * from any mutation path that "commits" user work (inspections, vida
+   * changes, etc.) so a later revert can't undo real data.
+   */
+  async invalidateSnapshotsForTire(tireId: string, reason = 'tire-mutated'): Promise<void> {
+    try {
+      await this.prisma.bulkUploadSnapshot.updateMany({
+        where: {
+          tireIds:     { has: tireId },
+          invalidated: false,
+          expiresAt:   { gt: new Date() },
+        },
+        data: {
+          invalidated:       true,
+          invalidatedAt:     new Date(),
+          invalidatedReason: reason,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`invalidateSnapshotsForTire failed: ${(err as Error).message}`);
+    }
+  }
+
   async bulkDeleteTires(tireIds: string[], companyId: string) {
     if (!Array.isArray(tireIds) || tireIds.length === 0) {
       return { deleted: 0 };
@@ -2455,6 +2612,10 @@ export class TireService {
 
     const updatedTire = await this.refreshTireAnalyticsCache(tireId);
 
+    // Any bulk-upload snapshot containing this tire is now "committed
+    // work" — a blind revert would destroy the inspection we just wrote.
+    this.invalidateSnapshotsForTire(tireId, 'inspection').catch(() => {});
+
     await this.notificationsService.deleteByTire(tireId);
 
     // ── Single source of truth: buildTireAnalysis generates all recommendations ──
@@ -2774,6 +2935,9 @@ export class TireService {
     });
 
     await this.notificationsService.deleteByTire(tireId);
+    // Vida change is a commit-level event — freeze any bulk-upload
+    // snapshot that includes this tire.
+    this.invalidateSnapshotsForTire(tireId, 'vida').catch(() => {});
     await this.invalidateCompanyCache(tire.companyId);
     if (tire.vehicleId) {
       await Promise.allSettled([
@@ -3096,6 +3260,8 @@ export class TireService {
 
     // Refresh all cached analytics from the updated inspections
     await this.refreshTireAnalyticsCache(tireId);
+    // Lock down any bulk-upload snapshot that included this tire.
+    this.invalidateSnapshotsForTire(tireId, 'inspection-edit').catch(() => {});
     await this.invalidateCompanyCache(tire.companyId);
     if (tire.vehicleId) {
       await Promise.allSettled([
