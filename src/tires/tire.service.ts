@@ -520,10 +520,14 @@ function calcCpkMetrics(
     }
   }
 
-  // CPK: prefer actual km, but if km=0 and we have a projected lifecycle,
-  // use projectedKm so we never store 0 CPK when cost exists.
+  // CPK: prefer actual km, but only when we have a meaningful amount.
+  // Very small km values (just-mounted tires with 100-500 km driven)
+  // produce nonsense CPKs like $1.9M / 209 = $9k per km. Below 5k km a
+  // tire hasn't run long enough for cost/km to be meaningful — fall back
+  // to the projected lifecycle instead.
+  const MIN_MEANINGFUL_KM = 5_000;
   let cpk: number;
-  if (km > 0) {
+  if (km >= MIN_MEANINGFUL_KM) {
     cpk = totalCost / km;
   } else if (projectedKm > 0 && totalCost > 0) {
     cpk = totalCost / projectedKm;
@@ -1386,6 +1390,38 @@ export class TireService {
           if (matchedModel && matchedModel.toLowerCase() !== diseno.toLowerCase()) {
             warnings.push(`Row ${rowNum}: diseño "${diseno}" → "${matchedModel}" (catálogo)`);
             diseno = matchedModel.toLowerCase();
+          }
+        }
+
+        // ── Banda → marca inference for rows with empty brand ───────────────
+        // If the upload didn't give us a brand but we do know the design,
+        // look it up in the master catalog (or the closest fuzzy match) and
+        // borrow whatever marca ships with that modelo. Otherwise the tire
+        // ends up in a "N/A" bucket on every per-marca view.
+        if (!marca && diseno) {
+          try {
+            let sku = await this.prisma.tireMasterCatalog.findFirst({
+              where:   { modelo: { equals: diseno, mode: 'insensitive' } },
+              orderBy: { precioCop: { sort: 'desc', nulls: 'last' } },
+              select:  { marca: true, modelo: true },
+            });
+            if (!sku && catalogModels.length > 0) {
+              // No exact modelo — try the closest catalog entry via fuzzy
+              const fuzzyModel = fuzzyMatch(diseno, catalogModels);
+              if (fuzzyModel) {
+                sku = await this.prisma.tireMasterCatalog.findFirst({
+                  where:   { modelo: { equals: fuzzyModel, mode: 'insensitive' } },
+                  orderBy: { precioCop: { sort: 'desc', nulls: 'last' } },
+                  select:  { marca: true, modelo: true },
+                });
+              }
+            }
+            if (sku?.marca) {
+              marca = sku.marca.charAt(0).toUpperCase() + sku.marca.slice(1).toLowerCase();
+              warnings.push(`Row ${rowNum}: marca vacía → "${marca}" (inferida del diseño "${sku.modelo}")`);
+            }
+          } catch (err) {
+            this.logger.warn(`Row ${rowNum}: banda→marca lookup failed: ${(err as Error).message}`);
           }
         }
         if (catalogDimensions.length > 0 && dimension) {
@@ -3659,7 +3695,9 @@ export class TireService {
     // dashboards; per-life CPK stays in currentCpk for vida-specific views.
     const lifetimeTotalCost = tire.costos.reduce((s, c) => s + (c.valor ?? 0), 0);
     const lifetimeTotalKm   = tire.kilometrosRecorridos || 0;
-    const lifetimeCpk = lifetimeTotalKm > 0 && lifetimeTotalCost > 0
+    // Same floor as calcCpkMetrics — below 5k km a tire hasn't driven
+    // enough for its lifetime CPK to be meaningful.
+    const lifetimeCpk = lifetimeTotalKm >= 5_000 && lifetimeTotalCost > 0
       ? parseFloat((lifetimeTotalCost / lifetimeTotalKm).toFixed(2))
       : null;
 
