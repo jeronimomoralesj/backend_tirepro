@@ -2161,6 +2161,14 @@ export class TireService {
       minDepth,
     );
 
+    // Lifetime CPK: total costs (all vidas) ÷ total km lived. Captured on
+    // every inspection so dashboards can chart it over time without
+    // re-aggregating costs on the read path.
+    const lifetimeTotalCost = tire.costos.reduce((s, c) => s + (c.valor ?? 0), 0);
+    const lifetimeCpkAtInspection = effectiveKm > 0 && lifetimeTotalCost > 0
+      ? parseFloat((lifetimeTotalCost / effectiveKm).toFixed(2))
+      : null;
+
     const presionPsi: number | null = dto.presionPsi ?? null;
     const presionRecomendada =
       dto.presionRecomendadaPsi
@@ -2198,6 +2206,7 @@ export class TireService {
         profundidadCen:        dto.profundidadCen,
         profundidadExt:        dto.profundidadExt,
         cpk:                   metrics.cpk,
+        lifetimeCpk:           lifetimeCpkAtInspection,
         cpkProyectado:         metrics.cpkProyectado,
         cpt:                   metrics.cpt,
         cptProyectado:         metrics.cptProyectado,
@@ -3142,6 +3151,7 @@ export class TireService {
         where: { id: tireId },
         data:  {
           currentCpk:           null,
+          lifetimeCpk:          null,
           currentCpt:           null,
           currentProfundidad:   null,
           currentPresionPsi:    null,
@@ -3154,6 +3164,15 @@ export class TireService {
         include: { inspecciones: true, costos: true, eventos: true },
       });
     }
+
+    // Lifetime CPK: all costs (nueva purchase + every retread) over the
+    // tire's full odometer. This is the metric used by company-wide
+    // dashboards; per-life CPK stays in currentCpk for vida-specific views.
+    const lifetimeTotalCost = tire.costos.reduce((s, c) => s + (c.valor ?? 0), 0);
+    const lifetimeTotalKm   = tire.kilometrosRecorridos || 0;
+    const lifetimeCpk = lifetimeTotalKm > 0 && lifetimeTotalCost > 0
+      ? parseFloat((lifetimeTotalCost / lifetimeTotalKm).toFixed(2))
+      : null;
 
     const latest   = inspecciones[inspecciones.length - 1];
     const pInt     = latest.profundidadInt;
@@ -3198,6 +3217,7 @@ export class TireService {
       where: { id: tireId },
       data:  {
         currentCpk:           latest.cpk,
+        lifetimeCpk,
         currentCpt:           latest.cpt,
         currentProfundidad:   avgDepth,
         currentPresionPsi:    latest.presionPsi ?? null,

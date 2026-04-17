@@ -382,7 +382,9 @@ model Tire {
   // CACHED ANALYTICS — recomputed by refreshTireAnalyticsCache on every write.
   // Dashboard reads are O(1). Never recompute on the read path.
   // -------------------------------------------------------------------------
-  currentCpk           Float?
+  currentCpk           Float?         // current-life CPK = costVidaActual / kmVidaActual
+  lifetimeCpk          Float?         // lifetime CPK = sumCosts_allVidas / sumKm_allVidas
+                                       // Use this for company-wide / cross-vida metrics.
   currentCpt           Float?
   currentProfundidad   Float?          // latest avg tread depth ((Int+Cen+Ext) / 3)
   currentPresionPsi    Float?          // latest recorded pressure
@@ -476,7 +478,9 @@ model Inspeccion {
   vidaAlMomento VidaValue @default(nueva)
 
   // ── Computed metrics (stored for fleet-wide aggregation) ──────────────────
-  cpk                 Float?
+  cpk                 Float?   // current-life CPK: costVidaActual / kmVidaActual
+  lifetimeCpk         Float?   // lifetime CPK: sumAllCosts / sumAllVidaKm — used
+                               // for company-wide metrics that average across tires
   cpkProyectado       Float?
   cpt                 Float?
   cptProyectado       Float?
