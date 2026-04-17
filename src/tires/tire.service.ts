@@ -2933,9 +2933,21 @@ export class TireService {
     });
     if (!vehicle) throw new NotFoundException('Vehicle not found');
 
+    // Clear every inventory-side field: the tire is going back onto a
+    // vehicle, so it is no longer in any bucket and the lastVehicle*
+    // snapshot (used by the "return to vehicle" flow) is no longer needed.
+    // Without this the tire would appear in BOTH the bucket panel and the
+    // vehicle layout after a drag from bucket → position.
     await this.prisma.tire.updateMany({
       where: { id: { in: tireIds } },
-      data:  { vehicleId: vehicle.id },
+      data: {
+        vehicleId:          vehicle.id,
+        inventoryBucketId:  null,
+        inventoryEnteredAt: null,
+        lastVehicleId:      null,
+        lastVehiclePlaca:   null,
+        lastPosicion:       null,
+      },
     });
 
     await Promise.allSettled([

@@ -80,10 +80,42 @@ export class InventoryBucketsService {
     await Promise.all(keys.map(k => this.cache.del(k)));
   }
 
+  // Default buckets that auto-exist for every company. "Disponible" is
+  // already implicit (null bucket) and rendered by the frontend — the
+  // only one we persist is "Reencauche" so retread candidates have a
+  // consistent home across every fleet.
+  private readonly DEFAULT_BUCKETS: Array<Pick<CreateBucketDto, 'nombre' | 'color' | 'icono'>> = [
+    { nombre: 'Reencauche', color: '#8b5cf6', icono: '♻️' },
+  ];
+
+  private async ensureDefaultBuckets(companyId: string): Promise<void> {
+    const existing = await this.prisma.tireInventoryBucket.findMany({
+      where:  { companyId },
+      select: { nombre: true },
+    });
+    const existingNames = new Set(existing.map(b => b.nombre.trim().toLowerCase()));
+    const missing = this.DEFAULT_BUCKETS.filter(
+      d => !existingNames.has(d.nombre.trim().toLowerCase()),
+    );
+    if (missing.length === 0) return;
+    await this.prisma.tireInventoryBucket.createMany({
+      data: missing.map(d => ({
+        companyId,
+        nombre: d.nombre,
+        color:  d.color ?? '#1E76B6',
+        icono:  d.icono ?? '📦',
+      })),
+      skipDuplicates: true,
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // LIST — all buckets for a company + implicit Disponible count
   // ---------------------------------------------------------------------------
   async findAll(companyId: string) {
+    // Lazily seed the default Reencauche bucket on first read per company.
+    await this.ensureDefaultBuckets(companyId);
+
     const [buckets, disponibleCount] = await Promise.all([
       this.prisma.tireInventoryBucket.findMany({
         where:   { companyId },
