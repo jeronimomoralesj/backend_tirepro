@@ -1,46 +1,68 @@
 // src/email/email.service.ts
-import { Injectable, InternalServerErrorException, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 
 @Injectable()
 export class EmailService implements OnModuleInit {
+  private readonly logger = new Logger(EmailService.name);
   private transporter: nodemailer.Transporter;
   private emailUser: string;
   private emailPassword: string;
+  private fromAddress: string;
 
   constructor(private configService: ConfigService) {}
 
   onModuleInit() {
-    this.emailUser = this.configService.get<string>('EMAIL_USER') || '';
-    this.emailPassword = this.configService.get<string>('EMAIL_PASSWORD') || '';
-
-    
-    // credentials verified at startup — no logging of secrets
-    
+    this.emailUser     = (this.configService.get<string>('EMAIL_USER')     || '').trim();
+    this.emailPassword =  this.configService.get<string>('EMAIL_PASSWORD') || '';
+    // EMAIL_FROM lets you use a different envelope/display address than the
+    // SMTP auth user (e.g. auth as noreply@, send as info@). Falls back to user.
+    this.fromAddress   = (this.configService.get<string>('EMAIL_FROM') || this.emailUser).trim();
 
     if (!this.emailUser || !this.emailPassword) {
-      
-      
+      this.logger.error('EMAIL_USER / EMAIL_PASSWORD not set — email disabled');
       throw new Error('Email credentials not configured');
     }
 
-    this.transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: this.emailUser,
-        pass: this.emailPassword,
-      },
-    });
+    // Transport config:
+    //  - If EMAIL_HOST is set, use it directly (GoDaddy, Office365, etc.)
+    //  - Otherwise default to Gmail (works for Google Workspace domains too)
+    const host = (this.configService.get<string>('EMAIL_HOST') || '').trim();
+    const transportOpts: nodemailer.TransportOptions = host
+      ? ({
+          host,
+          port: Number(this.configService.get<string>('EMAIL_PORT') ?? 465),
+          secure:
+            (this.configService.get<string>('EMAIL_SECURE') ?? 'true').toLowerCase() !== 'false',
+          auth: { user: this.emailUser, pass: this.emailPassword },
+        } as any)
+      : ({
+          service: 'gmail',
+          auth: { user: this.emailUser, pass: this.emailPassword },
+        } as any);
 
-    // Verify transporter configuration
-    this.transporter.verify((error, success) => {
-      if (error) {
-        
-      } else {
-        
-      }
-    });
+    this.transporter = nodemailer.createTransport(transportOpts);
+
+    this.logger.log(
+      `SMTP transport ready — ${host ? `${host}:${(transportOpts as any).port}` : 'gmail'} · user=${this.emailUser} · from=${this.fromAddress}`,
+    );
+
+    // Don't block startup, but log the outcome so pm2 logs show the real
+    // reason auth fails (wrong password, app-password required, etc.).
+    this.transporter.verify().then(
+      () => this.logger.log('SMTP credentials verified'),
+      (err) =>
+        this.logger.error(
+          `SMTP verify failed: ${err?.message ?? err} ` +
+            `(code=${(err as any)?.code ?? 'n/a'}, response=${(err as any)?.response ?? 'n/a'})`,
+        ),
+    );
   }
 
   async sendEmail(to: string, subject: string, htmlContent: string) {
@@ -49,7 +71,7 @@ export class EmailService implements OnModuleInit {
     }
 
     const mailOptions = {
-      from: `"TirePro Support" <${this.emailUser}>`,
+      from: `"TirePro Support" <${this.fromAddress}>`,
       to,
       subject,
       html: htmlContent,
@@ -57,12 +79,19 @@ export class EmailService implements OnModuleInit {
 
     try {
       const info = await this.transporter.sendMail(mailOptions);
-      
-      return { message: 'Email sent successfully' };
-    } catch (error) {
-      
-      
-      throw new InternalServerErrorException('Failed to send email');
+      this.logger.log(`Email sent to ${to} — messageId=${info.messageId}`);
+      return { message: 'Email sent successfully', messageId: info.messageId };
+    } catch (error: any) {
+      // Surface the actual SMTP failure — "Failed to send email" alone is
+      // unactionable when diagnosing credentials/TLS/host issues.
+      this.logger.error(
+        `sendMail to ${to} failed: ${error?.message ?? error} ` +
+          `(code=${error?.code ?? 'n/a'}, response=${error?.response ?? 'n/a'})`,
+        error?.stack,
+      );
+      throw new InternalServerErrorException(
+        `Failed to send email: ${error?.code ?? error?.message ?? 'unknown'}`,
+      );
     }
   }
 
