@@ -46,6 +46,39 @@ export class CatalogController {
     return this.catalogService.getDimensions();
   }
 
+  // ─── AUTOCOMPLETE — used by tire creation forms ──────────────────────────
+  // No precioCop filter: admin-created SKUs without prices still surface.
+
+  @Get('autocomplete/brands')
+  autocompleteBrands(@Query('q') q?: string, @Query('limit') limit?: string) {
+    return this.catalogService.autocompleteBrands(q, limit ? Number(limit) : undefined);
+  }
+
+  @Get('autocomplete/models')
+  autocompleteModels(
+    @Query('marca') marca: string,
+    @Query('q') q?: string,
+    @Query('dimension') dimension?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.catalogService.autocompleteModels(
+      marca,
+      q,
+      dimension,
+      limit ? Number(limit) : undefined,
+    );
+  }
+
+  @Get('autocomplete/dimensions')
+  autocompleteDimensions(
+    @Query('marca') marca?: string,
+    @Query('modelo') modelo?: string,
+    @Query('q') q?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.catalogService.autocompleteDimensions(marca, modelo, q, limit ? Number(limit) : undefined);
+  }
+
   @Get('stats')
   stats() {
     return this.catalogService.getStats();

@@ -124,6 +124,113 @@ export class CatalogService {
     return match;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // AUTOCOMPLETE — fast prefix/contains search for create/inspect forms.
+  // Unlike /search these endpoints do NOT require precioCop > 0, so
+  // admin-created SKUs without pricing still show up as typeahead options.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Per-group aggregation of the TireMasterCatalog. Returns each unique
+  // marca/modelo/dimension combined with a "sample" SKU the UI can use to
+  // auto-fill rtdMm, precioCop etc. when the user picks a suggestion.
+  private async aggregateCatalog(
+    groupField: 'marca' | 'modelo' | 'dimension',
+    where: any,
+    limit: number,
+  ) {
+    const rows = await this.prisma.tireMasterCatalog.findMany({
+      where,
+      select: {
+        marca: true, modelo: true, dimension: true, skuRef: true,
+        rtdMm: true, psiRecomendado: true, precioCop: true,
+        kmEstimadosReales: true, terreno: true, categoria: true,
+        crowdSampleSize: true,
+      },
+      // Prefer entries with pricing and higher crowd signal first.
+      orderBy: [
+        { precioCop: { sort: 'desc', nulls: 'last' } },
+        { crowdSampleSize: 'desc' },
+        { updatedAt: 'desc' },
+      ],
+      take: Math.min(limit * 6, 1000), // over-fetch so merge keeps enough groups
+    });
+
+    const merged = new Map<string, { value: string; count: number; sample: any }>();
+    for (const r of rows) {
+      const value = (r as any)[groupField] as string;
+      if (!value) continue;
+      const key = value.trim().toLowerCase();
+      const existing = merged.get(key);
+      if (existing) {
+        existing.count += 1;
+        // Upgrade sample only when current sample lacks price and new one has it.
+        if (!existing.sample.precioCop && r.precioCop) existing.sample = r;
+      } else {
+        merged.set(key, { value: value.trim(), count: 1, sample: r });
+      }
+      if (merged.size >= limit) break;
+    }
+
+    return Array.from(merged.values())
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit);
+  }
+
+  async autocompleteBrands(query?: string, limit = 30) {
+    const where: any = {};
+    if (query?.trim()) {
+      where.marca = { contains: query.trim(), mode: 'insensitive' };
+    }
+    const agg = await this.aggregateCatalog('marca', where, Math.min(limit, 100));
+    return agg.map((g) => ({
+      marca: g.value,
+      count: g.count,
+      sample: g.sample,
+    }));
+  }
+
+  async autocompleteModels(
+    marca: string,
+    query?: string,
+    dimension?: string,
+    limit = 50,
+  ) {
+    if (!marca?.trim()) return [];
+    const where: any = { marca: { equals: marca.trim(), mode: 'insensitive' } };
+    if (dimension?.trim()) {
+      where.dimension = { equals: dimension.trim(), mode: 'insensitive' };
+    }
+    if (query?.trim()) {
+      where.modelo = { contains: query.trim(), mode: 'insensitive' };
+    }
+    const agg = await this.aggregateCatalog('modelo', where, Math.min(limit, 200));
+    return agg.map((g) => ({
+      modelo: g.value,
+      count: g.count,
+      sample: g.sample,
+    }));
+  }
+
+  async autocompleteDimensions(
+    marca?: string,
+    modelo?: string,
+    query?: string,
+    limit = 60,
+  ) {
+    const where: any = {};
+    if (marca?.trim())  where.marca  = { equals: marca.trim(),  mode: 'insensitive' };
+    if (modelo?.trim()) where.modelo = { equals: modelo.trim(), mode: 'insensitive' };
+    if (query?.trim()) {
+      where.dimension = { contains: query.trim(), mode: 'insensitive' };
+    }
+    const agg = await this.aggregateCatalog('dimension', where, Math.min(limit, 200));
+    return agg.map((g) => ({
+      dimension: g.value,
+      count: g.count,
+      sample: g.sample,
+    }));
+  }
+
   /** Get all unique brands in the catalog (only those with real prices) */
   async getBrands() {
     const cacheKey = 'catalog:brands';
