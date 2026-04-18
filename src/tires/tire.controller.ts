@@ -59,6 +59,27 @@ export class TireController {
     });
   }
 
+  /**
+   * Cursor-paginated tire list — use this instead of /tires for companies
+   * with > 5k tires. Response:
+   *   { data: Tire[], nextCursor: string | null, limit: number }
+   * Call with no cursor for the first page. On each subsequent call pass
+   * `cursor` = the previous response's `nextCursor`. Stop when it's null.
+   */
+  @Get('page')
+  getTiresPage(
+    @Query('companyId') companyId: string,
+    @Query('cursor')    cursor?:   string,
+    @Query('limit')     limit?:    string,
+  ) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    return this.tireService.findTiresPaged({
+      companyId,
+      cursor,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+  }
+
   @Get('all')
   getAllTires() {
     return this.tireService.findAllTires();

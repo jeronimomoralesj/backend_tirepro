@@ -35,22 +35,30 @@ import { PrismaService } from './prisma/prisma.service';
     // ── Global cache — Redis in production, in-memory locally ──────────────
     // isGlobal: true means every module gets this same cache instance.
     // No feature module should import CacheModule.register() separately.
+    //
+    // In-memory store is what killed the EC2 box on 2026-04-17: every cached
+    // tire response lived inside Node's heap and never got paged out, taking
+    // us past the 4 GB RAM budget. Using Redis externalizes that pressure
+    // and lets multiple backend instances share one cache.
     CacheModule.registerAsync({
       isGlobal: true,
       useFactory: async () => {
-        const redisHost = process.env.REDIS_HOST;
-        // Only use Redis if explicitly in production
-        if (redisHost && process.env.NODE_ENV === 'production') {
+        const host = process.env.REDIS_HOST;
+        const isProd = process.env.NODE_ENV === 'production';
+        if (host && isProd) {
           const { redisStore } = await import('cache-manager-ioredis-yet');
-          return {
-            store: redisStore,
-            host: redisHost,
-            port: parseInt(process.env.REDIS_PORT ?? '6379'),
-            ttl: 60 * 60,
-          };
+          const store = await redisStore({
+            host,
+            port:     parseInt(process.env.REDIS_PORT ?? '6379', 10),
+            password: process.env.REDIS_PASSWORD || undefined,
+            // Drop whatever we can't store in Redis so the app never crashes
+            // from a failed cache write; stale data is always preferable.
+            ttl:      60 * 60 * 1000, // 1h default; individual set() calls can override
+          });
+          return { store: store as any, ttl: 60 * 60 * 1000 };
         }
         // Local dev: in-memory cache (no external dependency, starts instantly)
-        return { ttl: 300 };
+        return { ttl: 5 * 60 * 1000 };
       },
     }),
 

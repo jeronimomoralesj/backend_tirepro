@@ -984,8 +984,27 @@ export class TireService {
   private static readonly TTL_BENCHMARK = 24 * 60 * 60 * 1000;
 
   private async invalidateCompanyCache(companyId: string) {
+    // Wipe the 3 main caches for this company: the full /tires payload, the
+    // slim projection, and every cursor page. We can't easily enumerate all
+    // :pg:<cursor>:<limit> keys from Nest's cache-manager API, so when Redis
+    // is the store we fall back to a SCAN-based delete; otherwise the page
+    // entries simply age out at their 10-min TTL.
     const base = this.tireKey(companyId);
     await Promise.all([this.cache.del(base), this.cache.del(`${base}:slim`)]);
+
+    const redis = (this.cache as any)?.store?.client;
+    if (redis?.scanStream) {
+      // cache-manager-ioredis-yet exposes the underlying ioredis client here
+      const pattern = `${base}:pg:*`;
+      await new Promise<void>((resolve) => {
+        const stream = redis.scanStream({ match: pattern, count: 200 });
+        stream.on('data', (keys: string[]) => {
+          if (keys.length) redis.unlink(...keys).catch(() => {});
+        });
+        stream.on('end',   () => resolve());
+        stream.on('error', () => resolve());
+      });
+    }
   }
 
   private async invalidateVehicleCache(vehicleId: string) {
@@ -2310,6 +2329,80 @@ export class TireService {
     const ttl = opts.slim ? 10 * 60 * 1000 : TireService.TTL_COMPANY;
     await this.cache.set(cacheKey, tires, ttl);
     return tires;
+  }
+
+  /**
+   * Cursor-paginated tire fetch for the dashboard. Designed for distributor
+   * accounts with 100k+ tires where loading the full set in one go is
+   * impractical — even the slim projection blows past the browser's sane
+   * payload budget.
+   *
+   * Contract:
+   *   - Order is (companyId, id asc) which is covered by Tire_companyId_id_idx
+   *     so each page is an O(log n) seek, not a full scan.
+   *   - `cursor` is the last id from the previous page. First call: omit.
+   *   - Returns `{ data, nextCursor }`. When nextCursor is null, you're done.
+   *   - Same slim projection + Redis cache as findTiresByCompany, keyed by
+   *     (companyId, cursor) so pages are cached independently.
+   */
+  async findTiresPaged(params: {
+    companyId: string;
+    cursor?: string | null;
+    limit?:  number;
+  }) {
+    const limit = Math.min(Math.max(params.limit ?? 200, 1), 500);
+    const cursor = params.cursor?.trim() || null;
+    const cacheKey = `${this.tireKey(params.companyId)}:pg:${cursor ?? 'first'}:${limit}`;
+
+    const cached = await this.cache.get(cacheKey);
+    if (cached) return cached;
+
+    const where: Prisma.TireWhereInput = { companyId: params.companyId };
+    if (cursor) where.id = { gt: cursor };
+
+    // Fetch one extra row so we know if there's another page without a
+    // second round-trip to count.
+    const rows = await this.prisma.tire.findMany({
+      where,
+      orderBy: { id: 'asc' },
+      take:    limit + 1,
+      select: {
+        id: true, placa: true, marca: true, diseno: true, dimension: true, eje: true,
+        posicion: true, vehicleId: true, vidaActual: true, profundidadInicial: true,
+        kilometrosRecorridos: true, currentCpk: true, lifetimeCpk: true, currentCpt: true,
+        currentProfundidad: true, currentPresionPsi: true, projectedProfundidad: true,
+        projectedAlertLevel: true, projectedHealthScore: true, projectedDaysToLimit: true,
+        projectedKmRemaining: true, projectedDateEOL: true, healthScore: true,
+        alertLevel: true, lastInspeccionDate: true, fechaInstalacion: true,
+        createdAt: true, updatedAt: true,
+        costos: {
+          orderBy: { fecha: 'desc' },
+          select: { valor: true, fecha: true, concepto: true },
+        },
+        inspecciones: {
+          orderBy: { fecha: 'desc' },
+          take: 12,
+          select: {
+            fecha: true, cpk: true, cpkProyectado: true, kmProyectado: true,
+            kilometrosEstimados: true, profundidadInt: true, profundidadCen: true,
+            profundidadExt: true, vidaAlMomento: true,
+          },
+        },
+        eventos: {
+          where: { tipo: 'montaje' },
+          select: { tipo: true, fecha: true, notas: true },
+        },
+        vehicle: { select: { placa: true, tipovhc: true, tipoOperacion: true } },
+      },
+    });
+
+    const hasMore = rows.length > limit;
+    const data    = hasMore ? rows.slice(0, limit) : rows;
+    const nextCursor = hasMore ? data[data.length - 1].id : null;
+
+    const payload = { data, nextCursor, limit };
+    await this.cache.set(cacheKey, payload, 10 * 60 * 1000);
+    return payload;
   }
 
   /**
