@@ -2350,7 +2350,10 @@ export class TireService {
     cursor?: string | null;
     limit?:  number;
   }) {
-    const limit = Math.min(Math.max(params.limit ?? 200, 1), 500);
+    // Larger pages = fewer round-trips. 20k-tire accounts now finish in ~10
+    // requests instead of 40. 2,000 is the sweet spot: big enough to cut
+    // latency, small enough to keep each JSON response under ~3 MB gzipped.
+    const limit = Math.min(Math.max(params.limit ?? 2000, 1), 2000);
     const cursor = params.cursor?.trim() || null;
     const cacheKey = `${this.tireKey(params.companyId)}:pg:${cursor ?? 'first'}:${limit}`;
 
