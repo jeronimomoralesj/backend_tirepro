@@ -189,12 +189,27 @@ export class VehicleService {
     });
   }
 
-  async findByPlaca(placa: string) {
+  async findByPlaca(placa: string, companyId?: string) {
+    // A placa is only unique WITHIN a company — same sticker number can live
+    // on two physical vehicles across different fleets. If the caller knows
+    // the company, we must scope by it or we'll silently return a vehicle
+    // from the wrong tenant (leading to empty tire lists downstream).
+    const where: Prisma.VehicleWhereInput = {
+      placa: { equals: placa, mode: 'insensitive' },
+    };
+    if (companyId) where.companyId = companyId;
+
     const vehicle = await this.prisma.vehicle.findFirst({
-      where:  { placa: { equals: placa, mode: 'insensitive' } },
+      where,
       select: { ...VEHICLE_SELECT, drivers: true },
     });
-    if (!vehicle) throw new NotFoundException(`Vehicle with placa "${placa}" not found`);
+    if (!vehicle) {
+      throw new NotFoundException(
+        companyId
+          ? `Vehicle with placa "${placa}" not found for this company`
+          : `Vehicle with placa "${placa}" not found`,
+      );
+    }
     return vehicle;
   }
 

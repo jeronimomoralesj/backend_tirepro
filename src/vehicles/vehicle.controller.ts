@@ -48,10 +48,16 @@ export class VehicleController {
   }
 
   @Get('by-placa')
-getByPlaca(@Query('placa') placa: string) {  // ← 'placa' not 'by-placa'
-  if (!placa) throw new BadRequestException('placa query param is required');
-  return this.vehicleService.findByPlaca(placa);
-}
+  getByPlaca(
+    @Query('placa')     placa: string,
+    @Query('companyId') companyId?: string,
+  ) {
+    if (!placa) throw new BadRequestException('placa query param is required');
+    // companyId is optional but strongly recommended — same placa can exist
+    // across multiple companies (fleet transfers, same sticker reused). When
+    // provided, the service scopes the lookup so each tenant sees their own.
+    return this.vehicleService.findByPlaca(placa, companyId);
+  }
 
 
   // ── Create ────────────────────────────────────────────────────────────────
