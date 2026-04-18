@@ -25,6 +25,8 @@ const USER_PUBLIC_SELECT = {
   isVerified:        true,
   preferredLanguage: true,
   createdAt:         true,
+  lastLoginAt:       true,
+  loginCount:        true,
   vehicleAccess: {
     select: {
       vehicle: { select: { id: true, placa: true } },
