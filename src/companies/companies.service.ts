@@ -157,17 +157,106 @@ export class CompaniesService {
   }
 
   async getClientsForDistributor(distributorCompanyId: string) {
-    return this.prisma.distributorAccess.findMany({
+    const cacheKey = `dist-clients:${distributorCompanyId}`;
+    const cached   = await this.cache.get(cacheKey);
+    if (cached) return cached;
+
+    // Step 1: basic company + counts (users, vehicles, tires).
+    const access = await this.prisma.distributorAccess.findMany({
       where:   { distributorId: distributorCompanyId },
       include: {
         company: {
           select: {
             ...COMPANY_PUBLIC_SELECT,
-            _count: { select: { vehicles: true, tires: true } },
+            createdAt: true,
+            _count:   { select: { vehicles: true, tires: true, users: true } },
           },
         },
       },
     });
+    if (access.length === 0) return [];
+
+    const companyIds = access.map(a => a.companyId);
+
+    // Step 2: one aggregate per metric, each a single indexed query. Using
+    // raw SQL here because Prisma's groupBy won't compose MAX + AVG + FILTER
+    // in one go, and we'd rather do 2 queries than 6.
+    const [tireAgg, costAgg] = await Promise.all([
+      this.prisma.$queryRawUnsafe<Array<{
+        companyId:        string;
+        active_tires:     number;
+        fin_tires:        number;
+        last_inspection:  Date | null;
+        avg_cpk:          string | null;  // numeric → string in pg driver
+      }>>(`
+        SELECT "companyId",
+               COUNT(*) FILTER (WHERE "vidaActual" <> 'fin')::int AS active_tires,
+               COUNT(*) FILTER (WHERE "vidaActual"  = 'fin')::int AS fin_tires,
+               MAX("lastInspeccionDate")                          AS last_inspection,
+               AVG("currentCpk") FILTER (WHERE "currentCpk" > 0)  AS avg_cpk
+        FROM "Tire"
+        WHERE "companyId" = ANY($1::text[])
+        GROUP BY "companyId"
+      `, companyIds),
+
+      this.prisma.$queryRawUnsafe<Array<{
+        companyId: string;
+        inversion: string | null;
+      }>>(`
+        SELECT t."companyId",
+               SUM(c.valor)::bigint AS inversion
+        FROM "Tire" t
+        JOIN tire_costos c ON c."tireId" = t.id
+        WHERE t."companyId" = ANY($1::text[])
+        GROUP BY t."companyId"
+      `, companyIds),
+    ]);
+
+    const tireByCo = new Map(tireAgg.map(r => [r.companyId, r]));
+    const costByCo = new Map(costAgg.map(r => [r.companyId, r]));
+
+    // Step 3: merge + return a shape the frontend can render directly.
+    const now = Date.now();
+    const result = access.map(a => {
+      const co       = a.company;
+      const tire     = tireByCo.get(a.companyId);
+      const cost     = costByCo.get(a.companyId);
+      const activeTires = tire?.active_tires ?? 0;
+      const finTires    = tire?.fin_tires ?? 0;
+      const avgCpk      = tire?.avg_cpk != null ? parseFloat(tire.avg_cpk) : null;
+      const inversion   = cost?.inversion != null ? Number(cost.inversion) : 0;
+      const companySince     = co.createdAt;
+      const distributorSince = a.createdAt;
+      const yearsClient      = Math.floor(
+        (now - new Date(distributorSince).getTime()) / (365.25 * 24 * 3600 * 1000),
+      );
+      return {
+        ...a,
+        company: {
+          ...co,
+          // Stats the distributor panel displays in the client list + header
+          stats: {
+            users:           co._count.users,
+            vehicles:        co._count.vehicles,
+            tires:           co._count.tires,
+            activeTires,
+            finTires,
+            lastInspection:  tire?.last_inspection ?? null,
+            avgCpk,
+            inversionTotal:  inversion,
+            clientSince:     companySince,
+            distributorSince,
+            yearsAsClient:   yearsClient,
+          },
+        },
+      };
+    });
+
+    // 10-min cache — enrichment is expensive but invalidates on any tire /
+    // user edit via invalidateCompanyCache (we don't wire that yet for
+    // distributor rollups; they'll refresh every 10 min regardless).
+    await this.cache.set(cacheKey, result, 10 * 60 * 1000);
+    return result;
   }
 
   async grantDistributorAccess(companyId: string, distributorId: string) {
