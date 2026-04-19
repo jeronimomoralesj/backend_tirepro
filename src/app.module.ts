@@ -22,6 +22,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { InventoryBucketsModule } from './tires/inventory-bucket.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 import { CatalogModule } from './catalog/catalog.module';
+import { TireBenchmarkModule } from './tire-benchmark/tire-benchmark.module';
 import { MarketplaceModule } from './marketplace/marketplace.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { CompanyScopeGuard } from './auth/guards/company-scope.guard';
@@ -86,6 +87,7 @@ import { PrismaService } from './prisma/prisma.service';
     PurchaseOrdersModule,
     MarketplaceModule,
     CatalogModule,
+    TireBenchmarkModule,
     WhatsappModule,
   ],
   controllers: [AppController],

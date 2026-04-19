@@ -168,6 +168,71 @@ export class UsersService {
     });
   }
 
+  /**
+   * Per-user inspection counts for a company, filtered by date range.
+   *
+   * Used by the distribuidor Gestión → Mi Equipo tab to show who is actually
+   * performing inspections. Also returns lastLoginAt + role so the UI can
+   * surface dormant accounts.
+   *
+   * @param from ISO date string (inclusive). If absent, no lower bound.
+   * @param to   ISO date string (exclusive). If absent, no upper bound.
+   */
+  async getUserInspectionStats(companyId: string, from?: string, to?: string) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+
+    const fromDate = from ? new Date(from) : undefined;
+    const toDate   = to   ? new Date(to)   : undefined;
+
+    // One query for users, one groupBy for counts — no N+1.
+    const [users, counts] = await Promise.all([
+      this.prisma.user.findMany({
+        where:   { companyId },
+        select: {
+          id: true, email: true, name: true, role: true,
+          createdAt: true, lastLoginAt: true, loginCount: true,
+        },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.inspeccion.groupBy({
+        by:    ['inspeccionadoPorId'],
+        where: {
+          tire: { companyId },
+          inspeccionadoPorId: { not: null },
+          ...(fromDate || toDate
+            ? { fecha: { ...(fromDate && { gte: fromDate }), ...(toDate && { lt: toDate }) } }
+            : {}),
+        },
+        _count: { _all: true },
+        _max:   { fecha: true },
+      }),
+    ]);
+
+    const countById = new Map<string, { count: number; last: Date | null }>();
+    for (const row of counts) {
+      if (!row.inspeccionadoPorId) continue;
+      countById.set(row.inspeccionadoPorId, {
+        count: row._count._all,
+        last:  row._max.fecha ?? null,
+      });
+    }
+
+    return users.map(u => {
+      const stats = countById.get(u.id);
+      return {
+        id:              u.id,
+        name:            u.name,
+        email:           u.email,
+        role:            u.role,
+        createdAt:       u.createdAt,
+        lastLoginAt:     u.lastLoginAt,
+        loginCount:      u.loginCount,
+        inspections:     stats?.count ?? 0,
+        lastInspection:  stats?.last ?? null,
+      };
+    });
+  }
+
   // ===========================================================================
   // UPDATE
   // ===========================================================================

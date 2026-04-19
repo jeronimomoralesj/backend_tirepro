@@ -54,3 +54,18 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Database backups — NEVER commit. Contains user data, hashed passwords,
+# and all tire/inspection history.
+*.dump
+*.sql.gz
+backup_before_migration_*
+backup_*.dump
+
+# Codebase archives — used for manual SCP deploys, must not ship to git.
+*.tar.gz
+*.zip
+
+# Expo leftover from shared-root mobile tooling — wrong repo.
+.expo/
+.next/

@@ -13,10 +13,12 @@ import {
   UsePipes,
   ValidationPipe,
   BadRequestException,
+  Req,
 } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CompanyScopeGuard } from '../auth/guards/company-scope.guard';
+import { PrismaService } from '../prisma/prisma.service';
 import { VehicleService } from './vehicle.service';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
@@ -38,7 +40,10 @@ class UpdateDriversDto {
 @UseGuards(JwtAuthGuard, CompanyScopeGuard)
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class VehicleController {
-  constructor(private readonly vehicleService: VehicleService) {}
+  constructor(
+    private readonly vehicleService: VehicleService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   // ── Static routes first (before :id param routes) ────────────────────────
 
@@ -48,14 +53,40 @@ export class VehicleController {
   }
 
   @Get('by-placa')
-  getByPlaca(
+  async getByPlaca(
+    @Req() req: { user?: { companyId?: string } },
     @Query('placa')     placa: string,
     @Query('companyId') companyId?: string,
   ) {
     if (!placa) throw new BadRequestException('placa query param is required');
-    // companyId is optional but strongly recommended — same placa can exist
-    // across multiple companies (fleet transfers, same sticker reused). When
-    // provided, the service scopes the lookup so each tenant sees their own.
+
+    // Distributor flow: if the caller's own company is a distribuidor plan,
+    // CompanyScopeGuard will have auto-injected the distributor's companyId —
+    // which has zero client-owned vehicles. We broaden the search to any
+    // company the distributor has access to via DistributorAccess. The
+    // frontend agregarDist flows rely on this to look up a client's vehicle
+    // without having to pre-select a client.
+    const userCompanyId = req.user?.companyId;
+    if (userCompanyId && companyId === userCompanyId) {
+      const caller = await this.prisma.company.findUnique({
+        where:  { id: userCompanyId },
+        select: { plan: true },
+      });
+      if (caller?.plan === 'distribuidor') {
+        const accesses = await this.prisma.distributorAccess.findMany({
+          where:  { distributorId: userCompanyId },
+          select: { companyId: true },
+        });
+        // Include the distributor's own company (in case they inspect their
+        // own fleet) plus all client companies they manage.
+        const accessibleCompanyIds = [
+          userCompanyId,
+          ...accesses.map((a) => a.companyId),
+        ];
+        return this.vehicleService.findByPlaca(placa, undefined, accessibleCompanyIds);
+      }
+    }
+
     return this.vehicleService.findByPlaca(placa, companyId);
   }
 

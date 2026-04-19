@@ -38,20 +38,32 @@ import { EmailModule } from '../email/email.module';
     MailerModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (cs: ConfigService) => ({
-        transport: {
-          host: cs.getOrThrow('SMTP_HOST'),
-          port: cs.get<number>('SMTP_PORT', 587),
-          secure: false,
-          auth: {
-            user: cs.getOrThrow('SMTP_USER'),
-            pass: cs.getOrThrow('SMTP_PASS'),
+      useFactory: (cs: ConfigService) => {
+        const port = cs.get<number>('SMTP_PORT', 587);
+        return {
+          transport: {
+            host: cs.getOrThrow('SMTP_HOST'),
+            port,
+            // Port 465 uses implicit TLS; 587 uses STARTTLS — Gmail closes
+            // the socket silently when `requireTLS` isn't set on 587, which
+            // surfaces as "Unexpected socket close" in the log.
+            secure: port === 465,
+            requireTLS: port === 587,
+            auth: {
+              user: cs.getOrThrow('SMTP_USER'),
+              pass: cs.getOrThrow('SMTP_PASS'),
+            },
+            // Bounded timeouts so a failing mail doesn't hang the request
+            // for 30+ seconds while the admin waits for the password.
+            connectionTimeout: 10_000,
+            greetingTimeout:   10_000,
+            socketTimeout:     15_000,
           },
-        },
-        defaults: {
-          from: cs.get('SMTP_FROM', 'noreply@tirepro.com.co'),
-        },
-      }),
+          defaults: {
+            from: cs.get('SMTP_FROM', 'noreply@tirepro.com.co'),
+          },
+        };
+      },
     }),
   ],
   providers: [

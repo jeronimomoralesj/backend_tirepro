@@ -189,15 +189,26 @@ export class VehicleService {
     });
   }
 
-  async findByPlaca(placa: string, companyId?: string) {
+  async findByPlaca(placa: string, companyId?: string, accessibleCompanyIds?: string[]) {
     // A placa is only unique WITHIN a company — same sticker number can live
     // on two physical vehicles across different fleets. If the caller knows
     // the company, we must scope by it or we'll silently return a vehicle
     // from the wrong tenant (leading to empty tire lists downstream).
+    //
+    // Distributors are a special case: they manage many client companies, and
+    // the CompanyScopeGuard auto-injects their own companyId (which has zero
+    // client vehicles). When `accessibleCompanyIds` is passed, we broaden the
+    // search to any of those companies — this is how an authenticated
+    // distributor's single-placa lookup resolves without requiring them to
+    // pick a client first.
     const where: Prisma.VehicleWhereInput = {
       placa: { equals: placa, mode: 'insensitive' },
     };
-    if (companyId) where.companyId = companyId;
+    if (accessibleCompanyIds && accessibleCompanyIds.length > 0) {
+      where.companyId = { in: accessibleCompanyIds };
+    } else if (companyId) {
+      where.companyId = companyId;
+    }
 
     const vehicle = await this.prisma.vehicle.findFirst({
       where,

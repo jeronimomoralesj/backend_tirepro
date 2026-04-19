@@ -77,7 +77,7 @@ export class CompaniesService {
     const company = await this.prisma.company.create({
       data: {
         name:         dto.name,
-        plan:         (dto.plan as CompanyPlan) ?? CompanyPlan.basic,
+        plan:         (dto.plan as CompanyPlan) ?? CompanyPlan.pro,
         profileImage: DEFAULT_LOGO,
         ...(dto.emailAtencion && { emailAtencion: dto.emailAtencion }),
       },

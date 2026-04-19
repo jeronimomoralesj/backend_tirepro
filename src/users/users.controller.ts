@@ -94,6 +94,22 @@ export class UsersController {
     return this.usersService.getUsersByCompany(companyId);
   }
 
+  /**
+   * Per-user inspection stats for a company in a date range.
+   * Used by the distribuidor's Gestión → Mi Equipo tab to surface who's
+   * actually doing inspections and how recently.
+   */
+  @Get('inspection-stats')
+  @UseGuards(JwtAuthGuard)
+  getUserInspectionStats(
+    @Query('companyId') companyId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    return this.usersService.getUserInspectionStats(companyId, from, to);
+  }
+
   @Get(':id/vehicles')
   @UseGuards(JwtAuthGuard)
   getAccessibleVehicles(@Param('id') userId: string) {
