@@ -314,6 +314,12 @@ model Vehicle {
   // import doesn't duplicate rows. Null for anything created natively.
   externalSourceId String? @unique
 
+  // ─── Archival ────────────────────────────────────────────────────────────
+  // Set when a vehicle hasn't been inspected in ≥ 1 year (triggered by the
+  // cleanup job). Archived vehicles stay in the DB so we can reconnect them
+  // later, but are filtered from every company-scoped query by default.
+  archivedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -328,6 +334,7 @@ model Vehicle {
   @@unique([companyId, placa])
   @@index([companyId])
   @@index([placa])
+  @@index([companyId, archivedAt])
 
   // NUEVOS ÍNDICES 🔽
   @@index([tipoOperacion])

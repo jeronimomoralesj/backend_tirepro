@@ -173,7 +173,9 @@ export class VehicleService {
     if (cached) return cached;
 
     const vehicles = await this.prisma.vehicle.findMany({
-      where:   { companyId },
+      // Archived vehicles (no inspections for ≥ 1 year) are kept in the DB
+      // for possible reconnection but hidden from every company-scoped view.
+      where:   { companyId, archivedAt: null },
       select:  { ...VEHICLE_SELECT, drivers: true },
       orderBy: { placa: 'asc' },
     });
@@ -184,6 +186,7 @@ export class VehicleService {
 
   async findAllVehicles() {
     return this.prisma.vehicle.findMany({
+      where:   { archivedAt: null },
       select:  VEHICLE_SELECT,
       orderBy: { placa: 'asc' },
     });
@@ -203,6 +206,7 @@ export class VehicleService {
     // pick a client first.
     const where: Prisma.VehicleWhereInput = {
       placa: { equals: placa, mode: 'insensitive' },
+      archivedAt: null,
     };
     if (accessibleCompanyIds && accessibleCompanyIds.length > 0) {
       where.companyId = { in: accessibleCompanyIds };
