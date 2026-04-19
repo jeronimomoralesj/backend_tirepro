@@ -353,6 +353,7 @@ export class MarketplaceService {
   // cheap and lets us run a Levenshtein distance against every marca per
   // query without hitting the DB more than once an hour.
   private brandListCache: { brands: string[]; expiresAt: number } | null = null;
+  private modelListCache: { models: string[]; expiresAt: number } | null = null;
 
   private async getDistinctBrands(): Promise<string[]> {
     if (this.brandListCache && this.brandListCache.expiresAt > Date.now()) {
@@ -499,6 +500,43 @@ export class MarketplaceService {
     return scored.map((s) => s.brand);
   }
 
+  private async getDistinctModels(): Promise<string[]> {
+    if (this.modelListCache && this.modelListCache.expiresAt > Date.now()) {
+      return this.modelListCache.models;
+    }
+    const rows = await this.prisma.distributorListing.findMany({
+      where: { isActive: true, modelo: { not: '' } },
+      distinct: ['modelo'],
+      select: { modelo: true },
+    });
+    const models = rows.map((r) => r.modelo).filter(Boolean);
+    this.modelListCache = { models, expiresAt: Date.now() + 60 * 60 * 1000 };
+    return models;
+  }
+
+  /**
+   * Fuzzy-match a search query against every distinct model currently on
+   * sale. Used to surface "HDR2" when the user types "hdr3", "x-trail" when
+   * they type "xtrail", etc. Tolerance scales with model-name length; short
+   * codes (FS400) allow 1 edit, longer names up to ~25% of the length.
+   */
+  private async fuzzyMatchModels(query: string): Promise<string[]> {
+    const q = query.trim().toLowerCase();
+    if (q.length < 3) return [];
+    const models = await this.getDistinctModels();
+    const scored = models
+      .map((m) => ({ model: m, distance: levenshtein(q, m.toLowerCase()) }))
+      .filter(({ model, distance }) => {
+        // Model names like "HDR2" are 4 chars — tolerate 1 edit.
+        // Longer ones like "Pilot Sport 4" tolerate up to 3.
+        const tolerance = Math.max(1, Math.min(3, Math.floor(model.length * 0.25)));
+        return distance > 0 && distance <= tolerance;
+      })
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 8);
+    return scored.map((s) => s.model);
+  }
+
 
   async searchListings(filters: {
     dimension?: string;
@@ -552,11 +590,16 @@ export class MarketplaceService {
         dimension: { contains: v, mode: 'insensitive' as const },
       }));
 
-      // Fuzzy brand matching — pull every distinct marca, score them
-      // against the query with a Levenshtein distance, and add brands
-      // within tolerance to the OR. Handles "techseled" → "Techshield",
-      // "michellin" → "Michelin", "bridgstone" → "Bridgestone", etc.
-      const fuzzyBrands = await this.fuzzyMatchBrands(raw);
+      // Fuzzy brand + model matching — Levenshtein over every distinct
+      // marca/modelo currently on sale. Handles:
+      //   • brand typos: "techseled" → "Techshield", "michellin" → "Michelin"
+      //   • model typos: "hdr3" → "HDR2", "xtrail" → "X-Trail"
+      //
+      // Run in parallel so we add ~50-100ms total, not 2× that.
+      const [fuzzyBrands, fuzzyModels] = await Promise.all([
+        this.fuzzyMatchBrands(raw),
+        this.fuzzyMatchModels(raw),
+      ]);
 
       where.OR = [
         { marca:  { contains: raw, mode: 'insensitive' } },
@@ -564,6 +607,9 @@ export class MarketplaceService {
           ? fuzzyBrands.map((b) => ({ marca: { equals: b, mode: 'insensitive' as const } }))
           : []),
         { modelo: { contains: raw, mode: 'insensitive' } },
+        ...(fuzzyModels.length > 0
+          ? fuzzyModels.map((m) => ({ modelo: { equals: m, mode: 'insensitive' as const } }))
+          : []),
         ...dimensionOr,
         { distributor: { name: { contains: raw, mode: 'insensitive' } } },
       ];
