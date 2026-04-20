@@ -47,7 +47,8 @@ export class VehicleService {
     return `vehicles:${companyId}`;
   }
 
-  private async invalidateVehicleCache(companyId: string) {
+  private async invalidateVehicleCache(companyId: string | null | undefined) {
+    if (!companyId) return; // orphan vehicles aren't in any company cache
     await this.cache.del(this.vehicleKey(companyId));
   }
 

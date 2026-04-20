@@ -118,6 +118,14 @@ enum CouponCategory {
   aceites
 }
 
+// Operational state of a vehicle — drives orphan import from Merquepro.
+// `fuera_de_operacion` = vehicle is preserved in TirePro but not linked to
+// any fleet (companyId null), so historical analysis stays queryable.
+enum VehicleOperationalState {
+  activo
+  fuera_de_operacion
+}
+
 // Why a vida ended — drives the recommendation engine
 enum MotivoFinVida {
   reencauche        // normal planned retread
@@ -287,7 +295,11 @@ model Vehicle {
   carga             String
   pesoCarga         Float
   tipovhc           String
-  companyId         String
+  // Nullable: when a vehicle is imported as "fuera de operación" we keep
+  // the full record + tire history in TirePro but don't link it to any
+  // fleet. Every company-scoped query (where companyId = X) naturally
+  // excludes orphans since NULL never matches.
+  companyId         String?
   cliente           String?
 
   // Vehicle make / manufacturer (Kenworth, Volvo, International…)
@@ -321,10 +333,25 @@ model Vehicle {
   // later, but are filtered from every company-scoped query by default.
   archivedAt DateTime?
 
+  // ─── Operational state ──────────────────────────────────────────────────
+  // `fuera_de_operacion` vehicles are orphaned (companyId null) during
+  // import but keep the full record for long-horizon analysis.
+  estadoOperacional       VehicleOperationalState @default(activo)
+  fueraDeOperacionDesde   DateTime?
+  // Intended fleet name (preserved when orphaned so we know the origin).
+  originalClient          String?
+  // Vehicle-level activity signal carried over from Merquepro. Source of
+  // truth for the importer; our computed `kmMensualReal` is derived later.
+  kmMensualMerquepro      Float?
+  ultimaActividadAt       DateTime?
+  // Lossless catch-all: anything from the source feed we don't promote to
+  // a first-class column lands here so no data is ever dropped on import.
+  sourceMetadata          Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company            Company?            @relation(fields: [companyId], references: [id], onDelete: SetNull)
   tires              Tire[]              @relation("VehicleTires")
   extras             Extra[]
   notifications      Notification[]
@@ -337,6 +364,7 @@ model Vehicle {
   @@index([companyId])
   @@index([placa])
   @@index([companyId, archivedAt])
+  @@index([estadoOperacional])
 
   // NUEVOS ÍNDICES 🔽
   @@index([tipoOperacion])
@@ -401,7 +429,9 @@ model VehicleInspection {
 
 model Tire {
   id        String  @id @default(uuid())
-  companyId String
+  // Nullable: mirrors Vehicle.companyId. A tire mounted on an orphaned
+  // vehicle is itself orphan so it never surfaces in any fleet dashboard.
+  companyId String?
   vehicleId String?
   placa     String  // tire serial / identifier
 
@@ -477,10 +507,16 @@ model Tire {
   // External system dedup key — same contract as Vehicle.externalSourceId.
   externalSourceId String? @unique
 
+  // Original fleet name (preserved when orphaned so origin is never lost).
+  originalClient String?
+  // Lossless catch-all for non-promoted source fields (cpkStad, mileageStad,
+  // hasTraceability, etc.) so no data is dropped on import.
+  sourceMetadata Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company         Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company         Company?             @relation(fields: [companyId], references: [id], onDelete: SetNull)
   vehicle         Vehicle?             @relation("VehicleTires", fields: [vehicleId], references: [id])
   inspecciones    Inspeccion[]
   eventos         TireEvento[]
@@ -570,6 +606,10 @@ model Inspeccion {
   // External system dedup key — populated by integrations.
   externalSourceId String? @unique
 
+  // Lossless catch-all for per-inspection source fields (alert, operationType,
+  // owner/driver, consecutives, report IDs) so nothing is ever dropped.
+  sourceMetadata Json?
+
   createdAt DateTime @default(now())
 
   tire             Tire  @relation(fields: [tireId], references: [id], onDelete: Cascade)
@@ -606,7 +646,9 @@ model Inspeccion {
 model TireVidaSnapshot {
   id        String    @id @default(uuid())
   tireId    String
-  companyId String    // denormalized for fleet-wide aggregation without joining Tire
+  // Nullable for parity with Tire.companyId — snapshots on orphan tires
+  // keep their historical payload without faking a company link.
+  companyId String?   // denormalized for fleet-wide aggregation without joining Tire
 
   vida      VidaValue // which vida phase this snapshot covers
 
@@ -692,8 +734,8 @@ model TireVidaSnapshot {
 
   createdAt DateTime @default(now())
 
-  tire    Tire    @relation(fields: [tireId], references: [id], onDelete: Cascade)
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tire    Tire     @relation(fields: [tireId], references: [id], onDelete: Cascade)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
 
   @@index([tireId])
   @@index([tireId, vida])
@@ -777,7 +819,9 @@ model VehicleTireHistory {
 
   // Who + where
   vehicleId String
-  companyId String   // denormalized so we can query per-tenant without joining Vehicle
+  // Nullable when the host vehicle was imported as orphan (fuera de operación).
+  // History is still written so per-position analytics survive orphaning.
+  companyId String?
   position  Int
 
   // What tire — keep an FK to Tire when it still exists, but also snapshot the
@@ -811,9 +855,9 @@ model VehicleTireHistory {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  tire    Tire?   @relation(fields: [tireId], references: [id], onDelete: SetNull)
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vehicle Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  tire    Tire?    @relation(fields: [tireId], references: [id], onDelete: SetNull)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
 
   @@index([vehicleId, position])
   @@index([vehicleId, fechaDesmonte])  // pull current (open) entries per vehicle

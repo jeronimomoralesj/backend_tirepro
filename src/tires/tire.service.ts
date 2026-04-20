@@ -983,7 +983,8 @@ export class TireService {
   private static readonly TTL_VEHICLE   = 10 * 60 * 1000;
   private static readonly TTL_BENCHMARK = 24 * 60 * 60 * 1000;
 
-  private async invalidateCompanyCache(companyId: string) {
+  private async invalidateCompanyCache(companyId: string | null | undefined) {
+    if (!companyId) return; // orphan tires aren't in any company cache
     // Wipe the 3 main caches for this company: the full /tires payload, the
     // slim projection, and every cursor page. We can't easily enumerate all
     // :pg:<cursor>:<limit> keys from Nest's cache-manager API, so when Redis
@@ -3062,7 +3063,7 @@ export class TireService {
             type: isCritical ? 'critical' : 'warning',
             tireId,
             vehicleId: updatedTire.vehicleId ?? undefined,
-            companyId: updatedTire.companyId,
+            companyId: updatedTire.companyId ?? undefined,
             actionType,
             actionPayload: { tireId, position: updatedTire.posicion, vehicleId: updatedTire.vehicleId },
             actionLabel: additionalRecs || undefined,
@@ -4177,7 +4178,7 @@ export class TireService {
                 type: 'warning',
                 tireId,
                 vehicleId: updatedTire.vehicleId ?? undefined,
-                companyId: updatedTire.companyId,
+                companyId: updatedTire.companyId ?? undefined,
                 actionType: 'rotate',
                 actionPayload: { tireId, partnerId: partner.id, dualDelta },
                 actionLabel: `Emparejar gemelas (Δ${dualDelta.toFixed(1)}mm)`,

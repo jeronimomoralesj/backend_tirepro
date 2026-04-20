@@ -193,16 +193,66 @@ function loadAll(prefix: string): any[] {
 // Main
 // =============================================================================
 
+// =============================================================================
+// ORPHAN CLASSIFICATION
+//
+// Merquepro's "fuera de operación" label isn't a field — it's derived from
+// `/report/vehiclesWithoutTransaction`, which ships a `months` counter (time
+// since last recorded transaction) per vehicle. We treat months >= this
+// threshold as fuera de operación. Those vehicles import with companyId=null
+// + estadoOperacional=fuera_de_operacion + originalClient=partner, so the
+// full record survives for long-horizon analytics but never appears in any
+// fleet's dashboard.
+// =============================================================================
+const ORPHAN_MONTHS_THRESHOLD = 6;
+
 async function main() {
   console.log(APPLY ? '▶ APPLY mode — writing to DB' : '◇ DRY-RUN mode — no writes');
 
   const vehiclesRaw    = loadJsonArray('vehicles.json');
+  const vehiclesWoTx   = loadJsonArray('vehiclesWithoutTransaction.json');
   const tiresRaw       = loadAll('tires_p');
   const inspsRaw       = SKIP_INSPS ? [] : loadAll('inspections_p');
 
-  console.log(`Loaded vehicle txns:  ${vehiclesRaw.length}`);
-  console.log(`Loaded tires:         ${tiresRaw.length}`);
-  console.log(`Loaded inspections:   ${inspsRaw.length}`);
+  console.log(`Loaded vehicle txns:            ${vehiclesRaw.length}`);
+  console.log(`Loaded vehiclesWithoutTxns:     ${vehiclesWoTx.length}`);
+  console.log(`Loaded tires:                   ${tiresRaw.length}`);
+  console.log(`Loaded inspections:             ${inspsRaw.length}`);
+
+  // ── Build "inactive vehicle" map from vehiclesWithoutTransaction ─────────
+  // Keyed by vehicle.id. Records the idle-time + last activity we need to
+  // orphan a vehicle AND enrich its activity signals (kmMensualMerquepro).
+  type InactiveInfo = {
+    months:   number;
+    lastDate: Date | null;
+    partner:  string;
+    mileage:  number;
+    carType:  string;
+    operationType: string | null;
+    tires:    number;
+    raw:      any;
+  };
+  const inactiveById = new Map<number, InactiveInfo>();
+  for (const r of vehiclesWoTx) {
+    const vid = r.id;
+    if (typeof vid !== 'number') continue;
+    inactiveById.set(vid, {
+      months:   Number(r.months ?? 0),
+      lastDate: parseDate(r.lastDate),
+      partner:  String(r.partner ?? '').trim(),
+      mileage:  toNum(r.mileage),
+      carType:  String(r.carType ?? '').trim(),
+      operationType: r.operationType ?? null,
+      tires:    Number(r.tires ?? 0),
+      raw:      r,
+    });
+  }
+  const isOrphan = (vid: number): boolean => {
+    const inf = inactiveById.get(vid);
+    return !!inf && inf.months >= ORPHAN_MONTHS_THRESHOLD;
+  };
+  const orphanCount = [...inactiveById.values()].filter((v) => v.months >= ORPHAN_MONTHS_THRESHOLD).length;
+  console.log(`Fuera de operación (>=${ORPHAN_MONTHS_THRESHOLD} months): ${orphanCount} / ${inactiveById.size}\n`);
 
   // ── Verify Merquellantas exists ──────────────────────────────────────────
   const merque = await prisma.company.findUnique({
@@ -278,6 +328,8 @@ async function main() {
     vehicleType: string;
     actualMileage: number;
     date: Date | null;
+    kmPerMonth: number;
+    raw: any | null;           // latest raw row from vehicles.json (sourceMetadata)
   };
   const vehicleMetaById = new Map<number, VehMeta>();
   for (const r of vehiclesRaw) {
@@ -292,6 +344,8 @@ async function main() {
       vehicleType:  String(r.vehicleType ?? ''),
       actualMileage: toNum(r.actualMileage),
       date:         parseDate(r.date),
+      kmPerMonth:   toNum(r.averageMileageTraveledPerMonth),
+      raw:          r,
     };
     const prev = vehicleMetaById.get(vid);
     if (!prev || (meta.date && (!prev.date || meta.date > prev.date))) {
@@ -313,7 +367,52 @@ async function main() {
       vehicleType: String(i.vehicleTypes ?? ''),
       actualMileage: toNum(i.mileage),
       date: parseDate(i.date),
+      kmPerMonth: 0,
+      raw: null,
     });
+  }
+
+  // Fold in every vehiclesWithoutTransaction row too. These vehicles have no
+  // transactions yet still own tires + inspections; we'd otherwise silently
+  // skip them. Client name comes from `partner` here. No-partner rows stay.
+  for (const [vid, inf] of inactiveById.entries()) {
+    if (vehicleMetaById.has(vid)) continue;
+    const client = inf.partner;
+    if (client && !clientToCompanyId.has(client)) {
+      // Ensure the orphan partner still gets a Company row so originalClient
+      // + DistributorAccess linkage work later. Track for second-pass upsert.
+      clientToCompanyId.set(client, '');
+    }
+    vehicleMetaById.set(vid, {
+      vehicleId:    vid,
+      client,
+      plate:        cleanPlate((inf.raw as any).plate),
+      vehicleType:  inf.carType,
+      actualMileage: inf.mileage,
+      date:         inf.lastDate,
+      kmPerMonth:   0,
+      raw:          inf.raw,
+    });
+  }
+
+  // Back-fill any new clients registered from the orphan pool.
+  for (const [client, cid] of clientToCompanyId.entries()) {
+    if (cid) continue;
+    if (!APPLY) { clientToCompanyId.set(client, 'dryrun-' + Math.random().toString(36).slice(2, 10)); continue; }
+    const pretty = prettyCompanyName(client);
+    const existing = await prisma.company.findFirst({
+      where: { name: { equals: pretty, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    const companyId = existing?.id ?? (await prisma.company.create({ data: { name: pretty }, select: { id: true } })).id;
+    clientToCompanyId.set(client, companyId);
+    if (companyId !== MERQUELLANTAS_COMPANY_ID) {
+      await prisma.distributorAccess.upsert({
+        where: { companyId_distributorId: { companyId, distributorId: MERQUELLANTAS_COMPANY_ID } },
+        update: {},
+        create: { companyId, distributorId: MERQUELLANTAS_COMPANY_ID },
+      });
+    }
   }
 
   console.log(`Distinct vehicles to upsert: ${vehicleMetaById.size}`);
@@ -369,10 +468,12 @@ async function main() {
   const vehMetas = [...winnerByPlateKey.values()];
   console.log(`After (companyId,placa) dedup: ${vehMetas.length} winners  ${aliasByVehicleId.size} aliases`);
 
+  let vehicleOrphaned = 0;
+
   async function processVehicle(meta: VehMeta) {
     if (!meta.plate) { vehicleSkipped++; return; }
-    const companyId = clientToCompanyId.get(meta.client);
-    if (!companyId) { vehicleSkipped++; return; }
+    const clientCompanyId = clientToCompanyId.get(meta.client);
+    if (!clientCompanyId) { vehicleSkipped++; return; }
 
     const ext = EXT_VEHICLE(meta.vehicleId);
     if (!APPLY) {
@@ -382,17 +483,50 @@ async function main() {
     const plateLower    = meta.plate.toLowerCase();
     const configuracion = mapConfiguracionFromType(meta.vehicleType);
     const tipovhc       = normalizeTipoVhc(meta.vehicleType);
+    const inactive      = inactiveById.get(meta.vehicleId);
+    const orphan        = isOrphan(meta.vehicleId);
+    // Orphans don't link to any fleet; every other field is preserved.
+    const companyId: string | null = orphan ? null : clientCompanyId;
 
-    // Dedup order: ext id → (companyId, placa) → create
-    let existing = existingVehBySrc.get(ext) ?? existingVehByPlate.get(`${companyId}|${plateLower}`) ?? null;
+    // sourceMetadata — lossless blob of every source field we don't promote
+    // to a first-class column, per the zero-data-loss contract.
+    const sourceMetadata = {
+      ...(meta.raw ?? {}),
+      inactiveInfo: inactive ? {
+        months:   inactive.months,
+        lastDate: inactive.lastDate?.toISOString() ?? null,
+        partner:  inactive.partner,
+        mileage:  inactive.mileage,
+        carType:  inactive.carType,
+        operationType: inactive.operationType,
+        tires:    inactive.tires,
+      } : null,
+    };
+
+    // Dedup order: ext id → (clientCompanyId, placa) [existing live fleet
+    // row] — orphans also match here so we don't re-orphan a vehicle that
+    // was already imported.
+    let existing = existingVehBySrc.get(ext)
+      ?? existingVehByPlate.get(`${clientCompanyId}|${plateLower}`)
+      ?? null;
+
+    const baseCommon = {
+      kilometrajeActual: capVehicleKm(meta.actualMileage),
+      tipovhc,
+      kmMensualMerquepro:    meta.kmPerMonth || null,
+      originalClient:        meta.client,
+      ultimaActividadAt:     meta.date ?? null,
+      estadoOperacional:     orphan ? 'fuera_de_operacion' as const : 'activo' as const,
+      fueraDeOperacionDesde: orphan ? (inactive?.lastDate ?? new Date()) : null,
+      sourceMetadata:        sourceMetadata as any,
+    };
 
     if (existing) {
       const upd = await prisma.vehicle.update({
         where: { id: existing.id },
         data: {
-          placa:             plateLower,
-          kilometrajeActual: capVehicleKm(meta.actualMileage),
-          tipovhc,
+          ...baseCommon,
+          placa:         plateLower,
           configuracion: configuracion ?? existing.configuracion,
           companyId,
           ...(existing.externalSourceId ? {} : { externalSourceId: ext }),
@@ -400,16 +534,16 @@ async function main() {
         select: { id: true },
       });
       vehicleIdMap.set(meta.vehicleId, upd.id);
+      if (orphan) vehicleOrphaned++;
       vehicleUpdated++;
     } else {
       try {
         const created = await prisma.vehicle.create({
           data: {
+            ...baseCommon,
             placa:             plateLower,
-            kilometrajeActual: capVehicleKm(meta.actualMileage),
             carga:             'seca',
             pesoCarga:         0,
-            tipovhc,
             configuracion,
             companyId,
             externalSourceId:  ext,
@@ -419,23 +553,24 @@ async function main() {
         vehicleIdMap.set(meta.vehicleId, created.id);
         const rec = { id: created.id, externalSourceId: ext, configuracion };
         existingVehBySrc.set(ext, rec);
-        existingVehByPlate.set(`${companyId}|${plateLower}`, rec);
+        existingVehByPlate.set(`${clientCompanyId}|${plateLower}`, rec);
+        if (orphan) vehicleOrphaned++;
         vehicleCreated++;
       } catch (err: any) {
         if (err?.code !== 'P2002') throw err;
         // Raced with another wave-mate or a pre-existing row we missed.
         // Re-fetch and update instead of failing the import.
         const found = await prisma.vehicle.findFirst({
-          where: { companyId, placa: plateLower },
+          where: { placa: plateLower, OR: [{ companyId: clientCompanyId }, { companyId: null, externalSourceId: ext }] },
           select: { id: true, externalSourceId: true, configuracion: true },
         });
         if (!found) throw err;
         const upd = await prisma.vehicle.update({
           where: { id: found.id },
           data: {
-            kilometrajeActual: capVehicleKm(meta.actualMileage),
-            tipovhc,
+            ...baseCommon,
             configuracion: configuracion ?? found.configuracion,
+            companyId,
             ...(found.externalSourceId ? {} : { externalSourceId: ext }),
           },
           select: { id: true },
@@ -443,7 +578,8 @@ async function main() {
         vehicleIdMap.set(meta.vehicleId, upd.id);
         const rec = { id: upd.id, externalSourceId: found.externalSourceId ?? ext, configuracion: configuracion ?? found.configuracion };
         if (rec.externalSourceId) existingVehBySrc.set(rec.externalSourceId, rec);
-        existingVehByPlate.set(`${companyId}|${plateLower}`, rec);
+        existingVehByPlate.set(`${clientCompanyId}|${plateLower}`, rec);
+        if (orphan) vehicleOrphaned++;
         vehicleUpdated++;
       }
     }
@@ -459,7 +595,17 @@ async function main() {
       console.log(`  veh ${Math.min(i + VEH_BATCH, vehMetas.length)} / ${vehMetas.length}   +${vehicleCreated}n  ${vehicleUpdated}u  ${vehicleSkipped}sk  (${elapsed}s)`);
     }
   }
-  console.log(`Vehicles — created: ${vehicleCreated}  updated: ${vehicleUpdated}  skipped: ${vehicleSkipped}\n`);
+  console.log(`Vehicles — created: ${vehicleCreated}  updated: ${vehicleUpdated}  skipped: ${vehicleSkipped}  orphaned: ${vehicleOrphaned}\n`);
+
+  // Set of "clientCompanyId|placaLower" for orphan vehicles. Used to orphan
+  // the tires that belong to them in the next section.
+  const orphanPlateKeys = new Set<string>();
+  for (const meta of vehMetas) {
+    if (!isOrphan(meta.vehicleId)) continue;
+    const cid = clientToCompanyId.get(meta.client);
+    if (!cid || !meta.plate) continue;
+    orphanPlateKeys.add(`${cid}|${meta.plate.toLowerCase()}`);
+  }
 
   // ── Upsert Tires ─────────────────────────────────────────────────────────
   // MERQUEPRO stores one row per tire STATE. The same physical tire may
@@ -567,10 +713,12 @@ async function main() {
   // Batched concurrency: Prisma's pool defaults to ~10, so we burn through
   // 25 per wave for headroom without overwhelming it.
   const TIRE_BATCH = 25;
+  let tireOrphaned = 0;
+
   async function processTire(r: TireRow) {
     const client = (r.client ?? '').trim();
-    const companyId = clientToCompanyId.get(client);
-    if (!companyId) { tireSkipped++; return; }
+    const clientCompanyId = clientToCompanyId.get(client);
+    if (!clientCompanyId) { tireSkipped++; return; }
 
     const extTire = EXT_TIRE(r.id);
     const dial    = r.dialNumber ? String(r.dialNumber) : r.id;
@@ -598,9 +746,17 @@ async function main() {
 
     let vehicleId: string | null = null;
     const cleanedPlate = cleanPlate(r.plate);
-    if (cleanedPlate && vidaActual !== VidaValue.fin) {
-      vehicleId = vehicleByPlate.get(`${companyId}|${cleanedPlate.toLowerCase()}`) ?? null;
+    const plateKey = cleanedPlate ? `${clientCompanyId}|${cleanedPlate.toLowerCase()}` : null;
+    if (plateKey && vidaActual !== VidaValue.fin) {
+      vehicleId = vehicleByPlate.get(plateKey) ?? null;
     }
+
+    // Tire inherits orphan status from its host vehicle. Tire.companyId null
+    // means it never surfaces in any fleet dashboard but is still queryable
+    // for cross-fleet analytics.
+    const hostIsOrphan = !!plateKey && orphanPlateKeys.has(plateKey);
+    const companyId: string | null = hostIsOrphan ? null : clientCompanyId;
+    if (hostIsOrphan) tireOrphaned++;
 
     const baseTireData = {
       companyId,
@@ -618,6 +774,10 @@ async function main() {
       currentCpk:         cpk > 0 ? cpk : null,
       fechaInstalacion:   installDate,
       externalSourceId:   extTire,
+      originalClient:     client,
+      // Lossless: every non-promoted source field stays addressable under
+      // sourceMetadata for later analytics / audit.
+      sourceMetadata:     r as any,
     };
 
     if (!APPLY) {
@@ -714,7 +874,7 @@ async function main() {
       console.log(`  tires ${Math.min(i + TIRE_BATCH, canonicalTires.length)} / ${canonicalTires.length}   +${tireCreated}n  ${tireUpdated}u  ${tireSkipped}sk  (${elapsed}s)`);
     }
   }
-  console.log(`Tires — created: ${tireCreated}  updated: ${tireUpdated}  skipped: ${tireSkipped}`);
+  console.log(`Tires — created: ${tireCreated}  updated: ${tireUpdated}  skipped: ${tireSkipped}  orphaned: ${tireOrphaned}`);
   console.log(`Costs — real: ${costReal}  derived(cpk×km): ${costDerived}  estimated: ${costEstimated}  still-missing: ${costMissing}`);
   console.log(`Km sanity cap applied to: ${kmCapped} tires\n`);
 
@@ -766,6 +926,9 @@ async function main() {
         inspeccionadoPorNombre: (i.adviser ?? '').trim() || null,
         vidaAlMomento:        mapVidaActual(i.state),
         externalSourceId:     extInsp,
+        // Lossless: preserve every source field (alert, operationType,
+        // owner, driver, reportState, consecutive*, transactionIds, etc.).
+        sourceMetadata:       i as any,
       };
       const existingId = existingInspBySrc.get(extInsp);
       if (existingId) {
