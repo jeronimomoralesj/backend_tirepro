@@ -1051,6 +1051,135 @@ export class TireService {
   }
 
   // ===========================================================================
+  // VEHICLE TIRE HISTORY — lifecycle hooks
+  //
+  // openHistoryEntry:  called when a tire is mounted on a (vehicle, position)
+  // closeOpenHistory:  called when a tire leaves that (vehicle, position)
+  //
+  // The writes are deliberately best-effort: we swallow errors so a DB
+  // hiccup on the history row never breaks the user-facing tire mutation.
+  // The backfill script (scripts/backfill-vehicle-tire-history.sql) keeps
+  // the log consistent with the current tire state even if a single hook
+  // fails silently.
+  // ===========================================================================
+
+  private async openHistoryEntry(
+    tireId: string,
+    vehicleId: string,
+    position: number,
+  ): Promise<void> {
+    try {
+      const tire = await this.prisma.tire.findUnique({
+        where:  { id: tireId },
+        select: {
+          companyId: true,
+          marca: true,
+          diseno: true,
+          dimension: true,
+          vidaActual: true,
+          profundidadInicial: true,
+        },
+      });
+      if (!tire) return;
+      if (!tire.marca || !tire.diseno || !tire.dimension) return;
+
+      // Close any stale open entries for this tire first — defensive against
+      // a missing prior hook.
+      await this.prisma.vehicleTireHistory.updateMany({
+        where: { tireId, fechaDesmonte: null },
+        data:  { fechaDesmonte: new Date(), motivoDesmonte: 'reasignacion' },
+      });
+
+      await this.prisma.vehicleTireHistory.create({
+        data: {
+          vehicleId,
+          companyId:     tire.companyId,
+          position,
+          tireId,
+          marca:         tire.marca,
+          diseno:        tire.diseno,
+          dimension:     tire.dimension,
+          vidaAlMontaje: tire.vidaActual ?? VidaValue.nueva,
+          profundidadInicial: tire.profundidadInicial ?? null,
+          fechaMontaje:  new Date(),
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`openHistoryEntry failed for tire ${tireId}: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Close every open history entry for this tire. Writes the final snapshot
+   * (km, CPK, minimum tread depth) so aggregation queries can compute
+   * per-position / per-SKU performance without re-reading inspections.
+   *
+   * @param motivo  one of 'rotacion' | 'reencauche' | 'fin' | 'desvinculado'
+   *                | 'vehiculo_archivado' | 'reasignacion'
+   */
+  private async closeOpenHistory(
+    tireId: string,
+    motivo: string,
+  ): Promise<void> {
+    try {
+      const tire = await this.prisma.tire.findUnique({
+        where:  { id: tireId },
+        select: {
+          kilometrosRecorridos: true,
+          currentCpk: true,
+          lifetimeCpk: true,
+          currentProfundidad: true,
+          inspecciones: {
+            orderBy: { fecha: 'desc' },
+            take: 1,
+            select: {
+              profundidadInt: true,
+              profundidadCen: true,
+              profundidadExt: true,
+              cpk: true,
+              cpkProyectado: true,
+            },
+          },
+        },
+      });
+      if (!tire) return;
+
+      // Best CPK signal: lifetime > current > last inspection's cpk/proy.
+      const lastInsp = tire.inspecciones[0];
+      const cpkFinal =
+        (tire.lifetimeCpk && tire.lifetimeCpk > 0) ? tire.lifetimeCpk :
+        (tire.currentCpk  && tire.currentCpk  > 0) ? tire.currentCpk  :
+        lastInsp?.cpkProyectado && lastInsp.cpkProyectado > 0 ? lastInsp.cpkProyectado :
+        lastInsp?.cpk && lastInsp.cpk > 0 ? lastInsp.cpk : null;
+
+      // Min depth at desmonte: prefer last inspection's 3-point reading,
+      // fall back to the tire-level cached currentProfundidad.
+      let minDepth: number | null = null;
+      if (lastInsp) {
+        const mins = [lastInsp.profundidadInt, lastInsp.profundidadCen, lastInsp.profundidadExt]
+          .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v));
+        if (mins.length) minDepth = Math.min(...mins);
+      }
+      if (minDepth === null && typeof tire.currentProfundidad === 'number') {
+        minDepth = tire.currentProfundidad;
+      }
+
+      await this.prisma.vehicleTireHistory.updateMany({
+        where: { tireId, fechaDesmonte: null },
+        data: {
+          fechaDesmonte:         new Date(),
+          motivoDesmonte:        motivo,
+          kmRecorridosAlDesmonte: tire.kilometrosRecorridos ?? null,
+          cpkFinal,
+          profundidadFinalMin:   minDepth,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`closeOpenHistory failed for tire ${tireId}: ${(err as Error).message}`);
+    }
+  }
+
+  // ===========================================================================
   // CREATE SINGLE TIRE  (unchanged — correct as-is)
   // ===========================================================================
 
@@ -3202,6 +3331,21 @@ export class TireService {
       include: { inspecciones: true, costos: true, eventos: true },
     });
 
+    // ── History hook: close the open entry for this tire, and re-open
+    //    a fresh one for reencauche (same vehicle/position, new vida).
+    //    'fin' already disconnects the tire from the vehicle above, so
+    //    we only close — no new entry.
+    if (normalizedValor === VidaValue.fin) {
+      await this.closeOpenHistory(tireId, 'fin');
+    } else if (normalizedValor.toString().startsWith('reencauche')) {
+      await this.closeOpenHistory(tireId, 'reencauche');
+      if (tire.vehicleId && typeof tire.posicion === 'number' && tire.posicion > 0) {
+        // vidaActual is already updated on `finalTire` so openHistoryEntry
+        // reads the new vida from the DB.
+        await this.openHistoryEntry(tireId, tire.vehicleId, tire.posicion);
+      }
+    }
+
     await this.notificationsService.deleteByTire(tireId);
     // Vida change is a commit-level event — freeze any bulk-upload
     // snapshot that includes this tire.
@@ -3255,17 +3399,32 @@ export class TireService {
     });
     if (!vehicle) throw new NotFoundException('Vehicle not found');
 
+    // Flatten the { pos: ids } map to [(tireId, position)] pairs so we can
+    // loop once for both the tire.update and the history hook.
+    const changes = Object.entries(updates).flatMap(([pos, ids]) => {
+      const arr = Array.isArray(ids) ? ids : [ids];
+      const position = parseInt(pos, 10) || 0;
+      return arr.map((tireId) => ({ tireId, position }));
+    });
+
     await this.prisma.$transaction(
-      Object.entries(updates).flatMap(([pos, ids]) =>
-        (Array.isArray(ids) ? ids : [ids]).map(tireId =>
-          this.prisma.tire.update({
-            where: { id: tireId },
-            data:  {
-              posicion:  parseInt(pos, 10) || 0,
-              vehicleId: vehicle.id,
-            },
-          }),
-        ),
+      changes.map(({ tireId, position }) =>
+        this.prisma.tire.update({
+          where: { id: tireId },
+          data:  { posicion: position, vehicleId: vehicle.id },
+        }),
+      ),
+    );
+
+    // History: close any open entry (rotation) and open a fresh one at the
+    // new position. Runs after the tire.update so openHistoryEntry reads
+    // the up-to-date tire record. Parallel + best-effort.
+    await Promise.allSettled(
+      changes.map(({ tireId, position }) =>
+        (async () => {
+          await this.closeOpenHistory(tireId, 'rotacion');
+          await this.openHistoryEntry(tireId, vehicle.id, position);
+        })(),
       ),
     );
 
@@ -3654,6 +3813,12 @@ export class TireService {
           },
         }),
       ),
+    );
+
+    // Close open history entries — one per tire. Runs after the tire rows
+    // have been updated so closeOpenHistory reads the final km/CPK state.
+    await Promise.allSettled(
+      tiresBeforeUnassign.map((t) => this.closeOpenHistory(t.id, 'desvinculado')),
     );
 
     const sample = tiresBeforeUnassign[0];

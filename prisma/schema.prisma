@@ -247,6 +247,7 @@ model Company {
   snapshots       CompanySnapshot[]
   vidaSnapshots   TireVidaSnapshot[]
   recommendations TireRecommendation[]
+  tireHistory     VehicleTireHistory[]
   inventoryBuckets TireInventoryBucket[]
   bulkUploadSnapshots BulkUploadSnapshot[]
   orders          PurchaseOrder[] @relation("CompanyOrders")
@@ -330,6 +331,7 @@ model Vehicle {
   userAccess         UserVehicleAccess[]
   vehicleInspections VehicleInspection[]
   drivers            VehicleDriver[]
+  tireHistory        VehicleTireHistory[]
 
   @@unique([companyId, placa])
   @@index([companyId])
@@ -486,6 +488,7 @@ model Tire {
   notifications   Notification[]
   vidaSnapshots   TireVidaSnapshot[]
   recommendations TireRecommendation[]
+  historyEntries  VehicleTireHistory[]
 
   @@index([companyId])
   @@index([vehicleId])
@@ -756,6 +759,68 @@ model TireBenchmark {
   @@index([dimension])
   @@index([retreadRoiRatio])
   @@map("tire_benchmarks")
+}
+
+// =============================================================================
+// VEHICLE TIRE HISTORY
+// Immutable log of every tire that's been mounted on a given vehicle +
+// position. One row per (tire, vehicle, position, mount) tuple; closed out
+// when the tire is removed / reencauched / scrapped. Drives recommendations
+// like "this vehicle's position 1 has typically run Continental HDR2 with
+// avg CPK 48 and 110k km per vida — consider the same again."
+//
+// Open entry: fechaDesmonte IS NULL  (tire currently at this position)
+// Closed entry: fechaDesmonte NOT NULL + motivoDesmonte set
+// =============================================================================
+model VehicleTireHistory {
+  id        String @id @default(uuid())
+
+  // Who + where
+  vehicleId String
+  companyId String   // denormalized so we can query per-tenant without joining Vehicle
+  position  Int
+
+  // What tire — keep an FK to Tire when it still exists, but also snapshot the
+  // identity fields so history survives tire deletion / re-import.
+  tireId        String?
+  marca         String
+  diseno        String
+  dimension     String
+  vidaAlMontaje VidaValue @default(nueva)  // tire's vida when it was mounted here
+
+  // Lifecycle
+  fechaMontaje  DateTime  @default(now())
+  fechaDesmonte DateTime?
+  // 'rotacion'   — moved to a different position on same (or another) vehicle
+  // 'reencauche' — vida transition (nueva → reencauche1, etc)
+  // 'fin'        — scrapped / end of life
+  // 'desvinculado' — tire unassigned from vehicle (inventory)
+  // 'vehiculo_archivado' — host vehicle was archived
+  motivoDesmonte String?
+
+  // Performance snapshot at desmonte — fed by the desmonte hook, not written
+  // on mount. Lets recommendations compare per-position CPK across brands.
+  kmRecorridosAlDesmonte Int?
+  cpkFinal               Float?
+  profundidadInicial     Float?
+  profundidadFinalMin    Float?
+
+  // Free-form note (driver comments, mechanic notes, etc.)
+  notas String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  tire    Tire?   @relation(fields: [tireId], references: [id], onDelete: SetNull)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId, position])
+  @@index([vehicleId, fechaDesmonte])  // pull current (open) entries per vehicle
+  @@index([companyId])
+  @@index([tireId])
+  @@index([marca, diseno, dimension])  // per-SKU performance aggregation
+  @@map("vehicle_tire_history")
 }
 
 // =============================================================================
