@@ -7,9 +7,21 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private readonly logger = new Logger(PrismaService.name);
 
   async onModuleInit() {
-    await this.$connect();
-    this.logger.log('Database connection established');
+    // Install retry wrappers BEFORE attempting the first connect — that
+    // way even $connect() itself gets retried on a transient blip.
     this.attachTransientRetry();
+    try {
+      await withDbRetry(() => this.$connect(), { label: '$connect' });
+      this.logger.log('Database connection established');
+    } catch (err) {
+      // Don't crash-loop the app if RDS is briefly unreachable at boot.
+      // Prisma reconnects lazily on the first real query, and the retry
+      // wrapper handles transient failures on those queries too.
+      this.logger.warn(
+        `Initial $connect failed (${(err as any)?.code ?? 'unknown'}); ` +
+        'continuing in lazy-connect mode.',
+      );
+    }
   }
 
   async onModuleDestroy() {
