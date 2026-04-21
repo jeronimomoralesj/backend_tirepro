@@ -975,6 +975,65 @@ export class TireService {
 
   private tireKey(companyId: string)  { return `tires:${companyId}`; }
   private vehicleKey(vehicleId: string) { return `tires:vehicle:${vehicleId}`; }
+
+  /**
+   * Reject an inspection that violates physical/temporal invariants:
+   *   (a) any zone > profundidadInicial + 0.5mm  (typo / unit mixup)
+   *   (b) any zone > previous-inspection-same-vida + 0.5mm  (unwear impossible)
+   *   (c) kmActualVehiculo < previous inspection's  (odometer can't go down)
+   * 0.5mm tolerance absorbs measurement noise.
+   */
+  private validateInspectionDepths(
+    tire: {
+      profundidadInicial: number;
+      vidaActual: VidaValue;
+      inspecciones: {
+        fecha: Date;
+        profundidadInt: number;
+        profundidadCen: number;
+        profundidadExt: number;
+        kmActualVehiculo: number | null;
+        vidaAlMomento: VidaValue;
+      }[];
+    },
+    dto: { profundidadInt: number; profundidadCen: number; profundidadExt: number; newKilometraje?: number | null },
+  ) {
+    const TOL = 0.5;
+    const limit = tire.profundidadInicial + TOL;
+    if (dto.profundidadInt > limit || dto.profundidadCen > limit || dto.profundidadExt > limit) {
+      throw new BadRequestException(
+        `Profundidad supera la inicial (${tire.profundidadInicial}mm). Revise la medición.`,
+      );
+    }
+
+    // Latest inspection on the same vida (the only physically-comparable one).
+    const sameVida = tire.inspecciones
+      .filter(i => i.vidaAlMomento === tire.vidaActual)
+      .sort((a, b) => a.fecha.getTime() - b.fecha.getTime());
+    const prev = sameVida.at(-1);
+    if (!prev) return;
+
+    if (
+      dto.profundidadInt > prev.profundidadInt + TOL ||
+      dto.profundidadCen > prev.profundidadCen + TOL ||
+      dto.profundidadExt > prev.profundidadExt + TOL
+    ) {
+      throw new BadRequestException(
+        'La profundidad no puede aumentar frente a la inspección anterior sin un reencauche.',
+      );
+    }
+
+    if (
+      dto.newKilometraje &&
+      dto.newKilometraje > 0 &&
+      prev.kmActualVehiculo != null &&
+      dto.newKilometraje < prev.kmActualVehiculo - 10
+    ) {
+      throw new BadRequestException(
+        `Kilometraje (${dto.newKilometraje}) es menor al de la inspección anterior (${prev.kmActualVehiculo}).`,
+      );
+    }
+  }
   private benchmarkKey(marca: string, diseno: string, dimension: string) {
     return `benchmark:${marca}:${diseno}:${dimension}`;
   }
@@ -2775,6 +2834,14 @@ export class TireService {
       },
     });
     if (!tire) throw new NotFoundException('Tire not found');
+
+    // ── Data-quality guards ──────────────────────────────────────────────
+    // These catch typo / double-unit / unwear-impossibility classes of bad
+    // inspections that corrupted the Merquepro dataset. Only apply to
+    // user-originated (manual) writes — bulk upload / CV paths skip.
+    if (dto.source === undefined || dto.source === 'manual') {
+      this.validateInspectionDepths(tire, dto);
+    }
 
     const vehicle      = tire.vehicle ?? null;
     const odometerSent = !!(dto.newKilometraje && dto.newKilometraje > 0 && vehicle);
