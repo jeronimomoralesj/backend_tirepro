@@ -105,15 +105,14 @@ UPDATE "Tire" t
  WHERE t.id = clc."tireId"
    AND t."kilometrosRecorridos" > 0;
 
--- 6) Latest Inspeccion.kmProyectado + cpkProyectado (current-life cost) ---
-WITH latest_insp AS (
-  SELECT DISTINCT ON (i."tireId") i.id, i."tireId"
-    FROM inspecciones i JOIN "Tire" t ON t.id = i."tireId"
-   WHERE t."externalSourceId" LIKE 'merquepro:%'
-   ORDER BY i."tireId", i.fecha DESC
-),
-tire_agg AS (
-  SELECT t.id AS tire_id, t."kilometrosRecorridos", t."projectedKmRemaining",
+-- 6) Inspeccion.kmProyectado + cpkProyectado for EVERY inspection ---------
+-- Applied uniformly to every inspection of every worn tire — not just the
+-- latest — so the per-inspection history view never shows a missing cell.
+-- Invariant: kmProyectado >= kilometrosRecorridos (recall projectedKmRemaining
+-- is always >= 0). kmProy < kmRec is impossible by construction.
+WITH tire_agg AS (
+  SELECT t.id AS tire_id,
+         t."kilometrosRecorridos"::float + COALESCE(t."projectedKmRemaining", 0)::float AS total_km_proy,
     COALESCE(
       (SELECT SUM(c.valor)::float FROM tire_costos c
         WHERE c."tireId" = t.id
@@ -123,25 +122,31 @@ tire_agg AS (
          OR (t."vidaActual"::text = 'fin')
           )
       ), 0) AS current_life_cost
-    FROM "Tire" t WHERE t."externalSourceId" LIKE 'merquepro:%'
+    FROM "Tire" t
+   WHERE t."externalSourceId" LIKE 'merquepro:%'
+     AND t."kilometrosRecorridos" > 0
+     AND t."vidaActual"::text <> 'fin'
 )
 UPDATE inspecciones i
    SET "kmProyectado" = CASE
-         WHEN ta."kilometrosRecorridos" > 0
-           THEN ta."kilometrosRecorridos"::float + COALESCE(ta."projectedKmRemaining", 0)::float
-         ELSE NULL
+         WHEN ta.total_km_proy > 0 THEN ta.total_km_proy
+         ELSE i."kmProyectado"
        END,
        "cpkProyectado" = CASE
-         WHEN ta."kilometrosRecorridos" > 0
-          AND (ta."kilometrosRecorridos" + COALESCE(ta."projectedKmRemaining", 0)) > 0
-          AND ta.current_life_cost > 0
-           THEN LEAST(500, ROUND(
-             (ta.current_life_cost / (ta."kilometrosRecorridos" + COALESCE(ta."projectedKmRemaining", 0)))::numeric, 2
-           ))
-         ELSE NULL
+         WHEN ta.total_km_proy > 0 AND ta.current_life_cost > 0
+           THEN LEAST(500, ROUND((ta.current_life_cost / ta.total_km_proy)::numeric, 2))
+         ELSE i."cpkProyectado"
        END
-  FROM latest_insp li
-  JOIN tire_agg   ta ON ta.tire_id = li."tireId"
- WHERE i.id = li.id;
+  FROM tire_agg ta
+ WHERE i."tireId" = ta.tire_id;
+
+-- 7) Clear projections on unworn tires — EVERY inspection, not just latest --
+UPDATE inspecciones i
+   SET "kmProyectado"  = NULL,
+       "cpkProyectado" = NULL
+  FROM "Tire" t
+ WHERE i."tireId" = t.id
+   AND t."externalSourceId" LIKE 'merquepro:%'
+   AND t."kilometrosRecorridos" = 0;
 
 COMMIT;
