@@ -236,8 +236,11 @@ export class TireController {
 
   @Post('assign-vehicle')
   @HttpCode(HttpStatus.OK)
-  assignVehicle(@Body() body: { vehiclePlaca: string; tireIds: string[] }) {
-    return this.tireService.assignTiresToVehicle(body.vehiclePlaca, body.tireIds);
+  assignVehicle(@Body() body: { vehicleId?: string; vehiclePlaca?: string; tireIds: string[] }) {
+    // Prefer vehicleId (unique) over placa. Post-merquepro-v2 there can be
+    // duplicate placas across orphan + active vehicles, so a placa-only
+    // lookup is non-deterministic and may "assign" to the wrong vehicle.
+    return this.tireService.assignTiresToVehicle(body.tireIds, body.vehicleId, body.vehiclePlaca);
   }
 
   @Post('unassign-vehicle')
@@ -248,8 +251,12 @@ export class TireController {
 
   @Post('update-positions')
   @HttpCode(HttpStatus.OK)
-  updatePositions(@Body() body: { placa: string; updates: Record<string, string | string[]> }) {
-    return this.tireService.updatePositions(body.placa, body.updates);
+  updatePositions(@Body() body: {
+    vehicleId?: string;
+    placa?:     string;
+    updates:    Record<string, string | string[]>;
+  }) {
+    return this.tireService.updatePositions(body.updates, body.vehicleId, body.placa);
   }
 
   // ── Tire mutations ────────────────────────────────────────────────────────

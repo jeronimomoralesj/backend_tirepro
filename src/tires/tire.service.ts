@@ -3393,11 +3393,35 @@ export class TireService {
   // UPDATE POSITIONS  (unchanged)
   // ===========================================================================
 
-  async updatePositions(placa: string, updates: Record<string, string | string[]>) {
-    const vehicle = await this.prisma.vehicle.findFirst({
-      where:  { placa },
-      select: { id: true, companyId: true },
-    });
+  async updatePositions(
+    updates: Record<string, string | string[]>,
+    vehicleId?: string,
+    placa?: string,
+  ) {
+    // Prefer unique vehicleId — placa can match multiple rows post-v2.
+    let vehicle: { id: string; companyId: string | null } | null = null;
+    if (vehicleId) {
+      vehicle = await this.prisma.vehicle.findUnique({
+        where:  { id: vehicleId },
+        select: { id: true, companyId: true },
+      });
+    } else if (placa) {
+      // Scope to the tires' company so the right row is picked when the
+      // placa is duplicated across orphan + active vehicles.
+      const allTireIds = Object.values(updates).flatMap((v) => Array.isArray(v) ? v : [v]);
+      const tireCompanies = await this.prisma.tire.findMany({
+        where:  { id: { in: allTireIds } },
+        select: { companyId: true },
+      });
+      const companyIds = [...new Set(tireCompanies.map((t) => t.companyId).filter(Boolean))] as string[];
+      vehicle = await this.prisma.vehicle.findFirst({
+        where: {
+          placa,
+          ...(companyIds.length === 1 ? { companyId: companyIds[0] } : {}),
+        },
+        select: { id: true, companyId: true },
+      });
+    }
     if (!vehicle) throw new NotFoundException('Vehicle not found');
 
     // Flatten the { pos: ids } map to [(tireId, position)] pairs so we can
@@ -3760,11 +3784,30 @@ export class TireService {
   // ASSIGN / UNASSIGN TIRES  (unchanged)
   // ===========================================================================
 
-  async assignTiresToVehicle(vehiclePlaca: string, tireIds: string[]) {
-    const vehicle = await this.prisma.vehicle.findFirst({
-      where:  { placa: vehiclePlaca },
-      select: { id: true, companyId: true },
-    });
+  async assignTiresToVehicle(tireIds: string[], vehicleId?: string, vehiclePlaca?: string) {
+    // vehicleId is unambiguous. Placa is a fallback (legacy callers) and
+    // may match multiple rows post-merquepro-v2 — in that case we scope
+    // to the tires' company to pick the right one.
+    let vehicle: { id: string; companyId: string | null } | null = null;
+    if (vehicleId) {
+      vehicle = await this.prisma.vehicle.findUnique({
+        where:  { id: vehicleId },
+        select: { id: true, companyId: true },
+      });
+    } else if (vehiclePlaca) {
+      const tireCompanies = await this.prisma.tire.findMany({
+        where:  { id: { in: tireIds } },
+        select: { companyId: true },
+      });
+      const companyIds = [...new Set(tireCompanies.map((t) => t.companyId).filter(Boolean))] as string[];
+      vehicle = await this.prisma.vehicle.findFirst({
+        where: {
+          placa: vehiclePlaca,
+          ...(companyIds.length === 1 ? { companyId: companyIds[0] } : {}),
+        },
+        select: { id: true, companyId: true },
+      });
+    }
     if (!vehicle) throw new NotFoundException('Vehicle not found');
 
     // Clear every inventory-side field: the tire is going back onto a
