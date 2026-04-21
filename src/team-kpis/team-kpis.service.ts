@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../database/prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { KpiMetric, KpiPeriod, Prisma } from '@prisma/client';
 
 export interface CreateKpiDto {
