@@ -3810,15 +3810,26 @@ export class TireService {
     }
     if (!vehicle) throw new NotFoundException('Vehicle not found');
 
-    // Clear every inventory-side field: the tire is going back onto a
-    // vehicle, so it is no longer in any bucket and the lastVehicle*
-    // snapshot (used by the "return to vehicle" flow) is no longer needed.
-    // Without this the tire would appear in BOTH the bucket panel and the
-    // vehicle layout after a drag from bucket → position.
+    // Grab the tires' previous companyIds BEFORE the update so we can
+    // invalidate those caches too (distributor flow: tire moves from
+    // distributor inventory to client vehicle, and both caches are stale).
+    const prevCompanyIds: (string | null)[] = await this.prisma.tire
+      .findMany({ where: { id: { in: tireIds } }, select: { companyId: true } })
+      .then((rows) => rows.map((r) => r.companyId));
+
+    // Clear every inventory-side field and align the tire's companyId with
+    // the vehicle's. Without the companyId alignment the tire would end up
+    // in a cross-tenant limbo state (invisible from the owner's inventory
+    // AND from the host vehicle's company tire list) — which is exactly
+    // what broke the bucket → vehicle drag for distributors.
     await this.prisma.tire.updateMany({
       where: { id: { in: tireIds } },
       data: {
         vehicleId:          vehicle.id,
+        // Only align companyId when the vehicle is NOT orphaned. Orphan
+        // vehicles have companyId=null — adopting that would orphan the
+        // tire too, which isn't what a user drag-drop intends.
+        ...(vehicle.companyId ? { companyId: vehicle.companyId } : {}),
         inventoryBucketId:  null,
         inventoryEnteredAt: null,
         lastVehicleId:      null,
@@ -3827,8 +3838,11 @@ export class TireService {
       },
     });
 
+    const staleCompanyIds = new Set<string>();
+    if (vehicle.companyId) staleCompanyIds.add(vehicle.companyId);
+    for (const cid of prevCompanyIds) if (cid) staleCompanyIds.add(cid);
     await Promise.allSettled([
-      this.invalidateCompanyCache(vehicle.companyId),
+      ...Array.from(staleCompanyIds).map((cid) => this.invalidateCompanyCache(cid)),
       this.invalidateVehicleCache(vehicle.id),
     ]);
     return { message: 'Tires assigned successfully', count: tireIds.length };
