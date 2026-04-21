@@ -105,9 +105,16 @@ export class UsersController {
     @Query('companyId') companyId: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('days') days?: string,
   ) {
     if (!companyId) throw new BadRequestException('companyId is required');
-    return this.usersService.getUserInspectionStats(companyId, from, to);
+    const daysNum = days ? parseInt(days, 10) : undefined;
+    return this.usersService.getUserInspectionStats(
+      companyId,
+      from,
+      to,
+      Number.isFinite(daysNum) ? daysNum : undefined,
+    );
   }
 
   @Get(':id/vehicles')

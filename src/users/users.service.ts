@@ -178,14 +178,27 @@ export class UsersService {
    * @param from ISO date string (inclusive). If absent, no lower bound.
    * @param to   ISO date string (exclusive). If absent, no upper bound.
    */
-  async getUserInspectionStats(companyId: string, from?: string, to?: string) {
+  async getUserInspectionStats(
+    companyId: string,
+    from?: string,
+    to?: string,
+    days?: number,
+  ) {
     if (!companyId) throw new BadRequestException('companyId is required');
 
-    const fromDate = from ? new Date(from) : undefined;
-    const toDate   = to   ? new Date(to)   : undefined;
+    // `days` wins when both are passed; translates to [now - Nd, now).
+    let fromDate = from ? new Date(from) : undefined;
+    let toDate   = to   ? new Date(to)   : undefined;
+    if (typeof days === 'number' && days > 0) {
+      toDate   = new Date();
+      fromDate = new Date(toDate.getTime() - days * 86_400_000);
+    }
+    const windowFilter = fromDate || toDate
+      ? { ...(fromDate && { gte: fromDate }), ...(toDate && { lt: toDate }) }
+      : undefined;
 
-    // One query for users, one groupBy for counts — no N+1.
-    const [users, counts] = await Promise.all([
+    // All three aggregations run in parallel.
+    const [users, counts, logins, breakdown] = await Promise.all([
       this.prisma.user.findMany({
         where:   { companyId },
         select: {
@@ -194,41 +207,131 @@ export class UsersService {
         },
         orderBy: { name: 'asc' },
       }),
+      // Inspection count + last inspection per user in the window.
       this.prisma.inspeccion.groupBy({
         by:    ['inspeccionadoPorId'],
         where: {
           tire: { companyId },
           inspeccionadoPorId: { not: null },
-          ...(fromDate || toDate
-            ? { fecha: { ...(fromDate && { gte: fromDate }), ...(toDate && { lt: toDate }) } }
-            : {}),
+          ...(windowFilter && { fecha: windowFilter }),
         },
         _count: { _all: true },
         _max:   { fecha: true },
       }),
+      // Login events per user in the window — fixes the "count doesn't
+      // respect filter" bug the team view had.
+      this.prisma.userLoginLog.groupBy({
+        by:    ['userId'],
+        where: {
+          user: { companyId },
+          ...(windowFilter && { fecha: windowFilter }),
+        },
+        _count: { _all: true },
+        _max:   { fecha: true },
+      }),
+      // Per-user breakdown of which fleets (client companies) they inspected.
+      // We fetch the raw rows and aggregate in memory so we can compute
+      // DISTINCT tires + vehicles per (user, client) — Prisma's groupBy
+      // can't aggregate distinct across nested relations.
+      this.prisma.inspeccion.findMany({
+        where: {
+          tire: { companyId },
+          inspeccionadoPorId: { not: null },
+          ...(windowFilter && { fecha: windowFilter }),
+        },
+        select: {
+          inspeccionadoPorId: true,
+          tireId: true,
+          tire: {
+            select: {
+              vehicleId: true,
+              vehicle: {
+                select: {
+                  companyId: true,
+                  company: { select: { id: true, name: true } },
+                  cliente: true,
+                },
+              },
+            },
+          },
+        },
+      }),
     ]);
 
-    const countById = new Map<string, { count: number; last: Date | null }>();
+    const statsById = new Map<string, { count: number; last: Date | null }>();
     for (const row of counts) {
       if (!row.inspeccionadoPorId) continue;
-      countById.set(row.inspeccionadoPorId, {
+      statsById.set(row.inspeccionadoPorId, {
         count: row._count._all,
         last:  row._max.fecha ?? null,
       });
     }
 
+    const loginsById = new Map<string, { count: number; last: Date | null }>();
+    for (const row of logins) {
+      loginsById.set(row.userId, {
+        count: row._count._all,
+        last:  row._max.fecha ?? null,
+      });
+    }
+
+    // Aggregate the raw rows into Map<userId, Map<clientKey, breakdown>>.
+    type ClientRow = {
+      clientCompanyId:   string | null;
+      clientCompanyName: string;
+      vehicleIds:        Set<string>;
+      tireIds:           Set<string>;
+    };
+    const clientsByUser = new Map<string, Map<string, ClientRow>>();
+    for (const row of breakdown) {
+      if (!row.inspeccionadoPorId) continue;
+      const clientId   = row.tire?.vehicle?.company?.id ?? null;
+      const clientName =
+        row.tire?.vehicle?.company?.name
+        ?? row.tire?.vehicle?.cliente
+        ?? 'Sin vehículo';
+      const key  = clientId ?? `_name:${clientName.toLowerCase()}`;
+      const bucket = clientsByUser.get(row.inspeccionadoPorId) ?? new Map();
+      const entry = bucket.get(key) ?? {
+        clientCompanyId:   clientId,
+        clientCompanyName: clientName,
+        vehicleIds:        new Set<string>(),
+        tireIds:           new Set<string>(),
+      };
+      if (row.tire?.vehicleId) entry.vehicleIds.add(row.tire.vehicleId);
+      entry.tireIds.add(row.tireId);
+      bucket.set(key, entry);
+      clientsByUser.set(row.inspeccionadoPorId, bucket);
+    }
+
     return users.map(u => {
-      const stats = countById.get(u.id);
+      const stats   = statsById.get(u.id);
+      const login   = loginsById.get(u.id);
+      const clients = [...(clientsByUser.get(u.id)?.values() ?? [])]
+        .map(c => ({
+          clientCompanyId:   c.clientCompanyId,
+          clientCompanyName: c.clientCompanyName,
+          vehiclesInspected: c.vehicleIds.size,
+          tiresInspected:    c.tireIds.size,
+        }))
+        .sort((a, b) => b.tiresInspected - a.tiresInspected);
+
       return {
         id:              u.id,
         name:            u.name,
         email:           u.email,
         role:            u.role,
         createdAt:       u.createdAt,
+        // Lifetime counters — kept for backwards compatibility.
         lastLoginAt:     u.lastLoginAt,
         loginCount:      u.loginCount,
-        inspections:     stats?.count ?? 0,
-        lastInspection:  stats?.last ?? null,
+        // Window-scoped counters — these are what the UI filter should drive.
+        inspections:         stats?.count ?? 0,
+        lastInspection:      stats?.last ?? null,
+        loginsInWindow:      login?.count ?? 0,
+        lastLoginInWindow:   login?.last  ?? null,
+        clientsInspected:    clients.length,
+        clients,
       };
     });
   }

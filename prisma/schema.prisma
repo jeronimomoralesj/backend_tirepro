@@ -126,6 +126,20 @@ enum VehicleOperationalState {
   fuera_de_operacion
 }
 
+// Team KPI targets — what gets counted and the cadence.
+enum KpiMetric {
+  vehicles_inspected
+  clients_inspected
+  tires_inspected
+}
+
+enum KpiPeriod {
+  weekly
+  monthly
+  quarterly
+  custom
+}
+
 // Why a vida ended — drives the recommendation engine
 enum MotivoFinVida {
   reencauche        // normal planned retread
@@ -183,6 +197,7 @@ model User {
   reviews           DistributorReview[]
   marketplaceOrders MarketplaceOrder[]
   loginLogs         UserLoginLog[]
+  teamKpis          TeamKpi[]
 
   @@index([companyId])
   @@index([email])
@@ -260,6 +275,7 @@ model Company {
   bulkUploadSnapshots BulkUploadSnapshot[]
   orders          PurchaseOrder[] @relation("CompanyOrders")
   receivedOrders  PurchaseOrder[] @relation("DistributorOrders")
+  teamKpis        TeamKpi[]
 
   // Marketplace
   bidRequests       BidRequest[]         @relation("CompanyBidRequests")
@@ -1628,4 +1644,31 @@ model BulkUploadSnapshot {
   @@index([companyId, uploadedAt])
   @@index([expiresAt])
   @@map("bulk_upload_snapshots")
+}
+// =============================================================================
+// TEAM KPI
+// Admin-defined target per metric per period. userId = null for company-wide
+// goals; set to a specific user for individual goals. Completion is computed
+// on read by counting matching Inspeccion rows in [periodStart, periodEnd).
+// =============================================================================
+model TeamKpi {
+  id          String    @id @default(uuid())
+  companyId   String
+  userId      String?   // null = company-wide KPI
+  metric      KpiMetric
+  period      KpiPeriod
+  periodStart DateTime  @db.Date
+  periodEnd   DateTime  @db.Date
+  target      Int
+  notas       String?   @db.Text
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId],    references: [id], onDelete: SetNull)
+
+  @@index([companyId, periodStart])
+  @@index([companyId, userId, metric, periodStart])
+  @@map("team_kpis")
 }

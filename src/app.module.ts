@@ -9,6 +9,7 @@ import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
+import { TeamKpisModule } from './team-kpis/team-kpis.module';
 import { CompaniesModule } from './companies/companies.module';
 import { VehicleModule } from './vehicles/vehicle.module';
 import { TireModule } from './tires/tire.module';
@@ -73,6 +74,7 @@ import { PrismaService } from './prisma/prisma.service';
     PrismaModule,
     AuthModule,
     UsersModule,
+    TeamKpisModule,
     CompaniesModule,
     VehicleModule,
     TireModule,

@@ -7,6 +7,7 @@ import {
   Patch,
   Param,
   Delete,
+  Req,
   UseInterceptors,
   UploadedFile,
   HttpCode,
@@ -265,7 +266,13 @@ export class TireController {
   updateInspection(
     @Param('id') tireId: string,
     @Body() dto: UpdateInspectionDto,
+    @Req() req: { user?: { userId?: string } },
   ) {
+    // Auto-attribute to the authenticated user when the client omits it
+    // so Mi Equipo stats credit the person actually doing the inspection.
+    if (!dto.inspeccionadoPorId && req?.user?.userId) {
+      dto.inspeccionadoPorId = req.user.userId;
+    }
     return this.tireService.updateInspection(tireId, dto);
   }
 
