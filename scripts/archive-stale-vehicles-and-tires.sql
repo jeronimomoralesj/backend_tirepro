@@ -97,4 +97,22 @@ WHERE v.id = vli.vehicle_id
     OR vli.last_inspection < NOW() - INTERVAL '1 year'
   );
 
+-- -----------------------------------------------------------------------------
+-- 3) UNASSIGN tires from archived vehicles so they reappear in Disponible.
+--    Without this step every tire on a just-archived vehicle becomes stranded
+--    (not in any bucket, on a vehicle the user can't see). Keep the
+--    lastVehicle* snapshot for history + audit.
+-- -----------------------------------------------------------------------------
+UPDATE "Tire" t
+   SET "vehicleId"          = NULL,
+       "posicion"           = 0,
+       "lastVehicleId"      = t."vehicleId",
+       "lastVehiclePlaca"   = v.placa,
+       "lastPosicion"       = COALESCE(t."posicion", 0),
+       "inventoryEnteredAt" = COALESCE(t."inventoryEnteredAt", NOW())
+  FROM "Vehicle" v
+ WHERE t."vehicleId" = v.id
+   AND v."archivedAt" IS NOT NULL
+   AND t."vidaActual" <> 'fin';
+
 COMMIT;
