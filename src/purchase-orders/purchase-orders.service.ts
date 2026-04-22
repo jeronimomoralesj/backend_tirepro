@@ -440,6 +440,61 @@ export class PurchaseOrdersService {
     });
   }
 
+  // Distributor inspected the tire and decided they won't retread it,
+  // but it's still usable — return it to the fleet's Disponible bucket.
+  // No desechos form, no vida transition; just ownership moves back.
+  async returnItemToDisponible(
+    itemId: string,
+    distributorId: string,
+    motivoRechazo: string,
+  ) {
+    const item = await this.prisma.purchaseOrderItem.findUnique({
+      where:   { id: itemId },
+      include: {
+        purchaseOrder: { select: { distributorId: true, id: true, companyId: true } },
+        tire:          { select: { id: true } },
+      },
+    });
+    if (!item) throw new NotFoundException('Item not found');
+    if (item.purchaseOrder.distributorId !== distributorId) {
+      throw new BadRequestException('This item does not belong to your company');
+    }
+    if (item.tipo !== 'reencauche') {
+      throw new BadRequestException('Only reencauche items can be returned');
+    }
+    if (item.status !== 'en_reencauche_bucket') {
+      throw new BadRequestException(
+        `Cannot return an item in status "${item.status}"`,
+      );
+    }
+    if (!item.tireId) {
+      throw new BadRequestException('Reencauche item has no linked tire');
+    }
+    if (!motivoRechazo?.trim()) {
+      throw new BadRequestException('motivoRechazo is required');
+    }
+
+    // Tire leaves the Reencauche bucket and lands in Disponible (null bucket).
+    // Vida stays exactly where it was — this path is explicitly "reusable".
+    await this.buckets.bulkMoveTiresToBucket(
+      [item.tireId],
+      null,
+      item.purchaseOrder.companyId,
+    );
+
+    const updated = await this.prisma.purchaseOrderItem.update({
+      where: { id: itemId },
+      data: {
+        status:        'devuelta',
+        motivoRechazo: motivoRechazo.trim(),
+        finalizedAt:   new Date(),
+      },
+    });
+
+    await this.closeOrderIfAllItemsTerminal(item.purchaseOrder.id);
+    return updated;
+  }
+
   // Distributor rejects a reencauche item. The tire is routed to
   // fin-de-vida via the existing vida endpoint (so the desechos snapshot
   // is created consistently with manual retire flows). The rejection

@@ -70,6 +70,7 @@ enum PurchaseOrderItemStatus {
   en_reencauche_bucket  // reencauche only: fleet moved the tire to the reencauche bucket, awaiting dist approval
   aprobada              // reencauche only: dist accepted; has ETA; tire vida will be incremented on entregar
   rechazada             // reencauche only: dist rejected with motivo; tire routed to fin-de-vida
+  devuelta              // reencauche only: dist rejected but tire is still usable; returned to fleet's Disponible bucket
   entregada             // reencauche only: tire handed back, moved to disponible bucket
   completada            // llanta-nueva only: delivered to fleet
   cancelada

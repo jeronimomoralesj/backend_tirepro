@@ -129,6 +129,24 @@ export class PurchaseOrdersController {
     );
   }
 
+  // Distributor decided the tire isn't retreadable for this job but it's
+  // still usable — ship it back to the fleet's Disponible bucket. No
+  // desechos form; just a short motivo so the fleet knows why.
+  @Patch('items/:itemId/return-to-disponible')
+  returnItemToDisponible(
+    @Param('itemId') itemId: string,
+    @Body() body: { distributorId: string; motivoRechazo: string },
+  ) {
+    if (!body.distributorId || !body.motivoRechazo) {
+      throw new BadRequestException('distributorId and motivoRechazo are required');
+    }
+    return this.purchaseOrdersService.returnItemToDisponible(
+      itemId,
+      body.distributorId,
+      body.motivoRechazo,
+    );
+  }
+
   // Distributor rejects one reencauche item and files the fin-de-vida form
   // (causales / milimetros / photos) that routes the tire to fin-de-vida.
   @Patch('items/:itemId/reject')
