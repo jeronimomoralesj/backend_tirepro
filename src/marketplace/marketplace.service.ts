@@ -284,25 +284,30 @@ export class MarketplaceService {
       };
     });
 
-    // Atomic: award winner, reject losers, close bid, create PO.
-    const [, , , createdOrder] = await this.prisma.$transaction([
-      this.prisma.bidResponse.update({
+    // Atomic: award winner, reject losers, close bid, create PO. We use
+    // the callback form of $transaction because the array form choked on
+    // the nested-create PurchaseOrder operation in this Prisma version
+    // ("All elements of the array need to be Prisma Client promises").
+    // Callback form runs each step sequentially inside one transaction,
+    // with no PrismaPromise typing constraint.
+    const createdOrder = await this.prisma.$transaction(async (tx) => {
+      await tx.bidResponse.update({
         where: { id: winningResponse.id },
         data:  { status: BidResponseStatus.ganadora },
-      }),
-      this.prisma.bidResponse.updateMany({
+      });
+      await tx.bidResponse.updateMany({
         where: { bidRequestId, id: { not: winningResponse.id } },
         data:  { status: BidResponseStatus.rechazada },
-      }),
-      this.prisma.bidRequest.update({
+      });
+      await tx.bidRequest.update({
         where: { id: bidRequestId },
         data: {
           status:     BidRequestStatus.adjudicada,
           winnerId:   distributorId,
           resolvedAt: new Date(),
         },
-      }),
-      this.prisma.purchaseOrder.create({
+      });
+      return tx.purchaseOrder.create({
         data: {
           companyId,
           distributorId,
@@ -316,8 +321,8 @@ export class MarketplaceService {
           notas:           bid.notas ?? null,
           items:           { create: poItems },
         },
-      }),
-    ]);
+      });
+    });
 
     const out = await this.getBidRequestById(bidRequestId);
     return { ...out, purchaseOrderId: createdOrder.id };
