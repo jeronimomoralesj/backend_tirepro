@@ -26,6 +26,7 @@ import { CatalogModule } from './catalog/catalog.module';
 import { TireBenchmarkModule } from './tire-benchmark/tire-benchmark.module';
 import { MarketplaceModule } from './marketplace/marketplace.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
+import { MerquellantasModule } from './integrations/merquellantas/merquellantas.module';
 import { CompanyScopeGuard } from './auth/guards/company-scope.guard';
 import { PrismaService } from './prisma/prisma.service';
 
@@ -91,6 +92,7 @@ import { PrismaService } from './prisma/prisma.service';
     CatalogModule,
     TireBenchmarkModule,
     WhatsappModule,
+    MerquellantasModule,
   ],
   controllers: [AppController],
   providers:   [
