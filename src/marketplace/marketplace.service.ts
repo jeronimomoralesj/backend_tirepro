@@ -284,7 +284,7 @@ export class MarketplaceService {
   async getAvailableBids(distributorId: string) {
     return this.prisma.bidRequest.findMany({
       where: {
-        status: BidRequestStatus.abierta,
+        status: BidRequestStatus.abierta,  // cancelled/closed already exit this set
         OR: [
           { invitations: { some: { distributorId } } },
           { isPublic: true },
@@ -313,6 +313,9 @@ export class MarketplaceService {
   async getBidsForDistributor(distributorId: string) {
     return this.prisma.bidRequest.findMany({
       where: {
+        // Fleet cancellations disappear for every invited dist — the bid
+        // is dead across the whole network, no reason to keep it visible.
+        status: { not: BidRequestStatus.cancelada },
         OR: [
           { invitations: { some: { distributorId } } },
           { responses:   { some: { distributorId } } },

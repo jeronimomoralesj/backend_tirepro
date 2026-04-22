@@ -974,6 +974,11 @@ model PurchaseOrder {
   cotizacionFecha  DateTime?
   cotizacionNotas  String?
 
+  // Pickup — scheduled by the dist after the fleet accepts. The pickup
+  // moment is when tires physically leave the vehicles; every per-item
+  // decision (reencauchar / devolver / fin de vida) happens at this step.
+  pickupDate       DateTime?
+
   resolvedAt       DateTime?
   resolvedBy       String?
 

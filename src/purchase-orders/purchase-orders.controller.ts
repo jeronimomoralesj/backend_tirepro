@@ -100,6 +100,35 @@ export class PurchaseOrdersController {
     return this.purchaseOrdersService.requestRevision(id, body.companyId, body.notas);
   }
 
+  // ── Pickup lifecycle ────────────────────────────────────────────────────────
+
+  // Distributor sets a pickup date after the fleet has accepted. Doesn't
+  // move tires; just tells the fleet "we'll be there on this day".
+  @Patch(':id/schedule-pickup')
+  schedulePickup(
+    @Param('id') id: string,
+    @Body() body: { distributorId: string; pickupDate: string },
+  ) {
+    if (!body.distributorId || !body.pickupDate) {
+      throw new BadRequestException('distributorId and pickupDate are required');
+    }
+    return this.purchaseOrdersService.schedulePickup(id, body.distributorId, body.pickupDate);
+  }
+
+  // Distributor runs the actual pickup. Body carries one decision per
+  // item (reencauchar / devolver / fin_de_vida); each decision triggers
+  // the appropriate tire move + item state transition in a single batch.
+  @Post(':id/pickup')
+  performPickup(
+    @Param('id') id: string,
+    @Body() body: { distributorId: string; decisions: any[] },
+  ) {
+    if (!body.distributorId || !Array.isArray(body.decisions) || body.decisions.length === 0) {
+      throw new BadRequestException('distributorId and decisions are required');
+    }
+    return this.purchaseOrdersService.performPickup(id, body.distributorId, body.decisions);
+  }
+
   // ── Reencauche lifecycle ───────────────────────────────────────────────────
 
   // Fleet hands the tires over: moves them into the Reencauche bucket and

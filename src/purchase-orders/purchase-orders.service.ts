@@ -166,7 +166,12 @@ export class PurchaseOrdersService {
 
   async getOrdersForDistributor(distributorId: string) {
     return this.prisma.purchaseOrder.findMany({
-      where: { distributorId },
+      where: {
+        distributorId,
+        // Fleet rejections should disappear from the dist view — the work
+        // is dead, no value in keeping it on screen.
+        status: { not: 'rechazada' },
+      },
       orderBy: { createdAt: 'desc' },
       include: {
         company: { select: { id: true, name: true, profileImage: true } },
@@ -341,6 +346,166 @@ export class PurchaseOrdersService {
       }),
     ]);
     return updated;
+  }
+
+  // ── Pickup lifecycle ────────────────────────────────────────────────────────
+
+  // Distributor schedules the pickup date after the fleet has accepted
+  // the quote. No tires move yet — this just sets the calendar.
+  async schedulePickup(orderId: string, distributorId: string, pickupDate: string) {
+    const order = await this.prisma.purchaseOrder.findUnique({ where: { id: orderId } });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.distributorId !== distributorId) {
+      throw new BadRequestException('This order does not belong to your company');
+    }
+    if (order.status !== 'aceptada') {
+      throw new BadRequestException(
+        `Can only schedule pickup on accepted orders — this one is "${order.status}"`,
+      );
+    }
+    const d = new Date(pickupDate);
+    if (isNaN(d.getTime())) {
+      throw new BadRequestException('pickupDate is not a valid date');
+    }
+    return this.prisma.purchaseOrder.update({
+      where: { id: orderId },
+      data:  { pickupDate: d },
+      include: { items: true },
+    });
+  }
+
+  // Distributor performs the pickup: for every reencauche item they
+  // collect, they pick a decision and we apply it in one batch. Tires
+  // physically leave the vehicles here — aprobada tires land in the
+  // fleet's Reencauche bucket, devuelta tires in Disponible, and
+  // rechazada tires go to fin-de-vida through the existing vida path.
+  // `estimatedDelivery` on the order-level is the dist's ETA for
+  // retreaded tires; it applies to every aprobada item.
+  async performPickup(
+    orderId: string,
+    distributorId: string,
+    decisions: Array<
+      | {
+          itemId:           string;
+          decision:         'reencauchar';
+          estimatedDelivery?: string;
+        }
+      | {
+          itemId:           string;
+          decision:         'devolver';
+          motivoRechazo:    string;
+        }
+      | {
+          itemId:           string;
+          decision:         'fin_de_vida';
+          motivoRechazo:    string;
+          desechos:         { causales: string; milimetrosDesechados: number; imageUrls?: string[] };
+        }
+    >,
+  ) {
+    const order = await this.prisma.purchaseOrder.findUnique({
+      where:   { id: orderId },
+      include: {
+        items: { include: { tire: { select: { id: true, vidaActual: true } } } },
+      },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.distributorId !== distributorId) {
+      throw new BadRequestException('This order does not belong to your company');
+    }
+    if (order.status !== 'aceptada') {
+      throw new BadRequestException(
+        `Cannot run pickup on an order in status "${order.status}"`,
+      );
+    }
+    if (!Array.isArray(decisions) || decisions.length === 0) {
+      throw new BadRequestException('decisions must be a non-empty array');
+    }
+
+    const itemsById = new Map(order.items.map((i) => [i.id, i] as const));
+    for (const d of decisions) {
+      const it = itemsById.get(d.itemId);
+      if (!it) throw new BadRequestException(`Item ${d.itemId} is not on this order`);
+      if (it.tipo !== 'reencauche') continue; // nueva items sit out the pickup decision
+      if (it.status !== 'cotizada') {
+        throw new BadRequestException(
+          `Item ${d.itemId} is already in status "${it.status}" — cannot re-run pickup`,
+        );
+      }
+      if (!it.tireId || !it.tire) {
+        throw new BadRequestException(`Item ${d.itemId} has no linked tire`);
+      }
+    }
+
+    const bucket = await this.buckets.getReencaucheBucket(order.companyId);
+
+    // Apply each decision sequentially so tire side-effects (vida, bucket
+    // moves) stay consistent. Throughput isn't a concern — a single order
+    // rarely has more than a few dozen items.
+    for (const d of decisions) {
+      const it = itemsById.get(d.itemId)!;
+      if (it.tipo !== 'reencauche') continue;
+      const tireId = it.tireId as string;
+
+      if (d.decision === 'reencauchar') {
+        // Tire → Reencauche bucket, item → aprobada with ETA.
+        await this.buckets.bulkMoveTiresToBucket([tireId], bucket.id, order.companyId);
+        const eta = d.estimatedDelivery ? new Date(d.estimatedDelivery) : null;
+        await this.prisma.purchaseOrderItem.update({
+          where: { id: it.id },
+          data: {
+            status:            'aprobada',
+            vidaPrevia:        it.tire?.vidaActual ?? null,
+            estimatedDelivery: eta,
+          },
+        });
+        continue;
+      }
+
+      if (d.decision === 'devolver') {
+        // Tire is still usable, just not retreadable — back to Disponible.
+        await this.buckets.bulkMoveTiresToBucket([tireId], null, order.companyId);
+        await this.prisma.purchaseOrderItem.update({
+          where: { id: it.id },
+          data: {
+            status:        'devuelta',
+            motivoRechazo: d.motivoRechazo?.trim() || null,
+            finalizedAt:   new Date(),
+          },
+        });
+        continue;
+      }
+
+      // decision === 'fin_de_vida'
+      await this.tires.updateVida(
+        tireId,
+        'fin',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        d.desechos,
+        undefined,
+        'reencauche' as MotivoFinVida,
+        d.motivoRechazo?.trim(),
+      );
+      await this.prisma.purchaseOrderItem.update({
+        where: { id: it.id },
+        data: {
+          status:        'rechazada',
+          motivoRechazo: d.motivoRechazo?.trim() || null,
+          finalizedAt:   new Date(),
+          vidaNueva:     'fin',
+        },
+      });
+    }
+
+    await this.closeOrderIfAllItemsTerminal(orderId);
+
+    return this.prisma.purchaseOrder.findUnique({
+      where:   { id: orderId },
+      include: { items: true },
+    });
   }
 
   // ── Reencauche lifecycle ────────────────────────────────────────────────────
