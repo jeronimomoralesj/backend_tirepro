@@ -24,6 +24,7 @@ import {
 import * as XLSX from 'xlsx';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
+import { normalizeDimension as normalizeDimensionCanonical } from '../common/normalize-dimension';
 
 const C = {
   KM_POR_MES:                  6_000,
@@ -186,29 +187,13 @@ function fuzzyMatch(input: string, known: string[]): string | null {
   return bestMatch;
 }
 
-/**
- * Normalize a tire dimension string to a canonical format.
- * Handles common variations users type:
- *   "12r22.5"   → "12 R 22.5"
- *   "12R22.5"   → "12 R 22.5"
- *   "12 r 22.5" → "12 R 22.5"
- *   "295/80r22.5" → "295/80 R 22.5"
- *   "295/80R22.5" → "295/80 R 22.5"
- *   "11 R 22.5"   → "11 R 22.5" (unchanged)
- *   "385/65r22.5" → "385/65 R 22.5"
- */
+// Thin wrapper so legacy call sites keep working. The canonical format
+// produced by normalize-dimension.ts is the no-spaces, upper-case form
+// ("295/80R22.5"). Downstream matching code lowercases the output, which
+// is fine — the important thing is that both sides of the comparison
+// run through the same normalizer.
 function normalizeDimension(raw: string): string {
-  if (!raw) return raw;
-  let d = raw.trim();
-  // Collapse multiple spaces
-  d = d.replace(/\s+/g, ' ');
-  // Main pattern: capture {prefix}R{rimSize} with optional spaces around R
-  // prefix can be like "12", "295/80", "11.00", etc.
-  d = d.replace(
-    /^([\d./]+)\s*[rR]\s*([\d.]+)$/,
-    (_, prefix, rim) => `${prefix} R ${rim}`,
-  );
-  return d;
+  return normalizeDimensionCanonical(raw);
 }
 
 /**
@@ -1312,7 +1297,7 @@ export class TireService {
         marca:                marca.toLowerCase(),
         diseno:               (diseno ?? '').toLowerCase(),
         profundidadInicial:   profundidadInicial ?? C.DEFAULT_PROFUNDIDAD_INICIAL,
-        dimension:            (dimension ?? '').toLowerCase(),
+        dimension:            normalizeDimensionCanonical(dimension),
         eje:                  (eje as EjeType) ?? EjeType.libre,
         posicion:             posicion ?? 0,
         kilometrosRecorridos: kilometrosRecorridos ?? 0,
@@ -1583,7 +1568,7 @@ export class TireService {
         const marcaRaw  = get(row, 'marca').trim();
         let marca       = marcaRaw.charAt(0).toUpperCase() + marcaRaw.slice(1).toLowerCase();
         let diseno      = get(row, 'diseno_original').toLowerCase();
-        let dimension   = get(row, 'dimension').toLowerCase();
+        let dimension   = normalizeDimensionCanonical(get(row, 'dimension'));
 
         // ── Catalog fuzzy matching (brand / design / dimension) ─────────────
         // Correct typos and normalize formats against known catalog values.
@@ -1636,17 +1621,18 @@ export class TireService {
         if (catalogDimensions.length > 0 && dimension) {
           const matchedDim = matchDimension(dimension, catalogDimensions);
           if (matchedDim) {
-            if (matchedDim.toLowerCase() !== dimension) {
-              warnings.push(`Row ${rowNum}: dimensión "${dimension}" → "${matchedDim}" (catálogo)`);
+            const canonical = normalizeDimensionCanonical(matchedDim);
+            if (canonical !== dimension) {
+              warnings.push(`Row ${rowNum}: dimensión "${dimension}" → "${canonical}" (catálogo)`);
             }
-            dimension = matchedDim.toLowerCase();
+            dimension = canonical;
           } else {
             // No catalog match — still normalize the format
-            dimension = normalizeDimension(dimension).toLowerCase();
+            dimension = normalizeDimensionCanonical(dimension);
           }
         } else {
           // No catalog loaded — still normalize the dimension format
-          dimension = normalizeDimension(dimension).toLowerCase();
+          dimension = normalizeDimensionCanonical(dimension);
         }
 
         const posicion  = safeInt(get(row, 'posicion'), 0);
@@ -2696,17 +2682,35 @@ export class TireService {
     return tires;
   }
 
+  // In-flight promise for findAllTires — coalesces concurrent cache misses.
+  // With 204k+ tires the query allocates ~400 MB; letting two simultaneous
+  // admin loads both fire would 2× that and OOM the PM2 worker.
+  private static inflightAllTires: Promise<unknown> | null = null;
+
   async findAllTires() {
     const cacheKey = 'tires:all';
     const cached   = await this.cache.get(cacheKey);
     if (cached) return cached;
+    if (TireService.inflightAllTires) return TireService.inflightAllTires;
 
-    const tires = await this.prisma.tire.findMany({
-      include: { inspecciones: { orderBy: { fecha: 'desc' }, take: 1 } },
-    });
-
-    await this.cache.set(cacheKey, tires, TireService.TTL_VEHICLE);
-    return tires;
+    // Omit the bulky lossless JSON blobs. sourceMetadata alone is ~1 KB per
+    // tire on Merquellantas-imported rows (204k+ tires across the fleet);
+    // returning it pushes the result past V8's max string length and Prisma
+    // reports it as "Failed to convert rust String into napi string". The
+    // one consumer (blog admin stats) doesn't read sourceMetadata.
+    TireService.inflightAllTires = (async () => {
+      try {
+        const tires = await this.prisma.tire.findMany({
+          omit: { sourceMetadata: true },
+          include: { inspecciones: { orderBy: { fecha: 'desc' }, take: 1 } },
+        });
+        await this.cache.set(cacheKey, tires, TireService.TTL_VEHICLE);
+        return tires;
+      } finally {
+        TireService.inflightAllTires = null;
+      }
+    })();
+    return TireService.inflightAllTires;
   }
 
   // ===========================================================================
@@ -3980,7 +3984,7 @@ export class TireService {
         ? { connect: { id: dto.vehicleId } }
         : { disconnect: true };
     }
-    if (dto.dimension          !== undefined) updateData.dimension          = dto.dimension;
+    if (dto.dimension          !== undefined) updateData.dimension          = normalizeDimensionCanonical(dto.dimension);
     if (dto.eje                !== undefined) updateData.eje                = dto.eje;
     if (dto.posicion           !== undefined) updateData.posicion           = dto.posicion;
     if (dto.profundidadInicial !== undefined) updateData.profundidadInicial = dto.profundidadInicial;

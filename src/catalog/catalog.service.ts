@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
 import { EjeType, Prisma } from '@prisma/client';
+import { normalizeDimension } from '../common/normalize-dimension';
 
 // ─── Statistical helpers ─────────────────────────────────────────────────────
 
@@ -437,7 +438,7 @@ export class CatalogService {
   }) {
     const marca = input.marca.trim().toLowerCase();
     const modelo = input.modelo.trim().toLowerCase();
-    const dimension = input.dimension.trim().toLowerCase();
+    const dimension = normalizeDimension(input.dimension);
 
     // Check if a catalog entry already exists for this combo
     const existing = await this.prisma.tireMasterCatalog.findFirst({
@@ -598,6 +599,7 @@ export class CatalogService {
     if (!payload.marca || !payload.modelo || !payload.dimension || !payload.skuRef) {
       throw new BadRequestException('marca, modelo, dimension and skuRef are required');
     }
+    payload.dimension = normalizeDimension(payload.dimension);
 
     const skuRef = String(payload.skuRef).trim();
     const existing = await this.prisma.tireMasterCatalog.findUnique({
@@ -631,6 +633,7 @@ export class CatalogService {
 
   async adminUpdate(id: string, data: Record<string, any>) {
     const payload = this.pickEditable(data);
+    if (payload.dimension) payload.dimension = normalizeDimension(payload.dimension);
 
     if (payload.skuRef) {
       const skuRef = String(payload.skuRef).trim();
