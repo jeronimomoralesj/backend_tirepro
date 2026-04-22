@@ -91,18 +91,25 @@ export class PurchaseOrdersService {
       throw new BadRequestException('items must be a non-empty array');
     }
 
-    const itemRows = items.map((it) => ({
-      tireId:       it.tireId      ?? null,
-      tipo:         it.tipo,
-      marca:        it.marca,
-      modelo:       it.modelo      ?? null,
-      dimension:    typeof it.dimension === 'string' ? normalizeDimension(it.dimension) : it.dimension,
-      eje:          it.eje         ?? null,
-      cantidad:     it.cantidad    ?? 1,
-      vehiclePlaca: it.vehiclePlaca ?? null,
-      urgency:      it.urgency     ?? null,
-      notas:        it.notas       ?? null,
-    }));
+    // Prisma's checked nested-create input exposes `tire: { connect }`
+    // but NOT the scalar `tireId`, so we connect the relation when a
+    // tire is attached and omit the key entirely when there isn't one.
+    const itemRows = items.map((it) => {
+      const tireId = typeof it.tireId === 'string' && it.tireId.length > 0 ? it.tireId : null;
+      const row: any = {
+        tipo:         it.tipo,
+        marca:        it.marca,
+        modelo:       it.modelo      ?? null,
+        dimension:    typeof it.dimension === 'string' ? normalizeDimension(it.dimension) : it.dimension,
+        eje:          it.eje         ?? null,
+        cantidad:     it.cantidad    ?? 1,
+        vehiclePlaca: it.vehiclePlaca ?? null,
+        urgency:      it.urgency     ?? null,
+        notas:        it.notas       ?? null,
+      };
+      if (tireId) row.tire = { connect: { id: tireId } };
+      return row;
+    });
 
     const order = await this.prisma.purchaseOrder.create({
       data: {

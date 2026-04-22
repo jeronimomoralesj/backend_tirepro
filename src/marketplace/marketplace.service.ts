@@ -260,20 +260,23 @@ export class MarketplaceService {
       quoteByIdx.set(idx, q);
     });
 
+    // Prisma's checked create input (used by nested `items: { create: [...] }`)
+    // exposes `tire: { connect: { id } }` but not the scalar `tireId` — so
+    // we build each row with the relation form when a tire is present.
     const poItems = bidItems.map((it, idx) => {
       const q = quoteByIdx.get(idx);
-      return {
-        tireId:              it?.tireId      ?? null,
-        tipo:                (it?.tipo ?? 'nueva') as string,
-        marca:               String(it?.marca ?? ''),
-        modelo:              it?.modelo ?? it?.diseno ?? it?.bandaRecomendada ?? null,
-        dimension:           typeof it?.dimension === 'string'
-                              ? normalizeDimension(it.dimension)
-                              : (it?.dimension ?? ''),
-        eje:                 it?.eje           ?? null,
-        cantidad:            typeof it?.cantidad === 'number' ? it.cantidad : 1,
-        vehiclePlaca:        it?.vehiclePlaca  ?? null,
-        urgency:             it?.urgency       ?? null,
+      const tireId = typeof it?.tireId === 'string' && it.tireId.length > 0 ? it.tireId : null;
+      const row: any = {
+        tipo:                      (it?.tipo ?? 'nueva') as string,
+        marca:                     String(it?.marca ?? ''),
+        modelo:                    it?.modelo ?? it?.diseno ?? it?.bandaRecomendada ?? null,
+        dimension:                 typeof it?.dimension === 'string'
+                                    ? normalizeDimension(it.dimension)
+                                    : (it?.dimension ?? ''),
+        eje:                       it?.eje ?? null,
+        cantidad:                  typeof it?.cantidad === 'number' ? it.cantidad : 1,
+        vehiclePlaca:              it?.vehiclePlaca ?? null,
+        urgency:                   it?.urgency ?? null,
         precioUnitario:            typeof q?.precioUnitario === 'number' ? q.precioUnitario : null,
         disponible:                typeof q?.disponible     === 'boolean' ? q.disponible    : null,
         tiempoEntrega:             q?.tiempoEntrega   ?? null,
@@ -283,8 +286,10 @@ export class MarketplaceService {
         bandaOfrecidaProfundidad:  typeof q?.bandaOfrecidaProfundidad === 'number'
                                       ? q.bandaOfrecidaProfundidad
                                       : null,
-        status:                    'cotizada' as const,
+        status:                    'cotizada',
       };
+      if (tireId) row.tire = { connect: { id: tireId } };
+      return row;
     });
 
     // Atomic: award winner, reject losers, close bid, create PO. We use
