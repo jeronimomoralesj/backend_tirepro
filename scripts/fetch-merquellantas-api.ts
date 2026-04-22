@@ -80,11 +80,13 @@ const REPORTS_BASE  = 'https://reports-mqplatform-prod.azurewebsites.net';
 //   - tires_pN.json                     → /report/currentstatetirest (paginated)
 //   - inspections_pN.json               → /report/inspection (paginated)
 type EndpointSpec = {
-  name:       'vehicles' | 'inactive' | 'tires' | 'inspections';
+  name:       'vehicles' | 'inactive' | 'tires' | 'inspections' | 'currentstate';
   base:       string;
   path:       string;
   filePrefix: string;    // output file prefix; gets _pN.json suffix when paginated
   paginated:  boolean;
+  // Extra static query params (beyond Page / PageSize).
+  extraQuery?: Record<string, string>;
   // Optional filter applied per row before persisting. Returns false to drop.
   rowFilter?: (row: any) => boolean;
 };
@@ -107,9 +109,23 @@ const ENDPOINTS: EndpointSpec[] = [
   {
     name:       'tires',
     base:       REPORTS_BASE,
-    path:       '/api/report/tires',           // NOT currentstatetirest (that path is 404)
+    path:       '/api/report/tires',
     filePrefix: 'tires',                       // → tires_p0.json, tires_p1.json, ...
     paginated:  true,
+  },
+  {
+    // Authoritative "current snapshot" per tire — carries tireStateId
+    // (Desecho / Reencauche / …), per-axis current depths, commercialCost
+    // per life, and averageDepth/minDepth. Import prefers values from
+    // this endpoint over the plain `tires` list when both are present.
+    // ClientType=2 filters to CPK-billable tires (the ones Merquellantas
+    // actually tracks for us).
+    name:       'currentstate',
+    base:       REPORTS_BASE,
+    path:       '/api/report/currentstatetires',
+    filePrefix: 'currentstate',                // → currentstate_p0.json, …
+    paginated:  true,
+    extraQuery: { ClientType: '2' },
   },
   {
     name:       'inspections',
@@ -190,6 +206,9 @@ async function fetchAllPages(spec: EndpointSpec): Promise<PageResult> {
     const url = new URL(spec.base + spec.path);
     url.searchParams.set('Page', String(page));
     if (PAGE_SIZE) url.searchParams.set('PageSize', PAGE_SIZE);
+    if (spec.extraQuery) {
+      for (const [k, v] of Object.entries(spec.extraQuery)) url.searchParams.set(k, v);
+    }
 
     const t0 = Date.now();
     const data = await authFetch(url.toString());

@@ -241,11 +241,25 @@ async function main() {
   const vehiclesRaw    = loadJsonArray('vehicles.json');
   const vehiclesWoTx   = loadJsonArray('vehiclesWithoutTransaction.json');
   const tiresRaw       = loadAll('tires_p');
+  // currentstatetires is the authoritative "current snapshot" per tire —
+  // we merge it into the tire ingest by tireId so the authoritative state
+  // (Desecho / Reencauche / etc.), commercial cost per life, and minimal
+  // depths come from it instead of the plainer /tires endpoint.
+  const currentStateRaw = loadAll('currentstate_p');
   const inspsRaw       = SKIP_INSPS ? [] : loadAll('inspections_p');
+
+  // Build a tireId → currentstate lookup. If the same tireId shows up
+  // more than once (shouldn't, but defensive), later pages win so we
+  // end up with the freshest snapshot.
+  const currentByTireId = new Map<number, any>();
+  for (const r of currentStateRaw) {
+    if (typeof r?.tireId === 'number') currentByTireId.set(r.tireId, r);
+  }
 
   console.log(`Loaded vehicle txns:            ${vehiclesRaw.length}`);
   console.log(`Loaded vehiclesWithoutTxns:     ${vehiclesWoTx.length}`);
   console.log(`Loaded tires:                   ${tiresRaw.length}`);
+  console.log(`Loaded currentstatetires:       ${currentStateRaw.length} (${currentByTireId.size} unique tireIds)`);
   console.log(`Loaded inspections:             ${inspsRaw.length}`);
 
   // ── Build "inactive vehicle" map from vehiclesWithoutTransaction ─────────
@@ -750,28 +764,47 @@ async function main() {
     const clientCompanyId = clientToCompanyId.get(client);
     if (!clientCompanyId) { tireSkipped++; return; }
 
+    // Authoritative snapshot from /currentstatetires — carries the true
+    // current state (including Desecho), commercialCost per life, and
+    // richer depth data. Fall back to /tires fields when this tire isn't
+    // in the snapshot (e.g. newly created or the snapshot pagination
+    // missed it).
+    const cs = r.tireId != null ? currentByTireId.get(Number(r.tireId)) : undefined;
+    const sourceState = (cs?.state ?? r.state) as string | undefined;
+
     const extTire = EXT_TIRE(r.id);
     const dial    = r.dialNumber ? String(r.dialNumber) : r.id;
     const rcKey   = `${client.toLowerCase()}__${r.dialNumber}`;
     const retreadCount = retreadCountByKey.get(rcKey) ?? 0;
-    const vidaActual   = mapVidaActual(r.state, retreadCount || 1);
+    const vidaActual   = mapVidaActual(sourceState, retreadCount || 1);
     const totalVidas   = vidaActual === VidaValue.fin
       ? Math.max(retreadCount, 1)
       : vidaActual === VidaValue.nueva ? 0 : Math.max(retreadCount, 1);
-    const marca       = (r.trademark ?? '').trim() || 'DESCONOCIDA';
-    const diseno      = r.state === 'Reencauche' && r.tireBand && r.tireBand !== '-'
-      ? String(r.tireBand)
-      : (r.design ?? '').trim() || 'N/A';
-    const dimension   = (r.dimension ?? '').trim() || 'N/A';
-    const rawProfInic = r.state === 'Reencauche'
-      ? toNum(r.originalDepthRetread) || toNum(r.originalDepth)
-      : toNum(r.originalDepth);
+    const marca       = (cs?.brand ?? r.trademark ?? '').trim() || 'DESCONOCIDA';
+    const isRetread   = sourceState === 'Reencauche' || vidaActual !== VidaValue.nueva;
+    // tireBand lives on /tires; currentstate uses `tireBand` the same way.
+    const bandName    = (cs?.tireBand ?? r.tireBand ?? '').trim();
+    const diseno      = isRetread && bandName && bandName !== '-'
+      ? bandName
+      : (cs?.design ?? r.design ?? '').trim() || 'N/A';
+    const dimension   = (cs?.dimension ?? r.dimension ?? '').trim() || 'N/A';
+    // originalDepthRetread applies when the tire is currently on a retread
+    // life; otherwise originalDepth (the first mount's banda thickness).
+    const rawProfInic = isRetread
+      ? toNum(cs?.originalDepthRetread ?? r.originalDepthRetread) || toNum(cs?.originalDepth ?? r.originalDepth)
+      : toNum(cs?.originalDepth ?? r.originalDepth);
     const profInic    = rawProfInic > 0 ? rawProfInic : 16;
-    const rawKm       = Math.max(0, Math.round(toNum(r.mileageTraveled)));
+    const rawKm       = Math.max(0, Math.round(toNum(cs?.mileageTraveled ?? r.mileageTraveled)));
     const kmRecorr    = capKm(rawKm, vidaActual);
     if (kmRecorr < rawKm) kmCapped++;
-    const cpk         = toNum(r.cpk);
-    const commercial  = toNum(r.commercialCost);
+    // Prefer the CPK from currentstatetires (the 3rd API) — that's the
+    // authoritative one Merquellantas publishes. Fall back to /tires only
+    // when the snapshot doesn't have it. Post-pass (B) recomputes from
+    // costs / km when both sides are zero/null.
+    const cpk         = toNum(cs?.cpk ?? r.cpk);
+    // commercialCost on currentstate is per-life and reliable; /tires
+    // often returns 0 for retreads. Prefer currentstate when available.
+    const commercial  = toNum(cs?.commercialCost ?? r.commercialCost);
     const installDate = parseDate(r.assemblyDate);
 
     let vehicleId: string | null = null;
@@ -1005,6 +1038,109 @@ async function main() {
   //      we have both sides. Crucial: MERQUEPRO inspections carry NO cpk
   //      field, so the old refresh was wiping every tire's cpk to NULL.
   //   C. Sync latest inspection snapshot onto tire (depth, pressure, date).
+  // ── Post-pass 0: position-collision cleanup ───────────────────────────────
+  // Merquepro's /tires dump returns every tire that has ever been mounted
+  // at a given position, so many (vehicleId, posicion) pairs end up with
+  // 2+ tires after insert. Keep the one with the latest assembly date on
+  // the vehicle; move the others to inventory (vehicleId = null,
+  // inventoryBucketId = null, preserve lastVehicleId/lastVehiclePlaca).
+  if (APPLY) {
+    console.log('Resolving (vehicle, posicion) collisions…');
+    const collisionFix = await prisma.$executeRawUnsafe(`
+      WITH ranked AS (
+        SELECT t.id, t."vehicleId", t."posicion",
+               ROW_NUMBER() OVER (
+                 PARTITION BY t."vehicleId", t."posicion"
+                 ORDER BY COALESCE(t."fechaInstalacion", t."createdAt") DESC,
+                          t."updatedAt" DESC,
+                          t.id DESC
+               ) AS rn
+          FROM "Tire" t
+         WHERE t."externalSourceId" LIKE 'merquepro:%'
+           AND t."vehicleId" IS NOT NULL
+           AND t."posicion" > 0
+      ),
+      losers AS (
+        SELECT r.id, t."vehicleId", v.placa AS v_placa, t."posicion"
+          FROM ranked r
+          JOIN "Tire" t ON t.id = r.id
+          LEFT JOIN "Vehicle" v ON v.id = r."vehicleId"
+         WHERE r.rn > 1
+      )
+      UPDATE "Tire" t
+         SET "vehicleId"          = NULL,
+             "posicion"           = 0,
+             "lastVehicleId"      = l."vehicleId",
+             "lastVehiclePlaca"   = l.v_placa,
+             "lastPosicion"       = l."posicion",
+             "inventoryEnteredAt" = NOW()
+        FROM losers l
+       WHERE t.id = l.id
+    `);
+    console.log(`  resolved collisions: ${collisionFix} tires bumped to inventory`);
+  }
+
+  // ── Post-pass 1: multi-vida reconstruction from inspections ───────────────
+  // Merquepro inspections carry the vida state at the time of inspection.
+  // Walking chronologically and detecting state transitions lets us build
+  // a real TireVidaSnapshot chain (nueva → reencauche1 → reencauche2 …)
+  // instead of only the latest vida. Idempotent: creates snapshots only
+  // where none exist for the same (tireId, vida).
+  if (APPLY) {
+    console.log('Reconstructing vida history from inspections…');
+    const vidaPass = await prisma.$executeRawUnsafe(`
+      WITH ordered AS (
+        SELECT
+          i.id,
+          i."tireId",
+          i."fecha",
+          i."vidaAlMomento" AS vida,
+          ROW_NUMBER() OVER (PARTITION BY i."tireId" ORDER BY i."fecha" ASC, i.id ASC) AS rn,
+          LAG(i."vidaAlMomento") OVER (PARTITION BY i."tireId" ORDER BY i."fecha" ASC, i.id ASC) AS prev_vida
+        FROM inspecciones i
+      ),
+      transitions AS (
+        -- A transition is: the vida at this inspection differs from the
+        -- previous inspection AND the new vida is a reencauche level.
+        -- We don't create snapshots for the initial nueva life here;
+        -- that's handled by the existing tire_vida_snapshots seed.
+        SELECT
+          o."tireId",
+          o."vida" AS to_vida,
+          o."fecha" AS transition_date,
+          o.prev_vida AS from_vida
+        FROM ordered o
+        JOIN "Tire" t ON t.id = o."tireId"
+        WHERE t."externalSourceId" LIKE 'merquepro:%'
+          AND o.prev_vida IS NOT NULL
+          AND o.prev_vida <> o.vida
+          AND o.vida IN ('reencauche1','reencauche2','reencauche3','fin')
+      )
+      INSERT INTO tire_vida_snapshots
+        (id, "tireId", "companyId", "vida", "fechaInicio", "fechaFin",
+         "motivoFin", "costoInicial", "profundidadInicialMm",
+         "createdAt", "updatedAt")
+      SELECT
+        gen_random_uuid()::text,
+        tr."tireId",
+        t."companyId",
+        tr.to_vida,
+        tr.transition_date,                             -- open the new life
+        NULL,                                            -- still open
+        CASE WHEN tr.to_vida = 'fin' THEN 'reencauche' ELSE NULL END,
+        0,
+        16,
+        NOW(), NOW()
+      FROM transitions tr
+      JOIN "Tire" t ON t.id = tr."tireId"
+      WHERE NOT EXISTS (
+        SELECT 1 FROM tire_vida_snapshots s
+        WHERE s."tireId" = tr."tireId" AND s."vida" = tr.to_vida
+      )
+    `);
+    console.log(`  vida snapshots added: ${vidaPass}`);
+  }
+
   if (APPLY && !SKIP_REFRESH) {
     console.log('Refreshing analytics for merquepro tires…');
     // Only accept an inspection-odometer-diff ≥ 500 km. Smaller diffs are
