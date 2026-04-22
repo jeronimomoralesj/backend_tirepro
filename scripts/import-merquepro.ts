@@ -28,6 +28,35 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 const prisma = new PrismaClient();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Transient-error retry
+// AWS NLB kills idle connections in the Prisma pool after ~5 min; the next
+// query picks up the dead socket and fails with P1001. A 2-hour bulk import
+// hits this at least once. Wrap every DB call below with `retry()`.
+// ─────────────────────────────────────────────────────────────────────────────
+const TRANSIENT_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017']);
+const TRANSIENT_MSG_FRAGS = ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'Connection terminated', 'Connection timed out', 'server closed the connection'];
+function isTransient(err: unknown): boolean {
+  const anyErr = err as { code?: string; message?: string };
+  if (anyErr?.code && TRANSIENT_CODES.has(anyErr.code)) return true;
+  return TRANSIENT_MSG_FRAGS.some((f) => (anyErr?.message ?? '').includes(f));
+}
+async function retry<T>(fn: () => Promise<T>, label = 'db'): Promise<T> {
+  const backoffs = [200, 500, 1500, 4000, 10000];
+  for (let i = 0; i <= backoffs.length; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isTransient(err) || i === backoffs.length) throw err;
+      const wait = backoffs[i];
+      const code = (err as any)?.code ?? (err as any)?.message?.slice(0, 60);
+      console.warn(`  [retry] ${label} attempt ${i + 1} failed (${code}); waiting ${wait}ms`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw new Error('unreachable');
+}
 const APPLY          = process.argv.includes('--apply');
 const SKIP_INSPS     = process.argv.includes('--skip-inspections');
 const SKIP_REFRESH   = process.argv.includes('--skip-refresh');
@@ -522,7 +551,7 @@ async function main() {
     };
 
     if (existing) {
-      const upd = await prisma.vehicle.update({
+      const upd = await retry(() => prisma.vehicle.update({
         where: { id: existing.id },
         data: {
           ...baseCommon,
@@ -532,13 +561,13 @@ async function main() {
           ...(existing.externalSourceId ? {} : { externalSourceId: ext }),
         },
         select: { id: true },
-      });
+      }), 'vehicle.update');
       vehicleIdMap.set(meta.vehicleId, upd.id);
       if (orphan) vehicleOrphaned++;
       vehicleUpdated++;
     } else {
       try {
-        const created = await prisma.vehicle.create({
+        const created = await retry(() => prisma.vehicle.create({
           data: {
             ...baseCommon,
             placa:             plateLower,
@@ -549,7 +578,7 @@ async function main() {
             externalSourceId:  ext,
           },
           select: { id: true },
-        });
+        }), 'vehicle.create');
         vehicleIdMap.set(meta.vehicleId, created.id);
         const rec = { id: created.id, externalSourceId: ext, configuracion };
         existingVehBySrc.set(ext, rec);
@@ -710,9 +739,10 @@ async function main() {
   let costReal = 0, costDerived = 0, costEstimated = 0, costMissing = 0;
   let kmCapped = 0;
 
-  // Batched concurrency: Prisma's pool defaults to ~10, so we burn through
-  // 25 per wave for headroom without overwhelming it.
-  const TIRE_BATCH = 25;
+  // Batched concurrency: each tire does 2-3 queries (upsert + findFirst
+  // for vida event + optional costo insert), so TIRE_BATCH=8 keeps the pool
+  // (default 10) from timing out under the v2 schema's extra writes.
+  const TIRE_BATCH = 8;
   let tireOrphaned = 0;
 
   async function processTire(r: TireRow) {
@@ -789,16 +819,19 @@ async function main() {
     const existingId = existingTireBySrc.get(extTire);
     let tireId: string;
     if (existingId) {
-      await prisma.tire.update({ where: { id: existingId }, data: baseTireData });
+      await retry(() => prisma.tire.update({ where: { id: existingId }, data: baseTireData }), 'tire.update');
       tireId = existingId;
       tireUpdated++;
     } else {
-      const created = await prisma.tire.create({
+      const created = await retry(() => prisma.tire.create({
         data: baseTireData,
         select: { id: true },
-      });
+      }), 'tire.create');
       tireId = created.id;
       tireCreated++;
+      // Remember the new id so a transient retry doesn't try to re-create it
+      // (which would explode on the externalSourceId unique constraint).
+      existingTireBySrc.set(extTire, tireId);
     }
     tireIdMap.set(r.id, tireId);
     tireByClientDialId.set(`${client.toLowerCase()}|${r.dialNumber}`, tireId);
@@ -807,16 +840,16 @@ async function main() {
     // from these events (not the Tire row directly), so skipping this step
     // makes every imported tire look like a blank "nueva" in DetallesLlantas.
     // Idempotent: skip when a vida event for this tire already exists.
-    const hasVidaEvt = await prisma.tireEvento.findFirst({
+    const hasVidaEvt = await retry(() => prisma.tireEvento.findFirst({
       where: {
         tireId,
         tipo: TireEventType.montaje,
         notas: { in: [VidaValue.nueva, VidaValue.reencauche1, VidaValue.reencauche2, VidaValue.reencauche3, VidaValue.fin] },
       },
       select: { id: true },
-    });
+    }), 'tireEvento.findFirst');
     if (!hasVidaEvt) {
-      await prisma.tireEvento.create({
+      await retry(() => prisma.tireEvento.create({
         data: {
           tireId,
           tipo:  TireEventType.montaje,
@@ -824,7 +857,7 @@ async function main() {
           notas: vidaActual,
           metadata: { source: 'merquepro_import' } as any,
         },
-      });
+      }), 'tireEvento.create');
     }
 
     // Cost entry — createMany with skipDuplicates avoids a pre-select. We
@@ -851,9 +884,9 @@ async function main() {
       const costFecha = installDate ?? new Date();
       if (!existingId) {
         // Only insert on first-time tire creation — prevents duplicates on re-run.
-        await prisma.tireCosto.create({
+        await retry(() => prisma.tireCosto.create({
           data: { tireId, valor: costValue, fecha: costFecha, concepto: concept },
-        });
+        }), 'tireCosto.create');
       }
       if (costOrigin === 'real')      costReal++;
       else if (costOrigin === 'derived') costDerived++;
@@ -894,7 +927,7 @@ async function main() {
       if (row.externalSourceId) existingInspBySrc.set(row.externalSourceId, row.id);
     }
 
-    const INSP_BATCH = 25;
+    const INSP_BATCH = 8;
     async function processInsp(i: any) {
       const iClient = (i.client ?? '').trim();
       if (!iClient || i.dialNumber == null) { inspSkipped++; return; }
@@ -932,11 +965,20 @@ async function main() {
       };
       const existingId = existingInspBySrc.get(extInsp);
       if (existingId) {
-        await prisma.inspeccion.update({ where: { id: existingId }, data: inspData });
+        await retry(() => prisma.inspeccion.update({ where: { id: existingId }, data: inspData }), 'inspeccion.update');
         inspUpdated++;
       } else {
-        await prisma.inspeccion.create({ data: inspData });
-        inspCreated++;
+        try {
+          await retry(() => prisma.inspeccion.create({ data: inspData }), 'inspeccion.create');
+          inspCreated++;
+          existingInspBySrc.set(extInsp, 'just-created'); // dedupe if retried later
+        } catch (err) {
+          // Idempotency guard: if two concurrent Promise.all workers raced to
+          // create the same externalSourceId, one wins and the other gets
+          // P2002. Swallow that specific case instead of killing the run.
+          if ((err as any)?.code === 'P2002') { inspSkipped++; }
+          else throw err;
+        }
       }
       tiresNeedingRefresh.add(tireLocalId);
     }
