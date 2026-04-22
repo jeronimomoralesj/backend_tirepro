@@ -274,13 +274,16 @@ export class MarketplaceService {
         cantidad:            typeof it?.cantidad === 'number' ? it.cantidad : 1,
         vehiclePlaca:        it?.vehiclePlaca  ?? null,
         urgency:             it?.urgency       ?? null,
-        precioUnitario:      typeof q?.precioUnitario === 'number' ? q.precioUnitario : null,
-        disponible:          typeof q?.disponible     === 'boolean' ? q.disponible    : null,
-        tiempoEntrega:       q?.tiempoEntrega   ?? null,
-        cotizacionNotas:     q?.notas           ?? null,
-        bandaOfrecidaMarca:  q?.bandaOfrecidaMarca  ?? null,
-        bandaOfrecidaModelo: q?.bandaOfrecidaModelo ?? null,
-        status:              'cotizada' as const,
+        precioUnitario:            typeof q?.precioUnitario === 'number' ? q.precioUnitario : null,
+        disponible:                typeof q?.disponible     === 'boolean' ? q.disponible    : null,
+        tiempoEntrega:             q?.tiempoEntrega   ?? null,
+        cotizacionNotas:           q?.notas           ?? null,
+        bandaOfrecidaMarca:        q?.bandaOfrecidaMarca  ?? null,
+        bandaOfrecidaModelo:       q?.bandaOfrecidaModelo ?? null,
+        bandaOfrecidaProfundidad:  typeof q?.bandaOfrecidaProfundidad === 'number'
+                                      ? q.bandaOfrecidaProfundidad
+                                      : null,
+        status:                    'cotizada' as const,
       };
     });
 

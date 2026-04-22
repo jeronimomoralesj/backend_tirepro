@@ -44,10 +44,14 @@ export interface CotizacionItemInput {
   disponible:          boolean;
   tiempoEntrega?:      string | null;
   notas?:              string | null;
-  // Reencauche-only: the banda the dist commits to using. Accepted on any
-  // item but ignored by the UI for nueva rows.
-  bandaOfrecidaMarca?:  string | null;
-  bandaOfrecidaModelo?: string | null;
+  // Reencauche-only: the banda the dist commits to using + its initial
+  // profundidad (mm). Accepted on any item but ignored by the UI for
+  // nueva rows. Profundidad is what the EntregarModal seeds into the
+  // vida snapshot at entregar time — committing here means the dist
+  // doesn't have to retype it and the fleet sees it up-front.
+  bandaOfrecidaMarca?:        string | null;
+  bandaOfrecidaModelo?:       string | null;
+  bandaOfrecidaProfundidad?:  number | null;
 }
 
 @Injectable()
@@ -217,13 +221,14 @@ export class PurchaseOrdersService {
       this.prisma.purchaseOrderItem.update({
         where: { id: q.itemId },
         data: {
-          precioUnitario:       q.precioUnitario,
-          disponible:           q.disponible,
-          tiempoEntrega:        q.tiempoEntrega        ?? null,
-          cotizacionNotas:      q.notas                ?? null,
-          bandaOfrecidaMarca:   q.bandaOfrecidaMarca   ?? null,
-          bandaOfrecidaModelo:  q.bandaOfrecidaModelo  ?? null,
-          status:               'cotizada',
+          precioUnitario:             q.precioUnitario,
+          disponible:                 q.disponible,
+          tiempoEntrega:              q.tiempoEntrega              ?? null,
+          cotizacionNotas:            q.notas                      ?? null,
+          bandaOfrecidaMarca:         q.bandaOfrecidaMarca         ?? null,
+          bandaOfrecidaModelo:        q.bandaOfrecidaModelo        ?? null,
+          bandaOfrecidaProfundidad:   q.bandaOfrecidaProfundidad   ?? null,
+          status:                     'cotizada',
         },
       }),
     );
@@ -324,13 +329,14 @@ export class PurchaseOrdersService {
       this.prisma.purchaseOrderItem.updateMany({
         where: { purchaseOrderId: orderId },
         data: {
-          status:              'pendiente',
-          precioUnitario:      null,
-          disponible:          null,
-          tiempoEntrega:       null,
-          cotizacionNotas:     null,
-          bandaOfrecidaMarca:  null,
-          bandaOfrecidaModelo: null,
+          status:                    'pendiente',
+          precioUnitario:            null,
+          disponible:                null,
+          tiempoEntrega:             null,
+          cotizacionNotas:           null,
+          bandaOfrecidaMarca:        null,
+          bandaOfrecidaModelo:       null,
+          bandaOfrecidaProfundidad:  null,
         },
       }),
       this.prisma.purchaseOrder.update({

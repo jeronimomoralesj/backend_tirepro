@@ -1026,9 +1026,12 @@ model PurchaseOrderItem {
   // Reencauche offer — a banda has a brand (Michelin, Bridgestone…) AND a
   // model/type (XDR, M700…). Both are captured at cotización time so the
   // fleet can decide on both axes and the entregar step pre-fills from them.
-  // Null on nueva items.
-  bandaOfrecidaMarca  String?
-  bandaOfrecidaModelo String?
+  // Null on nueva items. Profundidad inicial (mm) is the thickness the
+  // banda will provide once installed — captured here so the EntregarModal
+  // can seed the vida snapshot with the exact value the dist committed to.
+  bandaOfrecidaMarca        String?
+  bandaOfrecidaModelo       String?
+  bandaOfrecidaProfundidad  Float?
 
   // Lifecycle
   status            PurchaseOrderItemStatus @default(pendiente)
