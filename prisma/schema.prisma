@@ -60,6 +60,30 @@ enum VidaValue {
   fin
 }
 
+// Per-item lifecycle inside a PurchaseOrder. Each tire or line item travels
+// through its own states — decoupled from the order-level status so a mixed
+// order can partially progress (one reencauche item approved, another
+// rejected) without the parent status becoming ambiguous.
+enum PurchaseOrderItemStatus {
+  pendiente             // created; order not yet quoted or accepted
+  cotizada              // distributor has priced this line
+  en_reencauche_bucket  // reencauche only: fleet moved the tire to the reencauche bucket, awaiting dist approval
+  aprobada              // reencauche only: dist accepted; has ETA; tire vida will be incremented on entregar
+  rechazada             // reencauche only: dist rejected with motivo; tire routed to fin-de-vida
+  entregada             // reencauche only: tire handed back, moved to disponible bucket
+  completada            // llanta-nueva only: delivered to fleet
+  cancelada
+}
+
+// Semantic kind of an inventory bucket. Non-disponible buckets are
+// system-managed (one `reencauche` bucket auto-created per company on first
+// use); users create/delete their own `disponible` buckets freely.
+enum InventoryBucketTipo {
+  disponible
+  reencauche
+  fin_de_vida
+}
+
 enum TireEventType {
   montaje
   rotacion
@@ -541,6 +565,7 @@ model Tire {
   vidaSnapshots   TireVidaSnapshot[]
   recommendations TireRecommendation[]
   historyEntries  VehicleTireHistory[]
+  orderItems      PurchaseOrderItem[]  @relation("PurchaseOrderItems")
 
   @@index([companyId])
   @@index([vehicleId])
@@ -938,12 +963,12 @@ model PurchaseOrder {
   distributorId   String
   status          String   @default("solicitud_enviada")
   // solicitud_enviada | cotizacion_recibida | aceptada | rechazada | completada
+  // Order-level status is now a coarse summary; per-line state lives on
+  // PurchaseOrderItem.status (see PurchaseOrderItemStatus).
 
-  items           Json     // [{ tireId?, marca, dimension, cantidad, tipo: 'nueva'|'reencauche', vehiclePlaca?, urgency }]
   totalEstimado   Float?
   notas           String?
 
-  cotizacion       Json?      // [{ itemIndex, precioUnitario, disponible, tiempoEntrega, notas }]
   totalCotizado    Float?
   cotizacionFecha  DateTime?
   cotizacionNotas  String?
@@ -954,13 +979,68 @@ model PurchaseOrder {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company     Company @relation("CompanyOrders", fields: [companyId], references: [id])
-  distributor Company @relation("DistributorOrders", fields: [distributorId], references: [id])
+  company     Company              @relation("CompanyOrders",      fields: [companyId],     references: [id])
+  distributor Company              @relation("DistributorOrders",  fields: [distributorId], references: [id])
+  items       PurchaseOrderItem[]
 
   @@index([companyId, status])
   @@index([distributorId, status])
   @@index([createdAt])
   @@map("purchase_orders")
+}
+
+// Per-tire / per-line row for a PurchaseOrder. Replaces the old JSON
+// `items` + `cotizacion` blobs. Holds both the request spec (marca,
+// dimension, cantidad…) and the per-line pricing + lifecycle state so
+// partial progression through a mixed order is trackable without
+// mutating a shared JSON.
+model PurchaseOrderItem {
+  id              String   @id @default(uuid())
+  purchaseOrderId String
+
+  // For reencauche items, the specific tire being retread; nueva items
+  // leave this null until the dist links delivered tires (if ever).
+  tireId          String?
+
+  tipo            String                  // 'nueva' | 'reencauche'
+  marca           String
+  modelo          String?                 // banda recomendada (reencauche) | tread design (nueva)
+  dimension       String
+  eje             String?
+  cantidad        Int                     @default(1)
+  vehiclePlaca    String?
+  urgency         String?
+  notas           String?
+
+  // Quote fields — filled by dist at cotizacion time
+  precioUnitario  Float?
+  disponible      Boolean?                // true: in stock; false: backorder
+  tiempoEntrega   String?
+  cotizacionNotas String?
+
+  // Lifecycle
+  status            PurchaseOrderItemStatus @default(pendiente)
+  estimatedDelivery DateTime?              // dist ETA after approving reencauche
+  motivoRechazo     String?                // reason dist rejected reencauche (stored alongside the fin-de-vida snapshot)
+  finalizedAt       DateTime?              // when item reached entregada/rechazada/completada
+
+  // Reencauche vida trail — snapshot before/after the retread cycle
+  vidaPrevia      VidaValue?
+  vidaNueva       VidaValue?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  tire            Tire?         @relation("PurchaseOrderItems", fields: [tireId], references: [id], onDelete: SetNull)
+
+  @@index([purchaseOrderId])
+  @@index([tireId])
+  @@index([status])
+  // Accelerates "does this tire have an active reencauche cycle?" lookups
+  // without hitting the legacy full-scan on the items JSON.
+  @@index([tireId, status])
+  @@map("purchase_order_items")
 }
 
 // =============================================================================
@@ -1253,21 +1333,26 @@ model Income {
 // =============================================================================
 
 model TireInventoryBucket {
-  id             String   @id @default(uuid())
+  id             String              @id @default(uuid())
   companyId      String
   nombre         String
   color          String?
   icono          String?
-  excluirDeFlota Boolean  @default(false)
-  orden          Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  excluirDeFlota Boolean             @default(false)
+  orden          Int                 @default(0)
+  // Semantic kind. `disponible` is user-managed; `reencauche` / `fin_de_vida`
+  // are system-managed — there should be at most one of each per company,
+  // enforced by the partial unique index below.
+  tipo           InventoryBucketTipo @default(disponible)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   tires   Tire[]
 
   @@unique([companyId, nombre])
   @@index([companyId])
+  @@index([companyId, tipo])
   @@map("tire_inventory_buckets")
 }
 

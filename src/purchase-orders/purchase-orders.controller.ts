@@ -13,7 +13,11 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CompanyScopeGuard } from '../auth/guards/company-scope.guard';
-import { PurchaseOrdersService } from './purchase-orders.service';
+import {
+  PurchaseOrdersService,
+  CreateItemInput,
+  CotizacionItemInput,
+} from './purchase-orders.service';
 
 @Controller('purchase-orders')
 @UseGuards(JwtAuthGuard, CompanyScopeGuard)
@@ -43,7 +47,7 @@ export class PurchaseOrdersController {
     body: {
       companyId: string;
       distributorId: string;
-      items: any[];
+      items: CreateItemInput[];
       totalEstimado?: number;
       notas?: string;
     },
@@ -65,7 +69,12 @@ export class PurchaseOrdersController {
   @Patch(':id/cotizacion')
   submitCotizacion(
     @Param('id') id: string,
-    @Body() body: { distributorId: string; cotizacion: any[]; totalCotizado: number; notas?: string },
+    @Body() body: {
+      distributorId: string;
+      cotizacion: CotizacionItemInput[];
+      totalCotizado: number;
+      notas?: string;
+    },
   ) {
     return this.purchaseOrdersService.submitCotizacion(
       id,
@@ -89,5 +98,83 @@ export class PurchaseOrdersController {
   @Patch(':id/revision')
   requestRevision(@Param('id') id: string, @Body() body: { companyId: string; notas: string }) {
     return this.purchaseOrdersService.requestRevision(id, body.companyId, body.notas);
+  }
+
+  // ── Reencauche lifecycle ───────────────────────────────────────────────────
+
+  // Fleet hands the tires over: moves them into the Reencauche bucket and
+  // flips each reencauche item to `en_reencauche_bucket`.
+  @Post(':id/reencauche/send')
+  sendReencaucheTiresToBucket(
+    @Param('id') id: string,
+    @Body() body: { companyId: string },
+  ) {
+    if (!body.companyId) throw new BadRequestException('companyId is required');
+    return this.purchaseOrdersService.sendReencaucheTiresToBucket(id, body.companyId);
+  }
+
+  // Distributor approves one reencauche item with an ETA.
+  @Patch('items/:itemId/approve')
+  approveReencaucheItem(
+    @Param('itemId') itemId: string,
+    @Body() body: { distributorId: string; estimatedDelivery: string },
+  ) {
+    if (!body.distributorId || !body.estimatedDelivery) {
+      throw new BadRequestException('distributorId and estimatedDelivery are required');
+    }
+    return this.purchaseOrdersService.approveReencaucheItem(
+      itemId,
+      body.distributorId,
+      body.estimatedDelivery,
+    );
+  }
+
+  // Distributor rejects one reencauche item and files the fin-de-vida form
+  // (causales / milimetros / photos) that routes the tire to fin-de-vida.
+  @Patch('items/:itemId/reject')
+  rejectReencaucheItem(
+    @Param('itemId') itemId: string,
+    @Body() body: {
+      distributorId: string;
+      motivoRechazo: string;
+      desechos: { causales: string; milimetrosDesechados: number; imageUrls?: string[] };
+    },
+  ) {
+    if (!body.distributorId || !body.motivoRechazo || !body.desechos) {
+      throw new BadRequestException('distributorId, motivoRechazo and desechos are required');
+    }
+    return this.purchaseOrdersService.rejectReencaucheItem(
+      itemId,
+      body.distributorId,
+      body.motivoRechazo,
+      body.desechos,
+    );
+  }
+
+  // Distributor hands a batch of tires back. Each delivery carries the
+  // retread details needed to progress the tire's vida (banda, costo, etc.).
+  @Post(':id/entregar')
+  entregarReencaucheItems(
+    @Param('id') id: string,
+    @Body() body: {
+      distributorId: string;
+      deliveries: Array<{
+        tireId:             string;
+        banda:              string;
+        bandaMarca?:        string;
+        costo:              number;
+        profundidadInicial: number;
+        proveedor?:         string;
+      }>;
+    },
+  ) {
+    if (!body.distributorId || !Array.isArray(body.deliveries) || body.deliveries.length === 0) {
+      throw new BadRequestException('distributorId and deliveries are required');
+    }
+    return this.purchaseOrdersService.entregarReencaucheItems(
+      id,
+      body.distributorId,
+      body.deliveries,
+    );
   }
 }
