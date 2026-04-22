@@ -243,27 +243,84 @@ export class MarketplaceService {
       throw new BadRequestException('Distributor has not submitted a quote');
     }
 
-    // Award winner, reject others
-    await this.prisma.$transaction([
+    // Bridge from bid → purchase-order. Without this, awarding a bid only
+    // flips statuses: the bid goes to `adjudicada` (which filters into the
+    // dist's Completadas) and no actionable record exists for the winning
+    // dist to schedule a pickup or deliver on. Creating a PurchaseOrder
+    // with status=`aceptada` drops the work directly into the normal
+    // pickup → entregar lifecycle, exactly as if the fleet had accepted
+    // a direct cotización.
+    const bidItems = Array.isArray(bid.items) ? (bid.items as any[]) : [];
+    const quotes   = Array.isArray(winningResponse.cotizacion)
+      ? (winningResponse.cotizacion as any[])
+      : [];
+    const quoteByIdx = new Map<number, any>();
+    quotes.forEach((q, i) => {
+      const idx = typeof q?.itemIndex === 'number' ? q.itemIndex : i;
+      quoteByIdx.set(idx, q);
+    });
+
+    const poItems = bidItems.map((it, idx) => {
+      const q = quoteByIdx.get(idx);
+      return {
+        tireId:              it?.tireId      ?? null,
+        tipo:                (it?.tipo ?? 'nueva') as string,
+        marca:               String(it?.marca ?? ''),
+        modelo:              it?.modelo ?? it?.diseno ?? it?.bandaRecomendada ?? null,
+        dimension:           typeof it?.dimension === 'string'
+                              ? normalizeDimension(it.dimension)
+                              : (it?.dimension ?? ''),
+        eje:                 it?.eje           ?? null,
+        cantidad:            typeof it?.cantidad === 'number' ? it.cantidad : 1,
+        vehiclePlaca:        it?.vehiclePlaca  ?? null,
+        urgency:             it?.urgency       ?? null,
+        precioUnitario:      typeof q?.precioUnitario === 'number' ? q.precioUnitario : null,
+        disponible:          typeof q?.disponible     === 'boolean' ? q.disponible    : null,
+        tiempoEntrega:       q?.tiempoEntrega   ?? null,
+        cotizacionNotas:     q?.notas           ?? null,
+        bandaOfrecidaMarca:  q?.bandaOfrecidaMarca  ?? null,
+        bandaOfrecidaModelo: q?.bandaOfrecidaModelo ?? null,
+        status:              'cotizada' as const,
+      };
+    });
+
+    // Atomic: award winner, reject losers, close bid, create PO.
+    const [, , , createdOrder] = await this.prisma.$transaction([
       this.prisma.bidResponse.update({
         where: { id: winningResponse.id },
-        data: { status: BidResponseStatus.ganadora },
+        data:  { status: BidResponseStatus.ganadora },
       }),
       this.prisma.bidResponse.updateMany({
         where: { bidRequestId, id: { not: winningResponse.id } },
-        data: { status: BidResponseStatus.rechazada },
+        data:  { status: BidResponseStatus.rechazada },
       }),
       this.prisma.bidRequest.update({
         where: { id: bidRequestId },
         data: {
-          status: BidRequestStatus.adjudicada,
-          winnerId: distributorId,
+          status:     BidRequestStatus.adjudicada,
+          winnerId:   distributorId,
           resolvedAt: new Date(),
+        },
+      }),
+      this.prisma.purchaseOrder.create({
+        data: {
+          companyId,
+          distributorId,
+          status:          'aceptada',  // fleet committed by adjudicating
+          totalEstimado:   bid.totalEstimado          ?? null,
+          totalCotizado:   winningResponse.totalCotizado ?? null,
+          cotizacionFecha: winningResponse.submittedAt  ?? new Date(),
+          cotizacionNotas: winningResponse.notas        ?? null,
+          resolvedAt:      new Date(),
+          resolvedBy:      companyId,
+          notas:           bid.notas ?? null,
+          items:           { create: poItems },
         },
       }),
     ]);
 
-    return this.getBidRequestById(bidRequestId);
+    const out = await this.getBidRequestById(bidRequestId);
+    return { ...out, purchaseOrderId: createdOrder.id };
   }
 
   async cancelBidRequest(bidRequestId: string, companyId: string) {
