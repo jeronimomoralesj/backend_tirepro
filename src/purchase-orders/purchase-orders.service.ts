@@ -128,13 +128,34 @@ export class PurchaseOrdersService {
 
   // ── Read ────────────────────────────────────────────────────────────────────
 
+  // Detailed include used by both read endpoints. Per-item tire data lets
+  // the UI show "Vehicle ABC-123 · P2" for reencauche items without a
+  // second round-trip, which is what the fleet's send-to-bucket warning
+  // and the dist's reencauche review module both need.
+  private readonly ORDER_INCLUDE = {
+    items: {
+      orderBy: { createdAt: 'asc' as const },
+      include: {
+        tire: {
+          select: {
+            id: true,
+            placa: true,
+            posicion: true,
+            vidaActual: true,
+            vehicle: { select: { id: true, placa: true } },
+          },
+        },
+      },
+    },
+  };
+
   async getOrdersForCompany(companyId: string) {
     return this.prisma.purchaseOrder.findMany({
       where: { companyId },
       orderBy: { createdAt: 'desc' },
       include: {
         distributor: { select: { id: true, name: true, profileImage: true } },
-        items:       { orderBy: { createdAt: 'asc' } },
+        ...this.ORDER_INCLUDE,
       },
     });
   }
@@ -145,7 +166,7 @@ export class PurchaseOrdersService {
       orderBy: { createdAt: 'desc' },
       include: {
         company: { select: { id: true, name: true, profileImage: true } },
-        items:   { orderBy: { createdAt: 'asc' } },
+        ...this.ORDER_INCLUDE,
       },
     });
   }
