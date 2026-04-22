@@ -808,10 +808,12 @@ export class PurchaseOrdersService {
   // ── Private helpers ────────────────────────────────────────────────────────
 
   // Flip the parent order to `completada` once every item has reached a
-  // terminal state (entregada/rechazada/completada/cancelada). Safe to call
-  // after any per-item transition; a no-op if items are still in flight.
+  // terminal state. Safe to call after any per-item transition; a no-op
+  // if items are still in flight. `aprobada` is NOT terminal — it waits
+  // for the entregar step, which is the only way the order can complete
+  // when the fleet has a live reencauche going.
   private async closeOrderIfAllItemsTerminal(orderId: string): Promise<void> {
-    const TERMINAL: string[] = ['entregada', 'rechazada', 'completada', 'cancelada'];
+    const TERMINAL: string[] = ['entregada', 'rechazada', 'devuelta', 'completada', 'cancelada'];
     const pendingCount = await this.prisma.purchaseOrderItem.count({
       where: {
         purchaseOrderId: orderId,
