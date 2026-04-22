@@ -74,14 +74,31 @@ export class CompaniesService {
   // ── Create ────────────────────────────────────────────────────────────────
 
   async createCompany(dto: CreateCompanyDto) {
+    const plan = (dto.plan as CompanyPlan) ?? CompanyPlan.pro;
     const company = await this.prisma.company.create({
       data: {
         name:         dto.name,
-        plan:         (dto.plan as CompanyPlan) ?? CompanyPlan.pro,
+        plan,
         profileImage: DEFAULT_LOGO,
         ...(dto.emailAtencion && { emailAtencion: dto.emailAtencion }),
       },
     });
+
+    // Non-distribuidor plans always get the system-managed Reencauche bucket
+    // seeded up-front so the reencauche flow works from day one. Disponible
+    // is implicit (null bucket) and already surfaced by findAll — no row
+    // needed. Distribuidores don't run reencauche so we skip them.
+    if (plan !== CompanyPlan.distribuidor) {
+      await this.prisma.tireInventoryBucket.create({
+        data: {
+          companyId: company.id,
+          nombre:    'Reencauche',
+          color:     '#8b5cf6',
+          icono:     '♻️',
+          tipo:      'reencauche',
+        },
+      });
+    }
 
     // No cache to invalidate on create — the key doesn't exist yet
     return { message: 'Company registered successfully', companyId: company.id };
