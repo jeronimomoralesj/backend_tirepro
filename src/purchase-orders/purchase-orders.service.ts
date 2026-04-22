@@ -380,13 +380,63 @@ export class PurchaseOrdersService {
     });
   }
 
-  // Distributor performs the pickup: for every reencauche item they
-  // collect, they pick a decision and we apply it in one batch. Tires
-  // physically leave the vehicles here — aprobada tires land in the
-  // fleet's Reencauche bucket, devuelta tires in Disponible, and
-  // rechazada tires go to fin-de-vida through the existing vida path.
-  // `estimatedDelivery` on the order-level is the dist's ETA for
-  // retreaded tires; it applies to every aprobada item.
+  // Phase 1 of pickup: distributor confirms which tires they physically
+  // collected. Tires that aren't at the fleet's facility on pickup day
+  // stay in `cotizada` so the dist can come back for them later.
+  // Collected items transition to `recogida_por_dist`, ready for the
+  // decision step (performPickup) to route each one.
+  async recogerItems(
+    orderId: string,
+    distributorId: string,
+    itemIds: string[],
+  ) {
+    const order = await this.prisma.purchaseOrder.findUnique({
+      where:   { id: orderId },
+      include: { items: true },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.distributorId !== distributorId) {
+      throw new BadRequestException('This order does not belong to your company');
+    }
+    if (order.status !== 'aceptada') {
+      throw new BadRequestException(
+        `Cannot recoger items on an order in status "${order.status}"`,
+      );
+    }
+    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+      throw new BadRequestException('itemIds must be a non-empty array');
+    }
+
+    const byId = new Map(order.items.map((i) => [i.id, i] as const));
+    for (const id of itemIds) {
+      const it = byId.get(id);
+      if (!it) throw new BadRequestException(`Item ${id} is not on this order`);
+      if (it.tipo !== 'reencauche') {
+        throw new BadRequestException(`Item ${id} is not a reencauche item`);
+      }
+      if (it.status !== 'cotizada') {
+        throw new BadRequestException(
+          `Item ${id} is already in status "${it.status}" — cannot re-pickup`,
+        );
+      }
+    }
+
+    await this.prisma.purchaseOrderItem.updateMany({
+      where: { id: { in: itemIds } },
+      data:  { status: 'recogida_por_dist' },
+    });
+
+    return this.prisma.purchaseOrder.findUnique({
+      where:   { id: orderId },
+      include: { items: true },
+    });
+  }
+
+  // Phase 2 of pickup: distributor decides per collected tire. Tires
+  // physically leave the fleet's vehicles here — aprobada tires land
+  // in the fleet's Reencauche bucket, devuelta tires in Disponible,
+  // and rechazada tires go to fin-de-vida through the existing vida
+  // path. `estimatedDelivery` is the ETA for aprobada items.
   async performPickup(
     orderId: string,
     distributorId: string,
@@ -433,9 +483,9 @@ export class PurchaseOrdersService {
       const it = itemsById.get(d.itemId);
       if (!it) throw new BadRequestException(`Item ${d.itemId} is not on this order`);
       if (it.tipo !== 'reencauche') continue; // nueva items sit out the pickup decision
-      if (it.status !== 'cotizada') {
+      if (it.status !== 'recogida_por_dist') {
         throw new BadRequestException(
-          `Item ${d.itemId} is already in status "${it.status}" — cannot re-run pickup`,
+          `Item ${d.itemId} is in status "${it.status}" — debe estar recogida antes de decidir`,
         );
       }
       if (!it.tireId || !it.tire) {

@@ -115,9 +115,25 @@ export class PurchaseOrdersController {
     return this.purchaseOrdersService.schedulePickup(id, body.distributorId, body.pickupDate);
   }
 
-  // Distributor runs the actual pickup. Body carries one decision per
-  // item (reencauchar / devolver / fin_de_vida); each decision triggers
-  // the appropriate tire move + item state transition in a single batch.
+  // Distributor confirms which tires they physically collected at pickup.
+  // Items not in itemIds stay in `cotizada` so the dist can come back
+  // for them later (tire wasn't at the facility that day, etc.).
+  @Post(':id/recoger')
+  recogerItems(
+    @Param('id') id: string,
+    @Body() body: { distributorId: string; itemIds: string[] },
+  ) {
+    if (!body.distributorId || !Array.isArray(body.itemIds) || body.itemIds.length === 0) {
+      throw new BadRequestException('distributorId and itemIds are required');
+    }
+    return this.purchaseOrdersService.recogerItems(id, body.distributorId, body.itemIds);
+  }
+
+  // Distributor runs the per-tire decision step. Body carries one
+  // decision per collected item (reencauchar / devolver / fin_de_vida);
+  // each decision triggers the appropriate tire move + item state
+  // transition in a single batch. Items must already be in
+  // recogida_por_dist (call /recoger first).
   @Post(':id/pickup')
   performPickup(
     @Param('id') id: string,

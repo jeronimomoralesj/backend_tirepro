@@ -67,7 +67,8 @@ enum VidaValue {
 enum PurchaseOrderItemStatus {
   pendiente             // created; order not yet quoted or accepted
   cotizada              // distributor has priced this line
-  en_reencauche_bucket  // reencauche only: fleet moved the tire to the reencauche bucket, awaiting dist approval
+  en_reencauche_bucket  // deprecated (old flow); kept for historical data
+  recogida_por_dist     // reencauche only: dist physically collected the tire, awaiting reencauche decision
   aprobada              // reencauche only: dist accepted; has ETA; tire vida will be incremented on entregar
   rechazada             // reencauche only: dist rejected with motivo; tire routed to fin-de-vida
   devuelta              // reencauche only: dist rejected but tire is still usable; returned to fleet's Disponible bucket
