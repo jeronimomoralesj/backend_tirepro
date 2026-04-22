@@ -68,9 +68,44 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       for (const m of modelMethods) {
         if (typeof val[m] !== 'function') continue;
         const original = val[m].bind(val);
-        val[m] = (...args: any[]) =>
-          withDbRetry(() => original(...args), { label: `${key}.${m}` });
+        const label = `${key}.${m}`;
+        val[m] = (...args: any[]) => wrapPrismaPromise(() => original(...args), label);
       }
     }
   }
+}
+
+/**
+ * Build a proxy thenable that behaves like a PrismaPromise.
+ *
+ * Why: Prisma's $transaction([...]) verifies each element with
+ *   `l?.[Symbol.toStringTag] !== "PrismaPromise"`
+ * and then calls `l.requestTransaction(...)` on each. A plain
+ * `Promise` returned by our retry wrapper fails both checks.
+ *
+ * This proxy:
+ *   • Passes the toStringTag check.
+ *   • On await (`.then`/`.catch`/`.finally`) runs via withDbRetry so a
+ *     transient RDS/NLB connection blip gets retried.
+ *   • On `requestTransaction(payload)` creates a fresh real PrismaPromise
+ *     and delegates — Prisma's transaction engine handles retries for us
+ *     there, so we deliberately skip our own retry inside a transaction.
+ *   • Is lazy like a real PrismaPromise — `makeReal()` isn't called until
+ *     either .then or .requestTransaction runs.
+ */
+function wrapPrismaPromise<T>(makeReal: () => Promise<T>, label: string): any {
+  let cachedRun: Promise<T> | null = null;
+  const run = () => (cachedRun ??= withDbRetry(makeReal, { label }));
+  return {
+    [Symbol.toStringTag]: 'PrismaPromise',
+    then:    (onFulfilled?: any, onRejected?: any) => run().then(onFulfilled, onRejected),
+    catch:   (onRejected?: any)                    => run().catch(onRejected),
+    finally: (onFinally?: any)                     => run().finally(onFinally),
+    requestTransaction(payload: unknown, lock?: unknown) {
+      const real = makeReal() as unknown as {
+        requestTransaction?: (payload: unknown, lock?: unknown) => unknown;
+      };
+      return real.requestTransaction?.(payload, lock) ?? real;
+    },
+  };
 }
