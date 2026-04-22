@@ -39,11 +39,15 @@ export interface CreateItemInput {
 }
 
 export interface CotizacionItemInput {
-  itemId:          string;       // row id on purchase_order_items
-  precioUnitario:  number;
-  disponible:      boolean;
-  tiempoEntrega?:  string | null;
-  notas?:          string | null;
+  itemId:              string;       // row id on purchase_order_items
+  precioUnitario:      number;
+  disponible:          boolean;
+  tiempoEntrega?:      string | null;
+  notas?:              string | null;
+  // Reencauche-only: the banda the dist commits to using. Accepted on any
+  // item but ignored by the UI for nueva rows.
+  bandaOfrecidaMarca?:  string | null;
+  bandaOfrecidaModelo?: string | null;
 }
 
 @Injectable()
@@ -208,11 +212,13 @@ export class PurchaseOrdersService {
       this.prisma.purchaseOrderItem.update({
         where: { id: q.itemId },
         data: {
-          precioUnitario:  q.precioUnitario,
-          disponible:      q.disponible,
-          tiempoEntrega:   q.tiempoEntrega  ?? null,
-          cotizacionNotas: q.notas          ?? null,
-          status:          'cotizada',
+          precioUnitario:       q.precioUnitario,
+          disponible:           q.disponible,
+          tiempoEntrega:        q.tiempoEntrega        ?? null,
+          cotizacionNotas:      q.notas                ?? null,
+          bandaOfrecidaMarca:   q.bandaOfrecidaMarca   ?? null,
+          bandaOfrecidaModelo:  q.bandaOfrecidaModelo  ?? null,
+          status:               'cotizada',
         },
       }),
     );
@@ -313,11 +319,13 @@ export class PurchaseOrdersService {
       this.prisma.purchaseOrderItem.updateMany({
         where: { purchaseOrderId: orderId },
         data: {
-          status:          'pendiente',
-          precioUnitario:  null,
-          disponible:      null,
-          tiempoEntrega:   null,
-          cotizacionNotas: null,
+          status:              'pendiente',
+          precioUnitario:      null,
+          disponible:          null,
+          tiempoEntrega:       null,
+          cotizacionNotas:     null,
+          bandaOfrecidaMarca:  null,
+          bandaOfrecidaModelo: null,
         },
       }),
       this.prisma.purchaseOrder.update({

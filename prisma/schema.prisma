@@ -1017,6 +1017,12 @@ model PurchaseOrderItem {
   disponible      Boolean?                // true: in stock; false: backorder
   tiempoEntrega   String?
   cotizacionNotas String?
+  // Reencauche offer — a banda has a brand (Michelin, Bridgestone…) AND a
+  // model/type (XDR, M700…). Both are captured at cotización time so the
+  // fleet can decide on both axes and the entregar step pre-fills from them.
+  // Null on nueva items.
+  bandaOfrecidaMarca  String?
+  bandaOfrecidaModelo String?
 
   // Lifecycle
   status            PurchaseOrderItemStatus @default(pendiente)
