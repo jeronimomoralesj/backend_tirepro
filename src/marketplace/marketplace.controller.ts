@@ -50,6 +50,14 @@ export class MarketplaceController {
     return this.svc.getAvailableBids(distributorId);
   }
 
+  // Full history for a dist — every bid they're involved in, regardless
+  // of status. The frontend tab-filters this on the dist pedidos page.
+  @Get('bid-requests/distributor')
+  @UseGuards(JwtAuthGuard)
+  getBidsForDistributor(@Query('distributorId') distributorId: string) {
+    return this.svc.getBidsForDistributor(distributorId);
+  }
+
   @Get('bid-requests/:id')
   @UseGuards(JwtAuthGuard)
   getBidRequest(@Param('id') id: string) {
@@ -90,6 +98,16 @@ export class MarketplaceController {
     tiempoEntrega?: string;
   }) {
     return this.svc.submitBidResponse(body);
+  }
+
+  @Post('bid-responses/reject')
+  @UseGuards(JwtAuthGuard)
+  rejectBidResponse(@Body() body: {
+    bidRequestId: string;
+    distributorId: string;
+    notas?: string;
+  }) {
+    return this.svc.rejectBidResponse(body);
   }
 
   // ===========================================================================

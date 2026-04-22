@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException, Logger } from '@nes
 import { PrismaService } from '../prisma/prisma.service';
 import { BidRequestStatus, BidResponseStatus } from '@prisma/client';
 import { EmailService } from '../email/email.service';
+import { normalizeDimension } from '../common/normalize-dimension';
 
 // Simple in-memory cache with TTL
 class MemCache {
@@ -152,11 +153,18 @@ export class MarketplaceService {
     isPublic?: boolean;
   }) {
     const { companyId, items, distributorIds, ...rest } = data;
+    // Canonicalize dimension on each line so dist-side comparisons and
+    // catalog lookups don't fail on spacing or casing drift.
+    const normalizedItems = Array.isArray(items)
+      ? items.map((it) => (it && typeof it === 'object' && typeof it.dimension === 'string'
+          ? { ...it, dimension: normalizeDimension(it.dimension) }
+          : it))
+      : items;
 
     const bidRequest = await this.prisma.bidRequest.create({
       data: {
         companyId,
-        items: items as any,
+        items: normalizedItems as any,
         totalEstimado: rest.totalEstimado ?? null,
         notas: rest.notas ?? null,
         deliveryAddress: rest.deliveryAddress ?? null,
@@ -281,6 +289,10 @@ export class MarketplaceService {
           { invitations: { some: { distributorId } } },
           { isPublic: true },
         ],
+        // Nothing the dist already quoted — that moves to "En Proceso" via
+        // getBidsForDistributor. Keeps the sidebar + Nuevas tab count
+        // scoped to fresh work.
+        responses: { none: { distributorId, status: BidResponseStatus.cotizada } },
       },
       orderBy: { createdAt: 'desc' },
       include: {
@@ -288,6 +300,32 @@ export class MarketplaceService {
         responses: {
           where: { distributorId },
           select: { id: true, status: true, totalCotizado: true, submittedAt: true },
+        },
+        _count: { select: { invitations: true, responses: true } },
+      },
+    });
+  }
+
+  // Full bid history for a distributor — every bid where they were
+  // invited, submitted a response, or won/lost. Drives the En Proceso and
+  // Completadas tabs on pedidosDist (Nuevas keeps using /available so
+  // fresh-work counts don't double up).
+  async getBidsForDistributor(distributorId: string) {
+    return this.prisma.bidRequest.findMany({
+      where: {
+        OR: [
+          { invitations: { some: { distributorId } } },
+          { responses:   { some: { distributorId } } },
+          { winnerId: distributorId },
+          { isPublic: true },
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        company: { select: { id: true, name: true, profileImage: true } },
+        responses: {
+          where: { distributorId },
+          select: { id: true, status: true, totalCotizado: true, submittedAt: true, cotizacion: true, notas: true },
         },
         _count: { select: { invitations: true, responses: true } },
       },
@@ -339,6 +377,50 @@ export class MarketplaceService {
         notas: data.notas ?? null,
         incluyeIva: data.incluyeIva ?? false,
         tiempoEntrega: data.tiempoEntrega ?? null,
+        submittedAt: new Date(),
+      },
+    });
+  }
+
+  async rejectBidResponse(data: {
+    bidRequestId: string;
+    distributorId: string;
+    notas?: string;
+  }) {
+    const bid = await this.prisma.bidRequest.findUnique({
+      where: { id: data.bidRequestId },
+      include: { invitations: true },
+    });
+    if (!bid) throw new NotFoundException('Bid request not found');
+    if (bid.status !== BidRequestStatus.abierta) throw new BadRequestException('Bid is closed');
+    if (bid.deadline && new Date() > bid.deadline) throw new BadRequestException('Deadline passed');
+
+    const isInvited = bid.invitations.some((i) => i.distributorId === data.distributorId);
+    if (!isInvited && !bid.isPublic) throw new BadRequestException('Not invited to this bid');
+
+    return this.prisma.bidResponse.upsert({
+      where: {
+        bidRequestId_distributorId: {
+          bidRequestId: data.bidRequestId,
+          distributorId: data.distributorId,
+        },
+      },
+      create: {
+        bidRequestId: data.bidRequestId,
+        distributorId: data.distributorId,
+        status: BidResponseStatus.rechazada,
+        cotizacion: [] as any,
+        totalCotizado: 0,
+        notas: data.notas ?? null,
+        incluyeIva: false,
+        tiempoEntrega: null,
+        submittedAt: new Date(),
+      },
+      update: {
+        status: BidResponseStatus.rechazada,
+        cotizacion: [] as any,
+        totalCotizado: 0,
+        notas: data.notas ?? null,
         submittedAt: new Date(),
       },
     });
@@ -705,6 +787,11 @@ export class MarketplaceService {
     imageUrls?: string[];
     coverIndex?: number;
   }) {
+    // Normalize dimension to the canonical form before catalog lookup and
+    // persistence. The catalog's own dimensions are already canonical after
+    // the one-shot normalization migration.
+    data.dimension = normalizeDimension(data.dimension);
+
     // Auto-link to catalog by marca+modelo+dimension
     if (!data.catalogId && data.marca && data.modelo && data.dimension) {
       const catalog = await this.prisma.tireMasterCatalog.findFirst({
@@ -920,7 +1007,21 @@ export class MarketplaceService {
       where: { id },
       include: {
         distributor: { select: { id: true, name: true, profileImage: true, ciudad: true, telefono: true, emailAtencion: true, tipoEntrega: true, cobertura: true } },
-        catalog: { select: { id: true, skuRef: true, terreno: true, reencauchable: true, kmEstimadosReales: true, cpkEstimado: true, crowdAvgCpk: true, psiRecomendado: true, rtdMm: true } },
+        catalog: {
+          select: {
+            id: true, skuRef: true, terreno: true, reencauchable: true,
+            kmEstimadosReales: true, kmEstimadosFabrica: true,
+            cpkEstimado: true, crowdAvgCpk: true, psiRecomendado: true, rtdMm: true,
+            indiceCarga: true, indiceVelocidad: true, vidasReencauche: true,
+            anchoMm: true, perfil: true, rin: true,
+            posicion: true, ejeTirePro: true, pesoKg: true,
+            pctPavimento: true, pctDestapado: true,
+            segmento: true, tipo: true, construccion: true,
+            notasColombia: true, fuente: true,
+            crowdAvgPrice: true, crowdAvgKm: true,
+            crowdConfidence: true, crowdCompanyCount: true,
+          },
+        },
         reviews: { include: { user: { select: { name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },
         _count: { select: { reviews: true } },
       },
