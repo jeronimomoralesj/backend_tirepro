@@ -297,12 +297,17 @@ async function main() {
   // and wrongly orphaned ones that had legitimate multi-month gaps.
   const currentStateVehRaw = loadAll('currentstateveh_p');
   const enOpIds = new Set<number>();
+  // Also capture per-vehicle currentMileage — it's the only mileage source
+  // for ~1.5k vehicles that have never shown up in /vehicles transactions.
+  const currentMileageByVehId = new Map<number, number>();
   for (const r of currentStateVehRaw) {
-    if (typeof r?.id === 'number' && String(r?.state).trim() === 'En Operación') {
-      enOpIds.add(r.id);
-    }
+    if (typeof r?.id !== 'number') continue;
+    if (String(r?.state).trim() === 'En Operación') enOpIds.add(r.id);
+    const km = toNum(r?.currentMileage);
+    if (km > 0) currentMileageByVehId.set(r.id, km);
   }
   console.log(`En Operación vehicles per /currentstatevehicles: ${enOpIds.size} / ${currentStateVehRaw.length}`);
+  console.log(`  currentMileage populated: ${currentMileageByVehId.size}`);
 
   const isOrphan = (vid: number): boolean => {
     // Presence in enOpIds is the only activo signal. If the vehicle
@@ -433,6 +438,35 @@ async function main() {
       kmPerMonth: 0,
       raw: null,
     });
+  }
+
+  // Fold in vehicles that appear ONLY in /currentstatevehicles (never in
+  // /vehicles, inspections, or vehiclesWithoutTransaction). Without this
+  // branch those vehicles would be silently dropped and any tire whose
+  // cs.vehicleId points there would fail to link.
+  for (const r of currentStateVehRaw) {
+    const vid = r?.id;
+    if (typeof vid !== 'number' || vehicleMetaById.has(vid)) continue;
+    const client = String(r?.client ?? '').trim();
+    if (!client || !clientToCompanyId.has(client)) continue;
+    vehicleMetaById.set(vid, {
+      vehicleId: vid,
+      client,
+      plate: cleanPlate(r.plate),
+      vehicleType: String(r.vehicleType ?? ''),
+      actualMileage: toNum(r.currentMileage),
+      date: null,
+      kmPerMonth: 0,
+      raw: r,
+    });
+  }
+
+  // Overlay currentMileage from /currentstatevehicles onto every vehicle
+  // we already have — vehicle odometers are monotonically increasing, so
+  // whichever source has the higher reading is the more recent snapshot.
+  for (const meta of vehicleMetaById.values()) {
+    const csvKm = currentMileageByVehId.get(meta.vehicleId) ?? 0;
+    if (csvKm > meta.actualMileage) meta.actualMileage = csvKm;
   }
 
   // Fold in every vehiclesWithoutTransaction row too. These vehicles have no
@@ -841,12 +875,46 @@ async function main() {
       : null;
     const csSnapshotDate = parseDate(cs?.createdDate);
 
+    // Tire → vehicle linkage. Sources in order of authority:
+    //   1. cs.vehicleId  — currentstate is "as of now"; numeric ID gives a
+    //      direct link via vehicleIdMap. If cs.vehicleId IS set, that IS
+    //      where the tire lives.
+    //   2. cs.plate      — fallback when cs.vehicleId isn't in our map
+    //      (vehicle was never in /vehicles, inspections, etc.).
+    //   3. r.vehicleId / r.plate — /tires is historical; only use when
+    //      cs is entirely absent (tire not in currentstate snapshot).
+    //
+    // CRITICAL: if cs is present and cs.vehicleId is NULL, the tire is in
+    // inventory RIGHT NOW — we must NOT fall back to /tires data, which
+    // would re-mount an already-dismounted tire to its last known vehicle.
     let vehicleId: string | null = null;
-    const cleanedPlate = cleanPlate(r.plate);
-    const plateKey = cleanedPlate ? `${clientCompanyId}|${cleanedPlate.toLowerCase()}` : null;
-    if (plateKey && vidaActual !== VidaValue.fin) {
-      vehicleId = vehicleByPlate.get(plateKey) ?? null;
+    const resolveVeh = (numId: unknown, plate: unknown): string | null => {
+      if (numId != null) {
+        const n = Number(numId);
+        const direct = vehicleIdMap.get(n);
+        if (direct) return direct;
+        const aliasN = aliasByVehicleId.get(n);
+        if (aliasN != null) {
+          const via = vehicleIdMap.get(aliasN);
+          if (via) return via;
+        }
+      }
+      const cleaned = cleanPlate(plate);
+      if (cleaned) {
+        return vehicleByPlate.get(`${clientCompanyId}|${cleaned.toLowerCase()}`) ?? null;
+      }
+      return null;
+    };
+    if (vidaActual !== VidaValue.fin) {
+      if (cs) {
+        // Trust currentstate as the sole source of truth for mount state.
+        vehicleId = resolveVeh(cs.vehicleId, cs.plate);
+      } else {
+        vehicleId = resolveVeh(r.vehicleId, r.plate);
+      }
     }
+    const cleanedPlate = cleanPlate((cs?.plate ?? r.plate));
+    const plateKey = cleanedPlate ? `${clientCompanyId}|${cleanedPlate.toLowerCase()}` : null;
 
     // Tire inherits orphan status from its host vehicle. Tire.companyId null
     // means it never surfaces in any fleet dashboard but is still queryable
