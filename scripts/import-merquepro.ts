@@ -1173,9 +1173,9 @@ async function main() {
         GREATEST(COALESCE((t."sourceMetadata"->'_currentState'->>'currentCentralDepth')::numeric, 0), 0),
         GREATEST(COALESCE((t."sourceMetadata"->'_currentState'->>'currentExternalDepth')::numeric, 0), 0),
         NULL,
-        NULLIF((t."sourceMetadata"->'_currentState'->>'currentKm')::int, 0),
-        NULLIF((t."sourceMetadata"->'_currentState'->>'currentKm')::int, 0),
-        NULLIF((t."sourceMetadata"->'_currentState'->>'mileageTraveled')::int, 0),
+        NULLIF(FLOOR((t."sourceMetadata"->'_currentState'->>'currentKm')::numeric)::int, 0),
+        NULLIF(FLOOR((t."sourceMetadata"->'_currentState'->>'currentKm')::numeric)::int, 0),
+        NULLIF(FLOOR((t."sourceMetadata"->'_currentState'->>'mileageTraveled')::numeric)::int, 0),
         NULLIF(t."sourceMetadata"->'_currentState'->>'adviser', ''),
         CASE
           WHEN t."sourceMetadata"->'_currentState'->>'state' = 'Desecho'    THEN 'fin'::"VidaValue"
