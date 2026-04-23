@@ -825,7 +825,21 @@ async function main() {
     // commercialCost on currentstate is per-life and reliable; /tires
     // often returns 0 for retreads. Prefer currentstate when available.
     const commercial  = toNum(cs?.commercialCost ?? r.commercialCost);
-    const installDate = parseDate(r.assemblyDate);
+    // Anchor the life on assemblyDate from currentstate first (covers the
+    // current vida) then /tires as a fallback.
+    const installDate = parseDate(cs?.assemblyDate ?? r.assemblyDate);
+
+    // Promote currentstate depth/date readings to first-class tire columns
+    // so tires without real /inspection rows still show depth + "last seen"
+    // in the UI. Avg only over non-zero readings so a missing sensor
+    // doesn't drag the average to zero.
+    const depthReadings = [cs?.currentExternalDepth, cs?.currentCentralDepth, cs?.currentInternalDepth]
+      .map((v) => toNum(v))
+      .filter((v) => v > 0);
+    const currentProf = depthReadings.length > 0
+      ? Number((depthReadings.reduce((a, b) => a + b, 0) / depthReadings.length).toFixed(2))
+      : null;
+    const csSnapshotDate = parseDate(cs?.createdDate);
 
     let vehicleId: string | null = null;
     const cleanedPlate = cleanPlate(r.plate);
@@ -855,12 +869,16 @@ async function main() {
       totalVidas,
       kilometrosRecorridos: kmRecorr,
       currentCpk:         cpk > 0 ? cpk : null,
+      currentProfundidad: currentProf,
+      lastInspeccionDate: csSnapshotDate ?? installDate ?? null,
       fechaInstalacion:   installDate,
       externalSourceId:   extTire,
       originalClient:     client,
       // Lossless: every non-promoted source field stays addressable under
-      // sourceMetadata for later analytics / audit.
-      sourceMetadata:     r as any,
+      // sourceMetadata for later analytics / audit. Nest currentstate
+      // separately so the synthesize-inspection post-pass can read its
+      // depth/km fields without colliding with /tires fields.
+      sourceMetadata:     { ...r, _currentState: cs ?? null } as any,
     };
 
     if (!APPLY) {
@@ -1058,24 +1076,89 @@ async function main() {
   //      we have both sides. Crucial: MERQUEPRO inspections carry NO cpk
   //      field, so the old refresh was wiping every tire's cpk to NULL.
   //   C. Sync latest inspection snapshot onto tire (depth, pressure, date).
-  // ── Post-pass 0: position-collision cleanup ───────────────────────────────
-  // Merquepro's /tires dump returns every tire that has ever been mounted
-  // at a given position, so many (vehicleId, posicion) pairs end up with
-  // 2+ tires after insert. Keep the one with the latest assembly date on
-  // the vehicle; move the others to inventory (vehicleId = null,
-  // inventoryBucketId = null, preserve lastVehicleId/lastVehiclePlaca).
+  // ── Post-pass 0a: synthesize an Inspeccion from currentstate ─────────────
+  // Every merquepro tire with currentstate depth data but no real /inspection
+  // rows gets one synthetic Inspeccion. This is how the UI surfaces
+  // currentProfundidad + lastInspeccionDate + vidaAlMomento for tires whose
+  // fleet was imported via /currentstatetires only (common: client never
+  // submitted individual inspections, but we still have the "latest snapshot"
+  // reading). Idempotent via externalSourceId='merquepro:insp:synthetic:<tireId>'.
+  if (APPLY) {
+    console.log('Synthesizing inspections from currentstate snapshots…');
+    const synth = await prisma.$executeRawUnsafe(`
+      INSERT INTO inspecciones (
+        id, "tireId", "fecha",
+        "profundidadInt", "profundidadCen", "profundidadExt",
+        "presionPsi", "kilometrosEstimados", "kmActualVehiculo", "kmEfectivos",
+        "inspeccionadoPorNombre", "vidaAlMomento",
+        "externalSourceId", "sourceMetadata", "createdAt"
+      )
+      SELECT
+        gen_random_uuid()::text,
+        t.id,
+        COALESCE(
+          (t."sourceMetadata"->'_currentState'->>'createdDate')::timestamp,
+          t."fechaInstalacion",
+          NOW()
+        ),
+        GREATEST(COALESCE((t."sourceMetadata"->'_currentState'->>'currentInternalDepth')::numeric, 0), 0),
+        GREATEST(COALESCE((t."sourceMetadata"->'_currentState'->>'currentCentralDepth')::numeric, 0), 0),
+        GREATEST(COALESCE((t."sourceMetadata"->'_currentState'->>'currentExternalDepth')::numeric, 0), 0),
+        NULL,
+        NULLIF((t."sourceMetadata"->'_currentState'->>'currentKm')::int, 0),
+        NULLIF((t."sourceMetadata"->'_currentState'->>'currentKm')::int, 0),
+        NULLIF((t."sourceMetadata"->'_currentState'->>'mileageTraveled')::int, 0),
+        NULLIF(t."sourceMetadata"->'_currentState'->>'adviser', ''),
+        CASE
+          WHEN t."sourceMetadata"->'_currentState'->>'state' = 'Desecho'    THEN 'fin'::"VidaValue"
+          WHEN t."sourceMetadata"->'_currentState'->>'state' = 'Reencauche' THEN t."vidaActual"
+          ELSE 'nueva'::"VidaValue"
+        END,
+        'merquepro:insp:synthetic:' || t.id,
+        jsonb_build_object('source', 'merquepro_synthetic_from_currentstate'),
+        NOW()
+      FROM "Tire" t
+      WHERE t."externalSourceId" LIKE 'merquepro:%'
+        AND t."sourceMetadata"->'_currentState' IS NOT NULL
+        AND (
+              (t."sourceMetadata"->'_currentState'->>'currentExternalDepth') IS NOT NULL
+           OR (t."sourceMetadata"->'_currentState'->>'currentCentralDepth')  IS NOT NULL
+           OR (t."sourceMetadata"->'_currentState'->>'currentInternalDepth') IS NOT NULL
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM inspecciones i WHERE i."tireId" = t.id
+        )
+    `);
+    console.log(`  synthesized inspections: ${synth}`);
+  }
+
+  // ── Post-pass 0b: position-collision cleanup ──────────────────────────────
+  // Multiple tires may share (vehicleId, posicion) after import because
+  // Merquepro's /tires dump returns every tire that's ever been mounted
+  // there. Keep the one with the most recent inspection (assuming any new
+  // inspection on a position implies the tire is actually there); fall back
+  // to assemblyDate for tires with no inspection at all. Losers are bumped
+  // to inventory (vehicleId = null, lastVehicleId/Placa preserved).
   if (APPLY) {
     console.log('Resolving (vehicle, posicion) collisions…');
     const collisionFix = await prisma.$executeRawUnsafe(`
-      WITH ranked AS (
+      WITH last_insp AS (
+        SELECT "tireId", MAX("fecha") AS last_fecha
+          FROM inspecciones
+         GROUP BY "tireId"
+      ),
+      ranked AS (
         SELECT t.id, t."vehicleId", t."posicion",
                ROW_NUMBER() OVER (
                  PARTITION BY t."vehicleId", t."posicion"
-                 ORDER BY COALESCE(t."fechaInstalacion", t."createdAt") DESC,
+                 ORDER BY COALESCE(li.last_fecha,
+                                   t."fechaInstalacion",
+                                   t."createdAt") DESC,
                           t."updatedAt" DESC,
                           t.id DESC
                ) AS rn
           FROM "Tire" t
+          LEFT JOIN last_insp li ON li."tireId" = t.id
          WHERE t."externalSourceId" LIKE 'merquepro:%'
            AND t."vehicleId" IS NOT NULL
            AND t."posicion" > 0
@@ -1100,65 +1183,105 @@ async function main() {
     console.log(`  resolved collisions: ${collisionFix} tires bumped to inventory`);
   }
 
-  // ── Post-pass 1: multi-vida transitions logged as TireEventos ─────────────
-  // Merquepro inspections carry vidaAlMomento per inspection. Walking
-  // them chronologically and detecting state changes lets us reconstruct
-  // the vida timeline (nueva → reencauche1 → reencauche2 → …). We log
-  // each transition as a TireEvento (type=reencauche or retiro) rather
-  // than writing tire_vida_snapshots — the snapshot table demands final-
-  // life metrics (mm desgastados, días, etc.) we can't derive from
-  // inspection-date transitions alone. TireEvento is the right fit for
-  // "here's what happened to this tire and when". Idempotent: skips
-  // transitions we've already logged for the same (tireId, to_vida).
+  // ── Post-pass 1: multi-vida detection by depth reversal ──────────────────
+  // Merquepro doesn't tag reencauche1/2/3 — every retread is just
+  // state="Reencauche". But banda depth ALWAYS decreases within a single
+  // life (the tire wears down), so an UPWARD jump between consecutive
+  // inspections is a new retread. Walk each tire's inspections
+  // chronologically, count jumps of ≥5mm as retreads, and log one
+  // TireEvento(reencauche) per jump labelled reencauche1/2/3.
+  //
+  // 5mm is the threshold — a real retread restores ≥10mm of banda and
+  // anything below 5mm is measurement noise (different adviser, different
+  // conditions, or a depth typo).
   if (APPLY) {
-    console.log('Reconstructing vida history from inspections…');
+    console.log('Detecting retread cycles from depth reversals…');
     const vidaPass = await prisma.$executeRawUnsafe(`
       WITH ordered AS (
         SELECT
           i.id,
           i."tireId",
           i."fecha",
-          i."vidaAlMomento" AS vida,
-          LAG(i."vidaAlMomento") OVER (
+          ((COALESCE(i."profundidadInt",0) +
+            COALESCE(i."profundidadCen",0) +
+            COALESCE(i."profundidadExt",0)) / 3.0)::numeric AS avg_depth,
+          LAG((COALESCE(i."profundidadInt",0) +
+               COALESCE(i."profundidadCen",0) +
+               COALESCE(i."profundidadExt",0)) / 3.0) OVER (
             PARTITION BY i."tireId" ORDER BY i."fecha" ASC, i.id ASC
-          ) AS prev_vida
+          ) AS prev_avg
         FROM inspecciones i
         JOIN "Tire" t ON t.id = i."tireId"
         WHERE t."externalSourceId" LIKE 'merquepro:%'
       ),
-      transitions AS (
+      reversals AS (
         SELECT
-          o."tireId",
-          o.vida AS to_vida,
-          o."fecha" AS transition_date
-        FROM ordered o
-        WHERE o.prev_vida IS NOT NULL
-          AND o.prev_vida <> o.vida
-          AND o.vida IN ('reencauche1','reencauche2','reencauche3','fin')
+          "tireId",
+          "fecha",
+          avg_depth,
+          prev_avg,
+          ROW_NUMBER() OVER (PARTITION BY "tireId" ORDER BY "fecha" ASC) AS rev_idx
+        FROM ordered
+        WHERE prev_avg IS NOT NULL
+          AND prev_avg > 0
+          AND avg_depth - prev_avg >= 5
       )
       INSERT INTO tire_eventos (id, "tireId", tipo, fecha, notas, metadata, "createdAt")
       SELECT
         gen_random_uuid()::text,
-        tr."tireId",
-        CASE WHEN tr.to_vida = 'fin'
-             THEN 'retiro'::"TireEventType"
-             ELSE 'reencauche'::"TireEventType" END,
-        tr.transition_date,
-        tr.to_vida::text,
-        jsonb_build_object('source', 'merquepro_vida_reconstruction',
-                           'derived_from', 'inspection_state_transition'),
+        r."tireId",
+        'reencauche'::"TireEventType",
+        r."fecha",
+        CASE
+          WHEN r.rev_idx = 1 THEN 'reencauche1'
+          WHEN r.rev_idx = 2 THEN 'reencauche2'
+          ELSE 'reencauche3'
+        END,
+        jsonb_build_object(
+          'source',           'merquepro_depth_reversal',
+          'avg_depth_before', r.prev_avg,
+          'avg_depth_after',  r.avg_depth,
+          'cycle_index',      r.rev_idx
+        ),
         NOW()
-      FROM transitions tr
+      FROM reversals r
       WHERE NOT EXISTS (
         SELECT 1 FROM tire_eventos e
-        WHERE e."tireId" = tr."tireId"
-          AND e.notas    = tr.to_vida::text
-          AND e.tipo IN ('reencauche'::"TireEventType",
-                         'retiro'::"TireEventType",
-                         'montaje'::"TireEventType")
+         WHERE e."tireId" = r."tireId"
+           AND e.tipo = 'reencauche'::"TireEventType"
+           AND e.notas = CASE
+             WHEN r.rev_idx = 1 THEN 'reencauche1'
+             WHEN r.rev_idx = 2 THEN 'reencauche2'
+             ELSE 'reencauche3'
+           END
       )
     `);
-    console.log(`  vida transitions logged: ${vidaPass}`);
+    console.log(`  retread cycles logged: ${vidaPass}`);
+
+    // Promote the depth-reversal count to tire.vidaActual / totalVidas so
+    // the tire's life counter reflects reality. Desecho stays as fin.
+    const vidaSync = await prisma.$executeRawUnsafe(`
+      WITH counts AS (
+        SELECT "tireId", COUNT(*) AS cycles
+          FROM tire_eventos
+         WHERE tipo = 'reencauche'::"TireEventType"
+           AND notas IN ('reencauche1','reencauche2','reencauche3')
+         GROUP BY "tireId"
+      )
+      UPDATE "Tire" t
+         SET "totalVidas"  = GREATEST(t."totalVidas", c.cycles::int),
+             "vidaActual"  = CASE
+               WHEN t."vidaActual" = 'fin'::"VidaValue" THEN 'fin'::"VidaValue"
+               WHEN c.cycles >= 3 THEN 'reencauche3'::"VidaValue"
+               WHEN c.cycles = 2  THEN 'reencauche2'::"VidaValue"
+               WHEN c.cycles = 1  THEN 'reencauche1'::"VidaValue"
+               ELSE t."vidaActual"
+             END
+        FROM counts c
+       WHERE t.id = c."tireId"
+         AND t."externalSourceId" LIKE 'merquepro:%'
+    `);
+    console.log(`  vidaActual synced from cycle count: ${vidaSync} tires`);
   }
 
   if (APPLY && !SKIP_REFRESH) {
