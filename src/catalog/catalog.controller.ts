@@ -19,23 +19,57 @@ export class CatalogController {
   ) {}
 
   /**
-   * Resolve the caller's company + assert they're on the distribuidor plan.
-   * The datasheet module is a sales-collateral tool; only distributors need
-   * it, and keeping the gate here avoids leaking per-dist images to other
-   * plans if somebody ever guesses the route.
+   * Resolve the caller's company + assert they're on the distribuidor plan
+   * AND carry a role allowed to read/edit the catalog. The datasheet module
+   * is a sales-collateral tool; only distributors need it, and keeping the
+   * gate here avoids leaking per-dist images to other plans if somebody ever
+   * guesses the route.
+   *
+   * Allowed roles: admin (full access), catalogo (sales rep), catalogo_admin
+   * (sales manager). A dist-plan viewer/technician is NOT granted catalog
+   * access — the permission is opt-in per user.
+   *
+   * Pass `requireAdmin: true` to gate stats-style endpoints to admin /
+   * catalogo_admin only.
    */
-  private async requireDistributor(req: { user?: { companyId?: string; sub?: string } }) {
+  private async requireDistributor(
+    req: { user?: { companyId?: string; userId?: string; role?: string } },
+    opts: { requireAdmin?: boolean } = {},
+  ) {
     const companyId = req.user?.companyId;
-    const userId    = req.user?.sub;
+    const userId    = req.user?.userId;
     if (!companyId || !userId) throw new ForbiddenException('Auth required');
-    const company = await this.prisma.company.findUnique({
-      where:  { id: companyId },
-      select: { id: true, plan: true },
-    });
+
+    // Resolve role + plan from the DB rather than trusting the JWT.
+    // Long-lived sessions minted before the role enum was extended can
+    // carry a stale or missing role — authorizing from the live user
+    // record means role changes take effect on the next request instead
+    // of on the next login.
+    const [user, company] = await Promise.all([
+      this.prisma.user.findUnique({
+        where:  { id: userId },
+        select: { id: true, role: true },
+      }),
+      this.prisma.company.findUnique({
+        where:  { id: companyId },
+        select: { id: true, plan: true },
+      }),
+    ]);
     if (!company || company.plan !== CompanyPlan.distribuidor) {
       throw new ForbiddenException('Distribuidor plan required');
     }
-    return { companyId, userId };
+    const role = user?.role;
+    const catalogRoles = new Set(['admin', 'catalogo', 'catalogo_admin']);
+    const adminRoles   = new Set(['admin', 'catalogo_admin']);
+    const allowed      = opts.requireAdmin ? adminRoles : catalogRoles;
+    if (!role || !allowed.has(role)) {
+      throw new ForbiddenException(
+        opts.requireAdmin
+          ? 'Requiere rol admin o catalogo_admin'
+          : 'Requiere rol admin, catalogo o catalogo_admin',
+      );
+    }
+    return { companyId, userId, role };
   }
 
   @Get('search')
@@ -277,7 +311,10 @@ export class CatalogController {
   @Get('dist/downloads/stats')
   @UseGuards(JwtAuthGuard)
   async distDownloadStats(@Req() req: any, @Query('days') days = '30') {
-    const { companyId } = await this.requireDistributor(req);
+    // Stats are manager-only within a distribuidor company: admin or
+    // catalogo_admin. A plain catalogo sales rep shouldn't see their
+    // teammates' conversion numbers.
+    const { companyId } = await this.requireDistributor(req, { requireAdmin: true });
     return this.catalogService.distDownloadStats(companyId, Number(days) || 30);
   }
 
