@@ -730,13 +730,25 @@ export class CatalogService {
     if (params.dimension) where.dimension = { contains: params.dimension, mode: 'insensitive' };
     if (params.eje)       where.ejeTirePro = params.eje as EjeType;
     if (params.categoria) where.categoria = { equals: params.categoria, mode: 'insensitive' };
+    // Token-aware search. A query like "continental hdr 295" used to fail
+    // because `contains: "continental hdr 295"` never matches any single
+    // field — marca is "Continental", modelo is "HDR2", dimension is
+    // "295/80R22.5". Splitting on whitespace and requiring each token to
+    // hit SOME field via AND-of-ORs gives natural "narrow as you type"
+    // behavior. Dimension hits still work because digits match within
+    // "295/80R22.5" regardless of surrounding punctuation.
     if (params.q) {
-      where.OR = [
-        { marca:     { contains: params.q, mode: 'insensitive' } },
-        { modelo:    { contains: params.q, mode: 'insensitive' } },
-        { dimension: { contains: params.q, mode: 'insensitive' } },
-        { skuRef:    { contains: params.q, mode: 'insensitive' } },
-      ];
+      const tokens = params.q.trim().split(/\s+/).filter(Boolean);
+      if (tokens.length > 0) {
+        where.AND = tokens.map((tok) => ({
+          OR: [
+            { marca:     { contains: tok, mode: 'insensitive' as const } },
+            { modelo:    { contains: tok, mode: 'insensitive' as const } },
+            { dimension: { contains: tok, mode: 'insensitive' as const } },
+            { skuRef:    { contains: tok, mode: 'insensitive' as const } },
+          ],
+        }));
+      }
     }
 
     const [total, items] = await Promise.all([
