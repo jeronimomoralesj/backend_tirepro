@@ -702,4 +702,280 @@ export class CatalogService {
 
     return this.crowdsourceUpsert({ marca, dimension, modelo });
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DISTRIBUTOR SKU CATALOG — read API that distributors use to search the
+  // master catalog, pull per-SKU detail with their own uploaded images, and
+  // log downloads. Each distributor sees ONLY their own uploaded images so
+  // sales collateral doesn't mix between accounts. Admin (TirePro) reads
+  // all images via `getAllCatalogImages`.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Fuzzy search across marca/modelo/dimension with eje/terreno/categoria filters. */
+  async distSearch(params: {
+    companyId: string;
+    q?: string;
+    marca?: string;
+    dimension?: string;
+    eje?: string;
+    categoria?: string; // "nueva" | "reencauche"
+    page?: number;
+    pageSize?: number;
+  }) {
+    const page = Math.max(1, params.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, params.pageSize ?? 24));
+    const where: Prisma.TireMasterCatalogWhereInput = {};
+
+    if (params.marca)     where.marca     = { equals: params.marca, mode: 'insensitive' };
+    if (params.dimension) where.dimension = { contains: params.dimension, mode: 'insensitive' };
+    if (params.eje)       where.ejeTirePro = params.eje as EjeType;
+    if (params.categoria) where.categoria = { equals: params.categoria, mode: 'insensitive' };
+    if (params.q) {
+      where.OR = [
+        { marca:     { contains: params.q, mode: 'insensitive' } },
+        { modelo:    { contains: params.q, mode: 'insensitive' } },
+        { dimension: { contains: params.q, mode: 'insensitive' } },
+        { skuRef:    { contains: params.q, mode: 'insensitive' } },
+      ];
+    }
+
+    const [total, items] = await Promise.all([
+      this.prisma.tireMasterCatalog.count({ where }),
+      this.prisma.tireMasterCatalog.findMany({
+        where,
+        orderBy: [{ marca: 'asc' }, { modelo: 'asc' }, { dimension: 'asc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        // One image per catalog row is enough for a listing thumbnail — the
+        // detail endpoint returns the full gallery.
+        include: {
+          images: {
+            where: { companyId: params.companyId },
+            orderBy: { coverIndex: 'asc' },
+            take: 1,
+          },
+        },
+      }),
+    ]);
+
+    return { total, page, pageSize, items };
+  }
+
+  /** Full SKU detail including every image this distributor has uploaded. */
+  async distGet(catalogId: string, companyId: string) {
+    const sku = await this.prisma.tireMasterCatalog.findUnique({
+      where: { id: catalogId },
+      include: {
+        images: {
+          where: { companyId },
+          orderBy: { coverIndex: 'asc' },
+        },
+      },
+    });
+    if (!sku) throw new NotFoundException('SKU not found');
+    return sku;
+  }
+
+  /** Persist a new image row after the S3 upload already succeeded. */
+  async addCatalogImage(params: {
+    catalogId: string;
+    companyId: string;
+    url: string;
+  }) {
+    const sku = await this.prisma.tireMasterCatalog.findUnique({
+      where: { id: params.catalogId },
+      select: { id: true },
+    });
+    if (!sku) throw new NotFoundException('SKU not found');
+
+    // New image lands at the end of the gallery.
+    const last = await this.prisma.catalogImage.findFirst({
+      where: { catalogId: params.catalogId, companyId: params.companyId },
+      orderBy: { coverIndex: 'desc' },
+      select: { coverIndex: true },
+    });
+    const coverIndex = (last?.coverIndex ?? -1) + 1;
+
+    return this.prisma.catalogImage.create({
+      data: {
+        catalogId:  params.catalogId,
+        companyId:  params.companyId,
+        url:        params.url,
+        coverIndex,
+      },
+    });
+  }
+
+  /** Delete one of this distributor's images. Tenant-scoped — can't delete
+   *  an image that belongs to another company. */
+  async deleteCatalogImage(imageId: string, companyId: string) {
+    const img = await this.prisma.catalogImage.findUnique({
+      where: { id: imageId },
+      select: { id: true, companyId: true },
+    });
+    if (!img) throw new NotFoundException('Image not found');
+    if (img.companyId !== companyId) throw new BadRequestException('Not your image');
+    await this.prisma.catalogImage.delete({ where: { id: imageId } });
+    return { ok: true };
+  }
+
+  /** Log a PDF download. Called by the frontend after the file save succeeds. */
+  async trackDownload(params: {
+    userId: string;
+    companyId: string;
+    catalogId: string;
+    priceMode: 'none' | 'sin_iva' | 'con_iva';
+    priceCop?: number | null;
+    fieldsIncluded?: Record<string, boolean>;
+    ip?: string | null;
+    userAgent?: string | null;
+  }) {
+    // Thin validation — a bad priceMode from the frontend should surface.
+    if (!['none', 'sin_iva', 'con_iva'].includes(params.priceMode)) {
+      throw new BadRequestException('Invalid priceMode');
+    }
+    return this.prisma.catalogDownload.create({
+      data: {
+        userId:         params.userId,
+        companyId:      params.companyId,
+        catalogId:      params.catalogId,
+        priceMode:      params.priceMode as any,
+        priceCop:       params.priceCop ?? null,
+        fieldsIncluded: (params.fieldsIncluded ?? null) as any,
+        ip:             params.ip ?? null,
+        userAgent:      params.userAgent ?? null,
+      },
+      select: { id: true, createdAt: true },
+    });
+  }
+
+  /**
+   * Sales-manager dashboard data: totals by user and by SKU plus a 30-day
+   * daily series. Scoped to one distributor — TirePro admin uses the
+   * global variant below.
+   */
+  async distDownloadStats(companyId: string, days = 30) {
+    const since = new Date(Date.now() - days * 86_400_000);
+
+    const [totalAll, totalRange, byUser, bySku, daily] = await Promise.all([
+      this.prisma.catalogDownload.count({ where: { companyId } }),
+      this.prisma.catalogDownload.count({ where: { companyId, createdAt: { gte: since } } }),
+      this.prisma.catalogDownload.groupBy({
+        by: ['userId'],
+        where: { companyId, createdAt: { gte: since } },
+        _count: { userId: true },
+        orderBy: { _count: { userId: 'desc' } },
+        take: 50,
+      }),
+      this.prisma.catalogDownload.groupBy({
+        by: ['catalogId'],
+        where: { companyId, createdAt: { gte: since } },
+        _count: { catalogId: true },
+        orderBy: { _count: { catalogId: 'desc' } },
+        take: 50,
+      }),
+      this.prisma.$queryRaw<Array<{ day: Date; n: bigint }>>`
+        SELECT date_trunc('day', "createdAt")::date AS day,
+               COUNT(*)::bigint AS n
+          FROM catalog_downloads
+         WHERE "companyId" = ${companyId} AND "createdAt" >= ${since}
+         GROUP BY day
+         ORDER BY day ASC
+      `,
+    ]);
+
+    // Hydrate users + SKUs so the frontend can render names without
+    // round-tripping for each bucket.
+    const [users, skus] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { id: { in: byUser.map((b) => b.userId) } },
+        select: { id: true, name: true, email: true },
+      }),
+      this.prisma.tireMasterCatalog.findMany({
+        where: { id: { in: bySku.map((b) => b.catalogId) } },
+        select: { id: true, marca: true, modelo: true, dimension: true, skuRef: true },
+      }),
+    ]);
+    const userById = new Map(users.map((u) => [u.id, u]));
+    const skuById  = new Map(skus.map((s) => [s.id, s]));
+
+    return {
+      totals: { allTime: totalAll, range: totalRange, days },
+      byUser: byUser.map((b) => ({
+        user: userById.get(b.userId) ?? { id: b.userId, name: 'desconocido', email: null },
+        count: b._count.userId,
+      })),
+      bySku: bySku.map((b) => ({
+        sku: skuById.get(b.catalogId) ?? { id: b.catalogId, marca: '?', modelo: '?', dimension: '?', skuRef: '?' },
+        count: b._count.catalogId,
+      })),
+      daily: daily.map((d) => ({ day: d.day, count: Number(d.n) })),
+    };
+  }
+
+  /** TirePro admin — same stats but across every distributor, with a
+   *  per-company breakdown. Used on the /blog/admin catalog-downloads tab. */
+  async adminDownloadStats(days = 30) {
+    const since = new Date(Date.now() - days * 86_400_000);
+    const [totalAll, byCompany, bySku, daily] = await Promise.all([
+      this.prisma.catalogDownload.count(),
+      this.prisma.catalogDownload.groupBy({
+        by: ['companyId'],
+        where: { createdAt: { gte: since } },
+        _count: { companyId: true },
+        orderBy: { _count: { companyId: 'desc' } },
+        take: 100,
+      }),
+      this.prisma.catalogDownload.groupBy({
+        by: ['catalogId'],
+        where: { createdAt: { gte: since } },
+        _count: { catalogId: true },
+        orderBy: { _count: { catalogId: 'desc' } },
+        take: 50,
+      }),
+      this.prisma.$queryRaw<Array<{ day: Date; n: bigint }>>`
+        SELECT date_trunc('day', "createdAt")::date AS day,
+               COUNT(*)::bigint AS n
+          FROM catalog_downloads
+         WHERE "createdAt" >= ${since}
+         GROUP BY day
+         ORDER BY day ASC
+      `,
+    ]);
+
+    const [companies, skus] = await Promise.all([
+      this.prisma.company.findMany({
+        where: { id: { in: byCompany.map((b) => b.companyId) } },
+        select: { id: true, name: true, plan: true },
+      }),
+      this.prisma.tireMasterCatalog.findMany({
+        where: { id: { in: bySku.map((b) => b.catalogId) } },
+        select: { id: true, marca: true, modelo: true, dimension: true, skuRef: true },
+      }),
+    ]);
+    const companyById = new Map(companies.map((c) => [c.id, c]));
+    const skuById     = new Map(skus.map((s) => [s.id, s]));
+
+    return {
+      totals: { allTime: totalAll, days },
+      byCompany: byCompany.map((b) => ({
+        company: companyById.get(b.companyId) ?? { id: b.companyId, name: '?', plan: null },
+        count: b._count.companyId,
+      })),
+      bySku: bySku.map((b) => ({
+        sku: skuById.get(b.catalogId) ?? { id: b.catalogId, marca: '?', modelo: '?', dimension: '?', skuRef: '?' },
+        count: b._count.catalogId,
+      })),
+      daily: daily.map((d) => ({ day: d.day, count: Number(d.n) })),
+    };
+  }
+
+  /** TirePro admin reads — every catalog image across every distributor. */
+  async adminListImages(catalogId: string) {
+    return this.prisma.catalogImage.findMany({
+      where: { catalogId },
+      orderBy: [{ companyId: 'asc' }, { coverIndex: 'asc' }],
+      include: { company: { select: { id: true, name: true, plan: true } } },
+    });
+  }
 }

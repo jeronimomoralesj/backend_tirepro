@@ -65,15 +65,15 @@ enum VidaValue {
 // order can partially progress (one reencauche item approved, another
 // rejected) without the parent status becoming ambiguous.
 enum PurchaseOrderItemStatus {
-  pendiente             // created; order not yet quoted or accepted
-  cotizada              // distributor has priced this line
-  en_reencauche_bucket  // deprecated (old flow); kept for historical data
-  recogida_por_dist     // reencauche only: dist physically collected the tire, awaiting reencauche decision
-  aprobada              // reencauche only: dist accepted; has ETA; tire vida will be incremented on entregar
-  rechazada             // reencauche only: dist rejected with motivo; tire routed to fin-de-vida
-  devuelta              // reencauche only: dist rejected but tire is still usable; returned to fleet's Disponible bucket
-  entregada             // reencauche only: tire handed back, moved to disponible bucket
-  completada            // llanta-nueva only: delivered to fleet
+  pendiente // created; order not yet quoted or accepted
+  cotizada // distributor has priced this line
+  en_reencauche_bucket // deprecated (old flow); kept for historical data
+  recogida_por_dist // reencauche only: dist physically collected the tire, awaiting reencauche decision
+  aprobada // reencauche only: dist accepted; has ETA; tire vida will be incremented on entregar
+  rechazada // reencauche only: dist rejected with motivo; tire routed to fin-de-vida
+  devuelta // reencauche only: dist rejected but tire is still usable; returned to fleet's Disponible bucket
+  entregada // reencauche only: tire handed back, moved to disponible bucket
+  completada // llanta-nueva only: delivered to fleet
   cancelada
 }
 
@@ -168,12 +168,12 @@ enum KpiPeriod {
 
 // Why a vida ended — drives the recommendation engine
 enum MotivoFinVida {
-  reencauche        // normal planned retread
-  desgaste          // worn to legal limit naturally
-  dano_mecanico     // cut, puncture, sidewall damage
-  dano_operacional  // overload, misuse, incorrect mounting
-  accidente         // road incident
-  preventivo        // removed before EOL as a fleet decision
+  reencauche // normal planned retread
+  desgaste // worn to legal limit naturally
+  dano_mecanico // cut, puncture, sidewall damage
+  dano_operacional // overload, misuse, incorrect mounting
+  accidente // road incident
+  preventivo // removed before EOL as a fleet decision
   otro
 }
 
@@ -182,24 +182,24 @@ enum MotivoFinVida {
 // =============================================================================
 
 model User {
-  id                String   @id @default(uuid())
+  id                String    @id @default(uuid())
   name              String
-  email             String   @unique
+  email             String    @unique
   password          String
   companyId         String?
-  role              UserRole @default(admin)
-  puntos            Int      @default(0)
-  isVerified        Boolean  @default(false)
+  role              UserRole  @default(admin)
+  puntos            Int       @default(0)
+  isVerified        Boolean   @default(false)
   verificationToken String?
   // Password reset
   resetToken        String?
   resetTokenExpiry  DateTime?
-  preferredLanguage String   @default("es")
-  userPlan          String   @default("free") // "free" | "plus" — for users without a company
+  preferredLanguage String    @default("es")
+  userPlan          String    @default("free") // "free" | "plus" — for users without a company
 
   // Notification preferences — how this user wants to receive alerts
-  notifChannel  String?   // 'email' | 'whatsapp' | 'none'  (null = not configured)
-  notifContact  String?   // email address or phone number depending on channel
+  notifChannel String? // 'email' | 'whatsapp' | 'none'  (null = not configured)
+  notifContact String? // email address or phone number depending on channel
 
   // Easter egg
   saturnVUnlocked Boolean @default(false)
@@ -212,18 +212,19 @@ model User {
   // anomaly detection ("new IP" alerts) and future security reviews.
   knownIps    String[]  @default([])
 
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  company       Company?            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  messages      Message[]
-  incomes       Income[]
-  vehicleAccess UserVehicleAccess[]
-  inspecciones  Inspeccion[]        // inspections this user performed
+  company           Company?            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messages          Message[]
+  incomes           Income[]
+  vehicleAccess     UserVehicleAccess[]
+  inspecciones      Inspeccion[] // inspections this user performed
   reviews           DistributorReview[]
   marketplaceOrders MarketplaceOrder[]
   loginLogs         UserLoginLog[]
   teamKpis          TeamKpi[]
+  catalogDownloads  CatalogDownload[]
 
   @@index([companyId])
   @@index([email])
@@ -273,35 +274,35 @@ model Company {
   updatedAt    DateTime    @updatedAt
 
   // Distributor-only fields
-  emailAtencion  String?
-  telefono       String?
-  descripcion    String?   @db.Text
-  bannerImage    String?
-  direccion      String?
-  ciudad         String?
-  sitioWeb       String?
-  cobertura      Json?     // [{ciudad, direccion, lat, lng},...] — locations with coordinates
-  tipoEntrega    String?   // "domicilio" | "recogida" | "ambos"
-  colorMarca     String?   // hex color for map pins and branding
+  emailAtencion String?
+  telefono      String?
+  descripcion   String? @db.Text
+  bannerImage   String?
+  direccion     String?
+  ciudad        String?
+  sitioWeb      String?
+  cobertura     Json? // [{ciudad, direccion, lat, lng},...] — locations with coordinates
+  tipoEntrega   String? // "domicilio" | "recogida" | "ambos"
+  colorMarca    String? // hex color for map pins and branding
 
   // Agent automation configuration
-  agentSettings  Json    @default("{\"agentEnabled\":false,\"alertMode\":\"display_only\",\"purchaseMode\":\"manual\"}")
+  agentSettings Json @default("{\"agentEnabled\":false,\"alertMode\":\"display_only\",\"purchaseMode\":\"manual\"}")
 
-  distributors    DistributorAccess[]  @relation("CompanyDistributors")
-  clients         DistributorAccess[]  @relation("DistributorClients")
-  users           User[]
-  vehicles        Vehicle[]
-  tires           Tire[]
-  notifications   Notification[]
-  snapshots       CompanySnapshot[]
-  vidaSnapshots   TireVidaSnapshot[]
-  recommendations TireRecommendation[]
-  tireHistory     VehicleTireHistory[]
-  inventoryBuckets TireInventoryBucket[]
+  distributors        DistributorAccess[]   @relation("CompanyDistributors")
+  clients             DistributorAccess[]   @relation("DistributorClients")
+  users               User[]
+  vehicles            Vehicle[]
+  tires               Tire[]
+  notifications       Notification[]
+  snapshots           CompanySnapshot[]
+  vidaSnapshots       TireVidaSnapshot[]
+  recommendations     TireRecommendation[]
+  tireHistory         VehicleTireHistory[]
+  inventoryBuckets    TireInventoryBucket[]
   bulkUploadSnapshots BulkUploadSnapshot[]
-  orders          PurchaseOrder[] @relation("CompanyOrders")
-  receivedOrders  PurchaseOrder[] @relation("DistributorOrders")
-  teamKpis        TeamKpi[]
+  orders              PurchaseOrder[]       @relation("CompanyOrders")
+  receivedOrders      PurchaseOrder[]       @relation("DistributorOrders")
+  teamKpis            TeamKpi[]
 
   // Marketplace
   bidRequests       BidRequest[]         @relation("CompanyBidRequests")
@@ -310,6 +311,10 @@ model Company {
   bidResponses      BidResponse[]        @relation("BidResponses")
   listings          DistributorListing[] @relation("DistributorListings")
   marketplaceOrders MarketplaceOrder[]   @relation("MarketplaceOrders")
+
+  // Catalog — per-distributor SKU photos + per-download events
+  catalogImages    CatalogImage[]
+  catalogDownloads CatalogDownload[]
 
   @@index([plan])
 }
@@ -331,9 +336,9 @@ model DistributorAccess {
 // =============================================================================
 
 model Vehicle {
-  id                String   @id @default(uuid())
+  id                String  @id @default(uuid())
   placa             String
-  kilometrajeActual Int      @default(0)
+  kilometrajeActual Int     @default(0)
   carga             String
   pesoCarga         Float
   tipovhc           String
@@ -361,7 +366,7 @@ model Vehicle {
   // NUEVO 🔽
   configuracion String? // formato: "4-4", "6-4", "2-2-2"
 
-  union Json @default("[]")
+  union                 Json @default("[]")
   presionesRecomendadas Json @default("[]")
 
   // ─── External system dedup key ───────────────────────────────────────────
@@ -378,23 +383,23 @@ model Vehicle {
   // ─── Operational state ──────────────────────────────────────────────────
   // `fuera_de_operacion` vehicles are orphaned (companyId null) during
   // import but keep the full record for long-horizon analysis.
-  estadoOperacional       VehicleOperationalState @default(activo)
-  fueraDeOperacionDesde   DateTime?
+  estadoOperacional     VehicleOperationalState @default(activo)
+  fueraDeOperacionDesde DateTime?
   // Intended fleet name (preserved when orphaned so we know the origin).
-  originalClient          String?
+  originalClient        String?
   // Vehicle-level activity signal carried over from Merquepro. Source of
   // truth for the importer; our computed `kmMensualReal` is derived later.
-  kmMensualMerquepro      Float?
-  ultimaActividadAt       DateTime?
+  kmMensualMerquepro    Float?
+  ultimaActividadAt     DateTime?
   // Lossless catch-all: anything from the source feed we don't promote to
   // a first-class column lands here so no data is ever dropped on import.
-  sourceMetadata          Json?
+  sourceMetadata        Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company            Company?            @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  tires              Tire[]              @relation("VehicleTires")
+  company            Company?             @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  tires              Tire[]               @relation("VehicleTires")
   extras             Extra[]
   notifications      Notification[]
   userAccess         UserVehicleAccess[]
@@ -407,7 +412,6 @@ model Vehicle {
   @@index([placa])
   @@index([companyId, archivedAt])
   @@index([estadoOperacional])
-
   // NUEVOS ÍNDICES 🔽
   @@index([tipoOperacion])
   @@index([configuracion])
@@ -443,18 +447,18 @@ model VehicleInspection {
   id           String   @id @default(uuid())
   vehicleId    String
   fecha        DateTime
-  realizadoPor String?  // userId or free-text technician name
+  realizadoPor String? // userId or free-text technician name
 
   kmActual            Int?
-  presionPromedioPsi  Float?   // average pressure across all tires at inspection
-  tiresInspeccionadas Int?     // how many tires were measured this visit
+  presionPromedioPsi  Float? // average pressure across all tires at inspection
+  tiresInspeccionadas Int? // how many tires were measured this visit
 
   // Vehicle condition flags — nullable: absent means not checked, not OK
   alineacionOk    Boolean?
   balanceoOk      Boolean?
   freinosOk       Boolean?
   suspensionOk    Boolean?
-  cargaConformeKg Float?       // actual load at inspection time (kg)
+  cargaConformeKg Float? // actual load at inspection time (kg)
 
   notas     String?
   createdAt DateTime @default(now())
@@ -475,26 +479,26 @@ model Tire {
   // vehicle is itself orphan so it never surfaces in any fleet dashboard.
   companyId String?
   vehicleId String?
-  placa     String  // tire serial / identifier
+  placa     String // tire serial / identifier
 
   // Identity
   marca              String
   diseno             String
   dimension          String
   eje                EjeType
-  tipoDiseno         TireDesignType?   // tread design (direccional/traccion/toda_posicion/mixto/regional)
-  posicion           Int     @default(0)
+  tipoDiseno         TireDesignType? // tread design (direccional/traccion/toda_posicion/mixto/regional)
+  posicion           Int             @default(0)
   profundidadInicial Float
 
   // Dual (gemela) tire pairing — for twin configurations on the same axle side
-  dualPartnerId      String?           // FK to the paired tire (mutual relationship)
+  dualPartnerId String? // FK to the paired tire (mutual relationship)
 
   // Regrooving eligibility
-  isRegrabable       Boolean @default(false)
+  isRegrabable Boolean @default(false)
 
   // Current vida state — denormalized from TireEvento for fast reads
   vidaActual VidaValue @default(nueva)
-  totalVidas Int       @default(0)  // number of completed vida phases
+  totalVidas Int       @default(0) // number of completed vida phases
 
   // Lifecycle accumulators
   fechaInstalacion     DateTime?
@@ -505,39 +509,39 @@ model Tire {
   // CACHED ANALYTICS — recomputed by refreshTireAnalyticsCache on every write.
   // Dashboard reads are O(1). Never recompute on the read path.
   // -------------------------------------------------------------------------
-  currentCpk           Float?         // current-life CPK = costVidaActual / kmVidaActual
-  lifetimeCpk          Float?         // lifetime CPK = sumCosts_allVidas / sumKm_allVidas
-                                       // Use this for company-wide / cross-vida metrics.
+  currentCpk           Float? // current-life CPK = costVidaActual / kmVidaActual
+  lifetimeCpk          Float? // lifetime CPK = sumCosts_allVidas / sumKm_allVidas
+  // Use this for company-wide / cross-vida metrics.
   currentCpt           Float?
-  currentProfundidad   Float?          // latest avg tread depth ((Int+Cen+Ext) / 3)
-  currentPresionPsi    Float?          // latest recorded pressure
-  cpkTrend             Float?          // linear regression slope over last 5 inspections
-                                       // negative = improving, positive = degrading
+  currentProfundidad   Float? // latest avg tread depth ((Int+Cen+Ext) / 3)
+  currentPresionPsi    Float? // latest recorded pressure
+  cpkTrend             Float? // linear regression slope over last 5 inspections
+  // negative = improving, positive = degrading
   projectedKmRemaining Int?
   projectedDateEOL     DateTime?
-  healthScore          Int?            // 0–100 composite (depth 50%, trend 30%, irregularity 20%)
-  alertLevel           TireAlertLevel  @default(ok)
+  healthScore          Int? // 0–100 composite (depth 50%, trend 30%, irregularity 20%)
+  alertLevel           TireAlertLevel @default(ok)
   lastInspeccionDate   DateTime?
 
   // ── Projected state (updated daily by cron, never by inspections) ────────
   // These estimate the tire's CURRENT condition based on degradation rate.
   // Inspections overwrite these on every write.
-  projectedProfundidad     Float?
-  projectedAlertLevel      TireAlertLevel?
-  projectedHealthScore     Int?
-  projectedDaysToLimit     Int?
-  degradationRateMmPerDay  Float?
-  projectionUpdatedAt      DateTime?
+  projectedProfundidad    Float?
+  projectedAlertLevel     TireAlertLevel?
+  projectedHealthScore    Int?
+  projectedDaysToLimit    Int?
+  degradationRateMmPerDay Float?
+  projectionUpdatedAt     DateTime?
 
   // -------------------------------------------------------------------------
   // LEGACY JSON — kept read-only after backfill migration. Do not write here.
   // primeraVida: superseded by TireVidaSnapshot
   // desechos:    superseded by TireVidaSnapshot (motivoFin = fin)
   // -------------------------------------------------------------------------
-  primeraVida Json  @default("[]")  // @deprecated
-  desechos    Json?                  // @deprecated
+  primeraVida Json  @default("[]") // @deprecated
+  desechos    Json? // @deprecated
 
-  inventoryTag   String?   
+  inventoryTag      String?
   inventoryBucketId String?
   inventoryBucket   TireInventoryBucket? @relation(fields: [inventoryBucketId], references: [id])
 
@@ -575,8 +579,8 @@ model Tire {
   @@index([alertLevel])
   @@index([companyId, alertLevel])
   @@index([companyId, lastInspeccionDate])
-  @@index([companyId, vidaActual])           // fleet breakdown by vida phase
-  @@index([dimension, marca])                // cross-fleet benchmark queries
+  @@index([companyId, vidaActual]) // fleet breakdown by vida phase
+  @@index([dimension, marca]) // cross-fleet benchmark queries
   @@index([companyId, inventoryBucketId])
   @@index([companyId, inventoryEnteredAt])
 }
@@ -602,9 +606,9 @@ model Inspeccion {
   // presionDelta is computed at write time (negative = under-inflated).
   // presionRecomendadaPsi is auto-filled from vehicle.presionesRecomendadas
   // at write time — technicians don't need to know the spec.
-  presionPsi            Float?   // measured tire pressure (PSI)
-  presionRecomendadaPsi Float?   // target pressure for this position/load
-  presionDelta          Float?   // presionPsi - presionRecomendadaPsi (computed on write)
+  presionPsi            Float? // measured tire pressure (PSI)
+  presionRecomendadaPsi Float? // target pressure for this position/load
+  presionDelta          Float? // presionPsi - presionRecomendadaPsi (computed on write)
 
   // ── Vida phase at this inspection ─────────────────────────────────────────
   // Denormalized for O(1) analytics slicing without joining TireEvento.
@@ -612,39 +616,39 @@ model Inspeccion {
   vidaAlMomento VidaValue @default(nueva)
 
   // ── Computed metrics (stored for fleet-wide aggregation) ──────────────────
-  cpk                 Float?   // current-life CPK: costVidaActual / kmVidaActual
-  lifetimeCpk         Float?   // lifetime CPK: sumAllCosts / sumAllVidaKm — used
-                               // for company-wide metrics that average across tires
+  cpk                 Float? // current-life CPK: costVidaActual / kmVidaActual
+  lifetimeCpk         Float? // lifetime CPK: sumAllCosts / sumAllVidaKm — used
+  // for company-wide metrics that average across tires
   cpkProyectado       Float?
   cpt                 Float?
   cptProyectado       Float?
   diasEnUso           Int?
   mesesEnUso          Float?
   kilometrosEstimados Int?
-  kmActualVehiculo    Int?     // vehicle odometer at inspection
-  kmEfectivos         Int?     // km used for CPK calculation
-  kmProyectado        Float?   // projected km to legal limit
+  kmActualVehiculo    Int? // vehicle odometer at inspection
+  kmEfectivos         Int? // km used for CPK calculation
+  kmProyectado        Float? // projected km to legal limit
 
   // ── Image and provenance ──────────────────────────────────────────────────
   // imageUrl is kept for legacy reads only. New writes populate imageUrls
   // (up to 2 photos per tire). UI reads imageUrls ?? [imageUrl] for older
   // rows that never got migrated.
   imageUrl  String?
-  imageUrls String[] @default([])
+  imageUrls String[]         @default([])
   source    InspeccionSource @default(manual)
 
   // ── Computer vision model output fields ───────────────────────────────────
   // Stored alongside the human measurement so model accuracy is trackable
   // over time as the CV model is retrained and improved.
-  cvProfundidadInt Float?   // model-predicted depth, interior zone (mm)
-  cvProfundidadCen Float?   // model-predicted depth, center zone (mm)
-  cvProfundidadExt Float?   // model-predicted depth, exterior zone (mm)
-  cvConfidence     Float?   // model confidence 0–1
-  cvModelVersion   String?  // which model version produced this prediction
+  cvProfundidadInt Float? // model-predicted depth, interior zone (mm)
+  cvProfundidadCen Float? // model-predicted depth, center zone (mm)
+  cvProfundidadExt Float? // model-predicted depth, exterior zone (mm)
+  cvConfidence     Float? // model confidence 0–1
+  cvModelVersion   String? // which model version produced this prediction
 
   // ── Who performed this inspection ─────────────────────────────────────────
-  inspeccionadoPorId     String?  // FK to User (null for bulk uploads)
-  inspeccionadoPorNombre String?  // free-text fallback when no user account
+  inspeccionadoPorId     String? // FK to User (null for bulk uploads)
+  inspeccionadoPorNombre String? // free-text fallback when no user account
 
   // External system dedup key — populated by integrations.
   externalSourceId String? @unique
@@ -663,10 +667,10 @@ model Inspeccion {
   @@index([cpk])
   @@index([tireId, fecha])
   @@index([tireId, createdAt])
-  @@index([vidaAlMomento])                  // fleet analytics by vida phase
-  @@index([tireId, vidaAlMomento])          // per-tire per-vida history
-  @@index([source])                         // CV training data extraction
-  @@index([presionPsi])                     // pressure correlation queries
+  @@index([vidaAlMomento]) // fleet analytics by vida phase
+  @@index([tireId, vidaAlMomento]) // per-tire per-vida history
+  @@index([source]) // CV training data extraction
+  @@index([presionPsi]) // pressure correlation queries
   @@index([inspeccionadoPorId])
   @@map("inspecciones")
 }
@@ -687,13 +691,13 @@ model Inspeccion {
 // =============================================================================
 
 model TireVidaSnapshot {
-  id        String    @id @default(uuid())
+  id        String  @id @default(uuid())
   tireId    String
   // Nullable for parity with Tire.companyId — snapshots on orphan tires
   // keep their historical payload without faking a company link.
-  companyId String?   // denormalized for fleet-wide aggregation without joining Tire
+  companyId String? // denormalized for fleet-wide aggregation without joining Tire
 
-  vida      VidaValue // which vida phase this snapshot covers
+  vida VidaValue // which vida phase this snapshot covers
 
   // ── Tire identity at the start of this vida ───────────────────────────────
   // Stored here because the tire may be updated later; we need the exact
@@ -705,13 +709,13 @@ model TireVidaSnapshot {
   posicion  Int?
 
   // Retread-specific identity — only for reencauche* vidas
-  bandaNombre String?  // retread band name
-  bandaMarca  String?  // retread band brand (may differ from carcass brand)
-  proveedor   String?  // retread shop or supplier
+  bandaNombre String? // retread band name
+  bandaMarca  String? // retread band brand (may differ from carcass brand)
+  proveedor   String? // retread shop or supplier
 
   // ── Financial ─────────────────────────────────────────────────────────────
-  costoInicial Float   // cost of this vida (new tire price or retread cost)
-  costoTotal   Float   // sum of all TireCosto entries during this vida
+  costoInicial Float // cost of this vida (new tire price or retread cost)
+  costoTotal   Float // sum of all TireCosto entries during this vida
 
   // ── Duration ──────────────────────────────────────────────────────────────
   fechaInicio  DateTime
@@ -768,8 +772,8 @@ model TireVidaSnapshot {
 
   // Desecho fields — only when motivoFin != reencauche (tire scrapped)
   desechoCausales   String?
-  desechoMilimetros Float?   // mm remaining when scrapped
-  desechoRemanente  Float?   // estimated value lost: cpk × kmPerMm × mmRemaining
+  desechoMilimetros Float? // mm remaining when scrapped
+  desechoRemanente  Float? // estimated value lost: cpk × kmPerMm × mmRemaining
   desechoImageUrls  String[] @default([])
 
   // 'live' = created by updateVida | 'backfill' = created by migration script
@@ -809,17 +813,17 @@ model TireBenchmark {
   dimension String
 
   sampleSize   Int
-  companyCount Int    @default(1)
+  companyCount Int @default(1)
 
   precioPromedio Float?
   precioMin      Float?
   precioMax      Float?
 
-  avgCpk              Float?
-  medianCpk           Float?
-  avgCpt              Float?
-  avgKmPorVida        Float?
-  avgMmDesgaste       Float?
+  avgCpk               Float?
+  medianCpk            Float?
+  avgCpt               Float?
+  avgKmPorVida         Float?
+  avgMmDesgaste        Float?
   avgDesgastePor1000km Float?
 
   cpkNueva          Float?
@@ -832,9 +836,9 @@ model TireBenchmark {
   retreadRoiRatio Float?
 
   // Pressure correlation (populated when enough data exists)
-  cpkAtOptimalPsi     Float?   // CPK when pressure within ±5 PSI of recommended
-  cpkAtLowPsi         Float?   // CPK when pressure >10 PSI below recommended
-  pressureSensitivity Float?   // % CPK degradation per 10 PSI under-inflation
+  cpkAtOptimalPsi     Float? // CPK when pressure within ±5 PSI of recommended
+  cpkAtLowPsi         Float? // CPK when pressure >10 PSI below recommended
+  pressureSensitivity Float? // % CPK degradation per 10 PSI under-inflation
 
   updatedAt DateTime @updatedAt
   createdAt DateTime @default(now())
@@ -858,7 +862,7 @@ model TireBenchmark {
 // Closed entry: fechaDesmonte NOT NULL + motivoDesmonte set
 // =============================================================================
 model VehicleTireHistory {
-  id        String @id @default(uuid())
+  id String @id @default(uuid())
 
   // Who + where
   vehicleId String
@@ -873,11 +877,11 @@ model VehicleTireHistory {
   marca         String
   diseno        String
   dimension     String
-  vidaAlMontaje VidaValue @default(nueva)  // tire's vida when it was mounted here
+  vidaAlMontaje VidaValue @default(nueva) // tire's vida when it was mounted here
 
   // Lifecycle
-  fechaMontaje  DateTime  @default(now())
-  fechaDesmonte DateTime?
+  fechaMontaje   DateTime  @default(now())
+  fechaDesmonte  DateTime?
   // 'rotacion'   — moved to a different position on same (or another) vehicle
   // 'reencauche' — vida transition (nueva → reencauche1, etc)
   // 'fin'        — scrapped / end of life
@@ -903,10 +907,10 @@ model VehicleTireHistory {
   company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
 
   @@index([vehicleId, position])
-  @@index([vehicleId, fechaDesmonte])  // pull current (open) entries per vehicle
+  @@index([vehicleId, fechaDesmonte]) // pull current (open) entries per vehicle
   @@index([companyId])
   @@index([tireId])
-  @@index([marca, diseno, dimension])  // per-SKU performance aggregation
+  @@index([marca, diseno, dimension]) // per-SKU performance aggregation
   @@map("vehicle_tire_history")
 }
 
@@ -923,7 +927,7 @@ model TireRecommendation {
 
   // 'replace_now' | 'retread' | 'pressure_adjust' | 'rotate' | 'buy_brand'
   tipo      String
-  prioridad Int    @default(0)   // 0 = info, 1 = watch, 2 = urgent, 3 = critical
+  prioridad Int     @default(0) // 0 = info, 1 = watch, 2 = urgent, 3 = critical
   titulo    String
   cuerpo    String
   accion    String?
@@ -933,8 +937,8 @@ model TireRecommendation {
   //         presionActual, presionRecomendada }
   metaData Json @default("{}")
 
-  modelVersion String?  // 'rule_v1' | 'ml_v2' etc.
-  confidence   Float?   // 0–1
+  modelVersion String? // 'rule_v1' | 'ml_v2' etc.
+  confidence   Float? // 0–1
 
   visto      Boolean   @default(false)
   descartado Boolean   @default(false)
@@ -960,34 +964,34 @@ model TireRecommendation {
 // =============================================================================
 
 model PurchaseOrder {
-  id              String   @id @default(uuid())
-  companyId       String
-  distributorId   String
-  status          String   @default("solicitud_enviada")
+  id            String @id @default(uuid())
+  companyId     String
+  distributorId String
+  status        String @default("solicitud_enviada")
   // solicitud_enviada | cotizacion_recibida | aceptada | rechazada | completada
   // Order-level status is now a coarse summary; per-line state lives on
   // PurchaseOrderItem.status (see PurchaseOrderItemStatus).
 
-  totalEstimado   Float?
-  notas           String?
+  totalEstimado Float?
+  notas         String?
 
-  totalCotizado    Float?
-  cotizacionFecha  DateTime?
-  cotizacionNotas  String?
+  totalCotizado   Float?
+  cotizacionFecha DateTime?
+  cotizacionNotas String?
 
   // Pickup — scheduled by the dist after the fleet accepts. The pickup
   // moment is when tires physically leave the vehicles; every per-item
   // decision (reencauchar / devolver / fin de vida) happens at this step.
-  pickupDate       DateTime?
+  pickupDate DateTime?
 
-  resolvedAt       DateTime?
-  resolvedBy       String?
+  resolvedAt DateTime?
+  resolvedBy String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company     Company              @relation("CompanyOrders",      fields: [companyId],     references: [id])
-  distributor Company              @relation("DistributorOrders",  fields: [distributorId], references: [id])
+  company     Company             @relation("CompanyOrders", fields: [companyId], references: [id])
+  distributor Company             @relation("DistributorOrders", fields: [distributorId], references: [id])
   items       PurchaseOrderItem[]
 
   @@index([companyId, status])
@@ -1002,53 +1006,53 @@ model PurchaseOrder {
 // partial progression through a mixed order is trackable without
 // mutating a shared JSON.
 model PurchaseOrderItem {
-  id              String   @id @default(uuid())
+  id              String @id @default(uuid())
   purchaseOrderId String
 
   // For reencauche items, the specific tire being retread; nueva items
   // leave this null until the dist links delivered tires (if ever).
-  tireId          String?
+  tireId String?
 
-  tipo            String                  // 'nueva' | 'reencauche'
-  marca           String
-  modelo          String?                 // banda recomendada (reencauche) | tread design (nueva)
-  dimension       String
-  eje             String?
-  cantidad        Int                     @default(1)
-  vehiclePlaca    String?
-  urgency         String?
-  notas           String?
+  tipo         String // 'nueva' | 'reencauche'
+  marca        String
+  modelo       String? // banda recomendada (reencauche) | tread design (nueva)
+  dimension    String
+  eje          String?
+  cantidad     Int     @default(1)
+  vehiclePlaca String?
+  urgency      String?
+  notas        String?
 
   // Quote fields — filled by dist at cotizacion time
-  precioUnitario  Float?
-  disponible      Boolean?                // true: in stock; false: backorder
-  tiempoEntrega   String?
-  cotizacionNotas String?
+  precioUnitario           Float?
+  disponible               Boolean? // true: in stock; false: backorder
+  tiempoEntrega            String?
+  cotizacionNotas          String?
   // Reencauche offer — a banda has a brand (Michelin, Bridgestone…) AND a
   // model/type (XDR, M700…). Both are captured at cotización time so the
   // fleet can decide on both axes and the entregar step pre-fills from them.
   // Null on nueva items. Profundidad inicial (mm) is the thickness the
   // banda will provide once installed — captured here so the EntregarModal
   // can seed the vida snapshot with the exact value the dist committed to.
-  bandaOfrecidaMarca        String?
-  bandaOfrecidaModelo       String?
-  bandaOfrecidaProfundidad  Float?
+  bandaOfrecidaMarca       String?
+  bandaOfrecidaModelo      String?
+  bandaOfrecidaProfundidad Float?
 
   // Lifecycle
   status            PurchaseOrderItemStatus @default(pendiente)
-  estimatedDelivery DateTime?              // dist ETA after approving reencauche
-  motivoRechazo     String?                // reason dist rejected reencauche (stored alongside the fin-de-vida snapshot)
-  finalizedAt       DateTime?              // when item reached entregada/rechazada/completada
+  estimatedDelivery DateTime? // dist ETA after approving reencauche
+  motivoRechazo     String? // reason dist rejected reencauche (stored alongside the fin-de-vida snapshot)
+  finalizedAt       DateTime? // when item reached entregada/rechazada/completada
 
   // Reencauche vida trail — snapshot before/after the retread cycle
-  vidaPrevia      VidaValue?
-  vidaNueva       VidaValue?
+  vidaPrevia VidaValue?
+  vidaNueva  VidaValue?
 
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  tire            Tire?         @relation("PurchaseOrderItems", fields: [tireId], references: [id], onDelete: SetNull)
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  tire          Tire?         @relation("PurchaseOrderItems", fields: [tireId], references: [id], onDelete: SetNull)
 
   @@index([purchaseOrderId])
   @@index([tireId])
@@ -1090,7 +1094,7 @@ model TireCosto {
   tireId   String
   valor    Float
   fecha    DateTime
-  concepto String?  // 'compra_nueva' | 'reencauche' | 'reparacion' | 'parche'
+  concepto String? // 'compra_nueva' | 'reencauche' | 'reparacion' | 'parche'
 
   createdAt DateTime @default(now())
 
@@ -1174,14 +1178,14 @@ model Notification {
   companyId String?
 
   // What action resolves this notification
-  actionType    String?   // 'rotate' | 'adjust_pressure' | 'retread' | 'replace' | 'inspect' | 'remove_from_service'
-  actionPayload Json?     // { tireId, fromPosition?, toPosition?, targetPsi?, etc }
-  actionLabel   String?   // "Rotar posición 1 ↔ 3" (human-readable)
+  actionType    String? // 'rotate' | 'adjust_pressure' | 'retread' | 'replace' | 'inspect' | 'remove_from_service'
+  actionPayload Json? // { tireId, fromPosition?, toPosition?, targetPsi?, etc }
+  actionLabel   String? // "Rotar posición 1 ↔ 3" (human-readable)
 
   // Execution tracking
-  executed      Boolean   @default(false)
-  executedAt    DateTime?
-  executedBy    String?   // userId or 'agent' or 'driver'
+  executed   Boolean   @default(false)
+  executedAt DateTime?
+  executedBy String? // userId or 'agent' or 'driver'
 
   // Driver notification tracking
   sentToDriver      Boolean   @default(false)
@@ -1190,8 +1194,8 @@ model Notification {
   driverConfirmedAt DateTime?
 
   // Grouping for UI
-  groupKey   String?   // vehicleId for grouping by vehicle
-  priority   Int       @default(0)  // higher = more urgent
+  groupKey String? // vehicleId for grouping by vehicle
+  priority Int     @default(0) // higher = more urgent
 
   tire    Tire?    @relation(fields: [tireId], references: [id], onDelete: SetNull)
   vehicle Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
@@ -1343,7 +1347,6 @@ model Income {
   @@index([userId, date])
 }
 
-
 // =============================================================================
 // Inventory
 // =============================================================================
@@ -1383,79 +1386,83 @@ model TireInventoryBucket {
 // =============================================================================
 
 model TireMasterCatalog {
-  id             String   @id @default(uuid())
+  id String @id @default(uuid())
 
   // Identity
-  marca          String
-  modelo         String   // design/band name
-  dimension      String
-  skuRef         String   @unique  // unique SKU reference
+  marca     String
+  modelo    String // design/band name
+  dimension String
+  skuRef    String @unique // unique SKU reference
 
   // Dimensional breakdown
-  anchoMm        Float?   // tire width in mm
-  perfil         String?  // aspect ratio (e.g., "70", "80", "R")
-  rin            String?  // rim size (e.g., "22.5", "20")
+  anchoMm Float? // tire width in mm
+  perfil  String? // aspect ratio (e.g., "70", "80", "R")
+  rin     String? // rim size (e.g., "22.5", "20")
 
   // Application
-  posicion       String?  // D=Steer, T=Drive, AP=AllPosition, R=Trailer
-  ejeTirePro     EjeType? // mapped axle type for TirePro
-  terreno        String?  // Carretera, Mixto, Urbano, Off-Road
-  pctPavimento   Int      @default(100)  // % paved road suitability
-  pctDestapado   Int      @default(0)    // % unpaved road suitability
+  posicion     String? // D=Steer, T=Drive, AP=AllPosition, R=Trailer
+  ejeTirePro   EjeType? // mapped axle type for TirePro
+  terreno      String? // Carretera, Mixto, Urbano, Off-Road
+  pctPavimento Int      @default(100) // % paved road suitability
+  pctDestapado Int      @default(0) // % unpaved road suitability
 
   // Performance specs
-  rtdMm          Float?   // initial tread depth (mm)
-  indiceCarga    String?  // load index
+  rtdMm           Float? // initial tread depth (mm)
+  indiceCarga     String? // load index
   indiceVelocidad String? // speed rating
-  psiRecomendado Float?   // recommended pressure (PSI)
-  pesoKg         Float?   // tire weight
+  psiRecomendado  Float? // recommended pressure (PSI)
+  pesoKg          Float? // tire weight
 
   // Expected life
-  kmEstimadosReales   Int?    // realistic km estimate for Colombia
-  kmEstimadosFabrica  Int?    // manufacturer's km estimate
+  kmEstimadosReales  Int? // realistic km estimate for Colombia
+  kmEstimadosFabrica Int? // manufacturer's km estimate
 
   // Retread info
-  reencauchable       Boolean @default(false)
-  vidasReencauche     Int     @default(0) // max number of retreads
+  reencauchable   Boolean @default(false)
+  vidasReencauche Int     @default(0) // max number of retreads
 
   // Financial
-  precioCop           Float?  // retail price in COP
-  cpkEstimado         Float?  // computed: precioCop / kmEstimadosReales
+  precioCop   Float? // retail price in COP
+  cpkEstimado Float? // computed: precioCop / kmEstimadosReales
 
   // Classification
-  categoria           String? // "nueva" | "reencauche" — distinguishes new tires from retread bands
-  segmento            String? // "Tractomula | Bus_Interurbano"
-  tipo                String? // Radial, Convencional
-  construccion        String? // Acero, Nylon, etc.
+  categoria    String? // "nueva" | "reencauche" — distinguishes new tires from retread bands
+  segmento     String? // "Tractomula | Bus_Interurbano"
+  tipo         String? // Radial, Convencional
+  construccion String? // Acero, Nylon, etc.
 
   // Notes & source
-  notasColombia       String? @db.Text
-  fuente              String?
-  url                 String?
+  notasColombia String? @db.Text
+  fuente        String?
+  url           String?
 
   // ─── CROWDSOURCE INTELLIGENCE ────────────────────────────────────
   // Populated when SKU is created/enriched from user-submitted tire data.
   // fuente = "crowdsource" marks these entries.
-  crowdSampleSize         Int       @default(0)    // total tires contributing data
-  crowdCompanyCount       Int       @default(0)    // distinct companies (privacy: ≥3 to publish)
-  crowdAvgPrice           Float?    // trimmed mean price COP
-  crowdMedianPrice        Float?    // median price COP
-  crowdStddevPrice        Float?    // price stddev — measures market spread
-  crowdP25Price           Float?    // 25th percentile
-  crowdP75Price           Float?    // 75th percentile
-  crowdAvgInitialDepth    Float?    // trimmed mean initial depth mm
-  crowdMedianInitialDepth Float?    // median initial depth mm
-  crowdStddevDepth        Float?    // depth stddev
-  crowdAvgKm              Int?      // average km per vida from real data
-  crowdMedianKm           Int?      // median km per vida
-  crowdAvgCpk             Float?    // average CPK across all contributing tires
-  crowdMedianCpk          Float?    // median CPK
-  crowdAvgWearRate        Float?    // mm per 1000km average wear rate
-  crowdConfidence         Float?    // 0–1 confidence score based on sample size + spread
+  crowdSampleSize         Int       @default(0) // total tires contributing data
+  crowdCompanyCount       Int       @default(0) // distinct companies (privacy: ≥3 to publish)
+  crowdAvgPrice           Float? // trimmed mean price COP
+  crowdMedianPrice        Float? // median price COP
+  crowdStddevPrice        Float? // price stddev — measures market spread
+  crowdP25Price           Float? // 25th percentile
+  crowdP75Price           Float? // 75th percentile
+  crowdAvgInitialDepth    Float? // trimmed mean initial depth mm
+  crowdMedianInitialDepth Float? // median initial depth mm
+  crowdStddevDepth        Float? // depth stddev
+  crowdAvgKm              Int? // average km per vida from real data
+  crowdMedianKm           Int? // median km per vida
+  crowdAvgCpk             Float? // average CPK across all contributing tires
+  crowdMedianCpk          Float? // median CPK
+  crowdAvgWearRate        Float? // mm per 1000km average wear rate
+  crowdConfidence         Float? // 0–1 confidence score based on sample size + spread
   crowdLastUpdated        DateTime? // last time crowd stats were recalculated
 
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listings  DistributorListing[]
+  images    CatalogImage[]
+  downloads CatalogDownload[]
 
   @@index([marca, dimension])
   @@index([dimension])
@@ -1467,8 +1474,62 @@ model TireMasterCatalog {
   @@index([fuente])
   @@index([categoria])
   @@map("tire_master_catalog")
+}
 
-  listings DistributorListing[]
+// =============================================================================
+// CATALOG DATASHEET MODULE — per-distributor images + download tracking.
+// Distributors use the catalog as a sales tool: search a tire, personalize
+// it with their own product photos, and export a branded PDF for a customer.
+// Images are scoped to the distributor's company so one dist's uploads
+// never pollute another's catalog view. TirePro (admin) sees all via the
+// admin endpoint.
+// =============================================================================
+
+model CatalogImage {
+  id         String   @id @default(uuid())
+  catalogId  String
+  companyId  String // owning distributor — uploads are private to this co
+  url        String
+  coverIndex Int      @default(0) // sort order; lowest renders first / as hero
+  createdAt  DateTime @default(now())
+
+  catalog TireMasterCatalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+  company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([catalogId, companyId])
+  @@index([companyId])
+  @@map("catalog_images")
+}
+
+enum CatalogPriceMode {
+  none // PDF generated without a price — product characteristics only
+  sin_iva // Price shown, IVA excluded
+  con_iva // Price shown, IVA included (19%)
+}
+
+model CatalogDownload {
+  id             String           @id @default(uuid())
+  userId         String
+  companyId      String // distributor the user belongs to
+  catalogId      String
+  priceMode      CatalogPriceMode @default(none)
+  priceCop       Float? // price the salesperson chose to show
+  // Snapshot of which field toggles were checked so we can analyze what the
+  // sales team leads with (dimensiones, carga, reencauchabilidad, etc.).
+  fieldsIncluded Json?
+  ip             String?
+  userAgent      String?
+  createdAt      DateTime         @default(now())
+
+  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  catalog TireMasterCatalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, userId, createdAt])
+  @@index([companyId, catalogId])
+  @@index([userId, createdAt])
+  @@map("catalog_downloads")
 }
 
 // =============================================================================
@@ -1476,29 +1537,29 @@ model TireMasterCatalog {
 // =============================================================================
 
 model BidRequest {
-  id              String           @id @default(uuid())
-  companyId       String
-  status          BidRequestStatus @default(abierta)
+  id        String           @id @default(uuid())
+  companyId String
+  status    BidRequestStatus @default(abierta)
 
-  items           Json             // [{tireId?, marca, dimension, diseno, eje, cantidad, tipo:"nueva"|"reencauche", catalogId?}]
+  items           Json // [{tireId?, marca, dimension, diseno, eje, cantidad, tipo:"nueva"|"reencauche", catalogId?}]
   totalEstimado   Float?
-  notas           String?          @db.Text
+  notas           String? @db.Text
   deliveryAddress String?
 
-  deadline        DateTime?
-  maxBidders      Int              @default(10)
-  isPublic        Boolean          @default(false)
+  deadline   DateTime?
+  maxBidders Int       @default(10)
+  isPublic   Boolean   @default(false)
 
-  winnerId        String?
-  resolvedAt      DateTime?
+  winnerId   String?
+  resolvedAt DateTime?
 
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  company         Company          @relation("CompanyBidRequests", fields: [companyId], references: [id])
-  winner          Company?         @relation("WonBids", fields: [winnerId], references: [id])
-  responses       BidResponse[]
-  invitations     BidInvitation[]
+  company     Company         @relation("CompanyBidRequests", fields: [companyId], references: [id])
+  winner      Company?        @relation("WonBids", fields: [winnerId], references: [id])
+  responses   BidResponse[]
+  invitations BidInvitation[]
 
   @@index([companyId, status])
   @@index([status, isPublic])
@@ -1508,13 +1569,13 @@ model BidRequest {
 }
 
 model BidInvitation {
-  id              String   @id @default(uuid())
-  bidRequestId    String
-  distributorId   String
-  sentAt          DateTime @default(now())
+  id            String   @id @default(uuid())
+  bidRequestId  String
+  distributorId String
+  sentAt        DateTime @default(now())
 
-  bidRequest      BidRequest @relation(fields: [bidRequestId], references: [id], onDelete: Cascade)
-  distributor     Company    @relation("BidInvitations", fields: [distributorId], references: [id])
+  bidRequest  BidRequest @relation(fields: [bidRequestId], references: [id], onDelete: Cascade)
+  distributor Company    @relation("BidInvitations", fields: [distributorId], references: [id])
 
   @@unique([bidRequestId, distributorId])
   @@index([distributorId])
@@ -1522,23 +1583,23 @@ model BidInvitation {
 }
 
 model BidResponse {
-  id              String            @id @default(uuid())
-  bidRequestId    String
-  distributorId   String
-  status          BidResponseStatus @default(pendiente)
+  id            String            @id @default(uuid())
+  bidRequestId  String
+  distributorId String
+  status        BidResponseStatus @default(pendiente)
 
-  cotizacion      Json?             // [{itemIndex, precioUnitario, disponible, tiempoEntrega, notas, catalogId?}]
-  totalCotizado   Float?
-  notas           String?           @db.Text
-  incluyeIva      Boolean           @default(false)
-  tiempoEntrega   String?
+  cotizacion    Json? // [{itemIndex, precioUnitario, disponible, tiempoEntrega, notas, catalogId?}]
+  totalCotizado Float?
+  notas         String? @db.Text
+  incluyeIva    Boolean @default(false)
+  tiempoEntrega String?
 
-  submittedAt     DateTime?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  submittedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  bidRequest      BidRequest @relation(fields: [bidRequestId], references: [id], onDelete: Cascade)
-  distributor     Company    @relation("BidResponses", fields: [distributorId], references: [id])
+  bidRequest  BidRequest @relation(fields: [bidRequestId], references: [id], onDelete: Cascade)
+  distributor Company    @relation("BidResponses", fields: [distributorId], references: [id])
 
   @@unique([bidRequestId, distributorId])
   @@index([distributorId, status])
@@ -1547,35 +1608,38 @@ model BidResponse {
 }
 
 model DistributorListing {
-  id                  String   @id @default(uuid())
-  distributorId       String
+  id            String @id @default(uuid())
+  distributorId String
 
-  catalogId           String?
-  marca               String
-  modelo              String
-  dimension           String
-  eje                 EjeType?
-  tipo                String    @default("nueva")  // "nueva" | "reencauche"
+  catalogId String?
+  marca     String
+  modelo    String
+  dimension String
+  eje       EjeType?
+  tipo      String   @default("nueva") // "nueva" | "reencauche"
 
-  precioCop           Float
-  precioPromo         Float?
-  promoHasta          DateTime?
-  incluyeIva          Boolean  @default(false)
+  precioCop   Float
+  precioPromo Float?
+  promoHasta  DateTime?
+  incluyeIva  Boolean   @default(false)
 
-  cantidadDisponible  Int      @default(0)
-  tiempoEntrega       String?
+  cantidadDisponible Int     @default(0)
+  tiempoEntrega      String?
 
-  descripcion         String?  @db.Text
-  imageUrls           Json?    // ["url1","url2",...] max 5
-  coverIndex          Int      @default(0)  // which image is the cover
-  imageQualityScore   Int      @default(0)   // 0-100, higher = better quality listing
-  isActive            Boolean  @default(true)
+  descripcion       String? @db.Text
+  imageUrls         Json? // ["url1","url2",...] max 5
+  coverIndex        Int     @default(0) // which image is the cover
+  imageQualityScore Int     @default(0) // 0-100, higher = better quality listing
+  isActive          Boolean @default(true)
 
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  distributor         Company            @relation("DistributorListings", fields: [distributorId], references: [id])
-  catalog             TireMasterCatalog? @relation(fields: [catalogId], references: [id])
+  distributor Company            @relation("DistributorListings", fields: [distributorId], references: [id])
+  catalog     TireMasterCatalog? @relation(fields: [catalogId], references: [id])
+
+  reviews DistributorReview[]
+  orders  MarketplaceOrder[]
 
   @@index([distributorId, isActive])
   @@index([dimension, isActive])
@@ -1586,64 +1650,61 @@ model DistributorListing {
   @@index([isActive, precioCop])
   @@index([tipo, isActive])
   @@map("distributor_listings")
-
-  reviews DistributorReview[]
-  orders  MarketplaceOrder[]
 }
 
 model DistributorReview {
-  id            String   @id @default(uuid())
-  listingId     String
-  userId        String
-  rating        Int      // 1-5 stars
-  comment       String?  @db.Text
-  createdAt     DateTime @default(now())
+  id        String   @id @default(uuid())
+  listingId String
+  userId    String
+  rating    Int // 1-5 stars
+  comment   String?  @db.Text
+  createdAt DateTime @default(now())
 
-  listing       DistributorListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
-  user          User               @relation(fields: [userId], references: [id])
+  listing DistributorListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  user    User               @relation(fields: [userId], references: [id])
 
-  @@unique([listingId, userId])  // one review per user per listing
+  @@unique([listingId, userId]) // one review per user per listing
   @@index([listingId])
   @@map("distributor_reviews")
 }
 
 model MarketplaceOrder {
-  id              String   @id @default(uuid())
-  listingId       String
-  distributorId   String
-  quantity        Int      @default(1)
-  totalCop        Float
+  id            String @id @default(uuid())
+  listingId     String
+  distributorId String
+  quantity      Int    @default(1)
+  totalCop      Float
 
   // Buyer info (logged in user OR guest)
-  userId          String?
-  buyerName       String
-  buyerEmail      String
-  buyerPhone      String?
-  buyerAddress    String?
-  buyerCity       String?
-  buyerCompany    String?
+  userId       String?
+  buyerName    String
+  buyerEmail   String
+  buyerPhone   String?
+  buyerAddress String?
+  buyerCity    String?
+  buyerCompany String?
 
   // Status
-  status          String   @default("pendiente")  // pendiente | confirmado | enviado | entregado | cancelado
-  notas           String?  @db.Text
+  status String  @default("pendiente") // pendiente | confirmado | enviado | entregado | cancelado
+  notas  String? @db.Text
 
   // Payment
-  paymentId       String?
-  paymentStatus   String?  // approved | declined | error | voided | pending
-  totalWithIva    Float?
+  paymentId     String?
+  paymentStatus String? // approved | declined | error | voided | pending
+  totalWithIva  Float?
 
   // Return request (initiated by buyer)
   returnRequestedAt DateTime?
-  returnReason      String?  @db.Text
-  returnStatus      String?  // pendiente | aprobada | rechazada
+  returnReason      String?   @db.Text
+  returnStatus      String? // pendiente | aprobada | rechazada
   returnResolvedAt  DateTime?
 
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  listing         DistributorListing @relation(fields: [listingId], references: [id])
-  distributor     Company            @relation("MarketplaceOrders", fields: [distributorId], references: [id])
-  user            User?              @relation(fields: [userId], references: [id])
+  listing     DistributorListing @relation(fields: [listingId], references: [id])
+  distributor Company            @relation("MarketplaceOrders", fields: [distributorId], references: [id])
+  user        User?              @relation(fields: [userId], references: [id])
 
   @@index([distributorId, status])
   @@index([userId])
@@ -1679,39 +1740,39 @@ model PlateCache {
 // =============================================================================
 
 model BrandInfo {
-  id              String   @id @default(uuid())
+  id            String    @id @default(uuid())
   // Canonical brand name as stored on listings (case-insensitive lookup)
-  name            String   @unique
+  name          String    @unique
   // URL-safe slug for /marketplace/brand/[slug]
-  slug            String   @unique
+  slug          String    @unique
   // Editorial fields (filled by the scraper script and/or manually)
-  logoUrl         String?
-  country         String?  // Country of origin
-  headquarters    String?  // City, country
-  foundedYear     Int?
-  website         String?
-  description     String?  @db.Text
-  plants          Json?    // Array of { city, country }
-  parentCompany   String?
+  logoUrl       String?
+  country       String? // Country of origin
+  headquarters  String? // City, country
+  foundedYear   Int?
+  website       String?
+  description   String?   @db.Text
+  plants        Json? // Array of { city, country }
+  parentCompany String?
   // Quality tier: 'premium' (Michelin, Bridgestone, etc.) | 'mid' (Hankook,
   // Yokohama…) | 'value' (everything else). Rendered on the brand page as
   // a star rating + label.
-  tier            String?
+  tier          String?
   // Free-form extra facts the scraper picked up
-  facts           Json?
-  source          String?  // 'wikipedia', 'manual', 'scraped'
-  sourceUrl       String?
-  lastScrapedAt   DateTime?
+  facts         Json?
+  source        String? // 'wikipedia', 'manual', 'scraped'
+  sourceUrl     String?
+  lastScrapedAt DateTime?
 
   // ─── Admin-editable customization ────────────────────────────────────────
   // Overrides applied on the public brand page in the marketplace.
-  primaryColor    String?  // hex like "#E30613" — hero/accents tint
-  accentColor     String?  // hex — secondary color for badges/ctas
-  heroImageUrl    String?  // optional background banner
-  tagline         String?  // short marketing line under the brand name
-  published       Boolean  @default(true) // hide unfinished brand pages
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  primaryColor String? // hex like "#E30613" — hero/accents tint
+  accentColor  String? // hex — secondary color for badges/ctas
+  heroImageUrl String? // optional background banner
+  tagline      String? // short marketing line under the brand name
+  published    Boolean  @default(true) // hide unfinished brand pages
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([slug])
   @@map("brand_info")
@@ -1729,13 +1790,13 @@ model BrandInfo {
 model BulkUploadSnapshot {
   id                String    @id @default(uuid())
   companyId         String
-  userId            String?    // FK to User; null for legacy uploads
+  userId            String? // FK to User; null for legacy uploads
   uploadedAt        DateTime  @default(now())
-  expiresAt         DateTime  // uploadedAt + 7 days, computed at create time
+  expiresAt         DateTime // uploadedAt + 7 days, computed at create time
   fileName          String?
   tireCount         Int       @default(0)
   tireIds           String[]
-  rawRows           Json      // original Excel rows as parsed JSON — enables edit+reapply
+  rawRows           Json // original Excel rows as parsed JSON — enables edit+reapply
   invalidated       Boolean   @default(false)
   invalidatedAt     DateTime?
   invalidatedReason String?
@@ -1746,6 +1807,7 @@ model BulkUploadSnapshot {
   @@index([expiresAt])
   @@map("bulk_upload_snapshots")
 }
+
 // =============================================================================
 // TEAM KPI
 // Admin-defined target per metric per period. userId = null for company-wide
@@ -1755,7 +1817,7 @@ model BulkUploadSnapshot {
 model TeamKpi {
   id          String    @id @default(uuid())
   companyId   String
-  userId      String?   // null = company-wide KPI
+  userId      String? // null = company-wide KPI
   metric      KpiMetric
   period      KpiPeriod
   periodStart DateTime  @db.Date
@@ -1767,7 +1829,7 @@ model TeamKpi {
   updatedAt   DateTime  @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  user    User?   @relation(fields: [userId],    references: [id], onDelete: SetNull)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([companyId, periodStart])
   @@index([companyId, userId, metric, periodStart])

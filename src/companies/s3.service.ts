@@ -87,6 +87,33 @@ export class S3Service {
     return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
   }
 
+  async uploadCatalogImage(
+    buffer: Buffer,
+    companyId: string,
+    catalogId: string,
+    contentType: string,
+  ): Promise<string> {
+    this.validateImage(buffer);
+    const ext = contentType.split('/')[1] ?? 'jpg';
+    const key = `catalog/${companyId}/${catalogId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+    try {
+      await this.s3.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: buffer,
+          ContentType: contentType,
+        }),
+      );
+    } catch (err) {
+      this.logger.error(`S3 catalog upload failed`, err);
+      throw new InternalServerErrorException('Failed to upload image');
+    }
+
+    return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
+  }
+
   async deleteObject(key: string): Promise<void> {
     try {
       await this.s3.send(
