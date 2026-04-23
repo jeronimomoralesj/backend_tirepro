@@ -80,7 +80,7 @@ const REPORTS_BASE  = 'https://reports-mqplatform-prod.azurewebsites.net';
 //   - tires_pN.json                     → /report/currentstatetirest (paginated)
 //   - inspections_pN.json               → /report/inspection (paginated)
 type EndpointSpec = {
-  name:       'vehicles' | 'inactive' | 'tires' | 'inspections' | 'currentstate';
+  name:       'vehicles' | 'inactive' | 'tires' | 'inspections' | 'currentstate' | 'currentstateveh';
   base:       string;
   path:       string;
   filePrefix: string;    // output file prefix; gets _pN.json suffix when paginated
@@ -104,6 +104,18 @@ const ENDPOINTS: EndpointSpec[] = [
     base:       SHARED_BASE,
     path:       '/api/report/vehiclesWithoutTransaction',
     filePrefix: 'vehiclesWithoutTransaction',
+    paginated:  true,
+  },
+  {
+    // Authoritative per-vehicle current state. The `state` field ("En
+    // Operación" / "Fuera de Operación" / etc.) drives the importer's
+    // orphan classification — anything other than "En Operación" lands
+    // companyId=null + estadoOperacional=fuera_de_operacion. Same bearer
+    // as the others; lives under /shared not /reports.
+    name:       'currentstateveh',
+    base:       SHARED_BASE,
+    path:       '/api/report/currentstatevehicles',
+    filePrefix: 'currentstateveh',             // → currentstateveh_pN.json
     paginated:  true,
   },
   {

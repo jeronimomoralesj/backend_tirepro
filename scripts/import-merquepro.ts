@@ -290,12 +290,32 @@ async function main() {
       raw:      r,
     });
   }
+  // Authoritative operational state comes from /currentstatevehicles:
+  // `state == "En Operación"` → activo, anything else → orphan. This
+  // replaces the prior months-since-last-transaction heuristic, which
+  // missed vehicles Merquellantas had already flagged as out of service
+  // and wrongly orphaned ones that had legitimate multi-month gaps.
+  const currentStateVehRaw = loadAll('currentstateveh_p');
+  const enOpIds = new Set<number>();
+  for (const r of currentStateVehRaw) {
+    if (typeof r?.id === 'number' && String(r?.state).trim() === 'En Operación') {
+      enOpIds.add(r.id);
+    }
+  }
+  console.log(`En Operación vehicles per /currentstatevehicles: ${enOpIds.size} / ${currentStateVehRaw.length}`);
+
   const isOrphan = (vid: number): boolean => {
+    // Presence in enOpIds is the only activo signal. If the vehicle
+    // isn't listed at all, treat it as orphan too — we can't vouch for
+    // its current state. Fall back to the legacy months-based rule
+    // only when we have zero data from /currentstatevehicles (e.g.
+    // the dump wasn't refreshed and the Set is empty).
+    if (enOpIds.size > 0) return !enOpIds.has(vid);
     const inf = inactiveById.get(vid);
     return !!inf && inf.months >= ORPHAN_MONTHS_THRESHOLD;
   };
-  const orphanCount = [...inactiveById.values()].filter((v) => v.months >= ORPHAN_MONTHS_THRESHOLD).length;
-  console.log(`Fuera de operación (>=${ORPHAN_MONTHS_THRESHOLD} months): ${orphanCount} / ${inactiveById.size}\n`);
+  const legacyOrphans = [...inactiveById.values()].filter((v) => v.months >= ORPHAN_MONTHS_THRESHOLD).length;
+  console.log(`Fuera de operación legacy (>=${ORPHAN_MONTHS_THRESHOLD} months): ${legacyOrphans} / ${inactiveById.size}\n`);
 
   // ── Verify Merquellantas exists ──────────────────────────────────────────
   const merque = await prisma.company.findUnique({
