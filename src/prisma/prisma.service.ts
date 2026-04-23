@@ -5,6 +5,7 @@ import { withDbRetry } from '../common/retry';
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
+  private keepaliveTimer: NodeJS.Timeout | null = null;
 
   async onModuleInit() {
     // Install retry wrappers BEFORE attempting the first connect — that
@@ -22,11 +23,33 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         'continuing in lazy-connect mode.',
       );
     }
+    this.startKeepalive();
   }
 
   async onModuleDestroy() {
+    if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
     await this.$disconnect();
     this.logger.log('Database connection closed');
+  }
+
+  /**
+   * AWS NLB kills any TCP connection idle for ~350s without notifying the
+   * client — the socket sits half-open in Prisma's pool until the next
+   * query tries to write, fails with ECONNRESET, and surfaces as P1001.
+   * A SELECT 1 every 120s keeps every pool connection warm and makes sure
+   * any that DO die are replaced before user traffic hits them.
+   */
+  private startKeepalive() {
+    const KEEPALIVE_MS = 120_000;
+    this.keepaliveTimer = setInterval(async () => {
+      try {
+        await this.$queryRawUnsafe('SELECT 1');
+      } catch (err) {
+        // Retry wrapper already logs transient P1001s; nothing else to do.
+        this.logger.debug(`keepalive: ${(err as any)?.code ?? 'err'}`);
+      }
+    }, KEEPALIVE_MS);
+    this.keepaliveTimer.unref?.();
   }
 
   /**

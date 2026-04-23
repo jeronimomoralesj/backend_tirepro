@@ -9,6 +9,7 @@ import { withDbRetry } from '../common/retry';
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('PrismaService(database)');
+  private keepaliveTimer: NodeJS.Timeout | null = null;
 
   async onModuleInit() {
     this.attachTransientRetry();
@@ -20,9 +21,16 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         'continuing in lazy-connect mode.',
       );
     }
+    // SELECT 1 every 120s keeps pool sockets warm — NLB kills idle TCP
+    // after ~350s, which otherwise leaves dead sockets in the pool.
+    this.keepaliveTimer = setInterval(async () => {
+      try { await this.$queryRawUnsafe('SELECT 1'); } catch {}
+    }, 120_000);
+    this.keepaliveTimer.unref?.();
   }
 
   async onModuleDestroy() {
+    if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
     await this.$disconnect();
   }
 
