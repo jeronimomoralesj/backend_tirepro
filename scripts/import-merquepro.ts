@@ -1080,12 +1080,16 @@ async function main() {
     console.log(`  resolved collisions: ${collisionFix} tires bumped to inventory`);
   }
 
-  // ── Post-pass 1: multi-vida reconstruction from inspections ───────────────
-  // Merquepro inspections carry the vida state at the time of inspection.
-  // Walking chronologically and detecting state transitions lets us build
-  // a real TireVidaSnapshot chain (nueva → reencauche1 → reencauche2 …)
-  // instead of only the latest vida. Idempotent: creates snapshots only
-  // where none exist for the same (tireId, vida).
+  // ── Post-pass 1: multi-vida transitions logged as TireEventos ─────────────
+  // Merquepro inspections carry vidaAlMomento per inspection. Walking
+  // them chronologically and detecting state changes lets us reconstruct
+  // the vida timeline (nueva → reencauche1 → reencauche2 → …). We log
+  // each transition as a TireEvento (type=reencauche or retiro) rather
+  // than writing tire_vida_snapshots — the snapshot table demands final-
+  // life metrics (mm desgastados, días, etc.) we can't derive from
+  // inspection-date transitions alone. TireEvento is the right fit for
+  // "here's what happened to this tire and when". Idempotent: skips
+  // transitions we've already logged for the same (tireId, to_vida).
   if (APPLY) {
     console.log('Reconstructing vida history from inspections…');
     const vidaPass = await prisma.$executeRawUnsafe(`
@@ -1095,50 +1099,46 @@ async function main() {
           i."tireId",
           i."fecha",
           i."vidaAlMomento" AS vida,
-          ROW_NUMBER() OVER (PARTITION BY i."tireId" ORDER BY i."fecha" ASC, i.id ASC) AS rn,
-          LAG(i."vidaAlMomento") OVER (PARTITION BY i."tireId" ORDER BY i."fecha" ASC, i.id ASC) AS prev_vida
+          LAG(i."vidaAlMomento") OVER (
+            PARTITION BY i."tireId" ORDER BY i."fecha" ASC, i.id ASC
+          ) AS prev_vida
         FROM inspecciones i
+        JOIN "Tire" t ON t.id = i."tireId"
+        WHERE t."externalSourceId" LIKE 'merquepro:%'
       ),
       transitions AS (
-        -- A transition is: the vida at this inspection differs from the
-        -- previous inspection AND the new vida is a reencauche level.
-        -- We don't create snapshots for the initial nueva life here;
-        -- that's handled by the existing tire_vida_snapshots seed.
         SELECT
           o."tireId",
-          o."vida" AS to_vida,
-          o."fecha" AS transition_date,
-          o.prev_vida AS from_vida
+          o.vida AS to_vida,
+          o."fecha" AS transition_date
         FROM ordered o
-        JOIN "Tire" t ON t.id = o."tireId"
-        WHERE t."externalSourceId" LIKE 'merquepro:%'
-          AND o.prev_vida IS NOT NULL
+        WHERE o.prev_vida IS NOT NULL
           AND o.prev_vida <> o.vida
           AND o.vida IN ('reencauche1','reencauche2','reencauche3','fin')
       )
-      INSERT INTO tire_vida_snapshots
-        (id, "tireId", "companyId", "vida", "fechaInicio", "fechaFin",
-         "motivoFin", "costoInicial", "profundidadInicialMm",
-         "createdAt", "updatedAt")
+      INSERT INTO tire_eventos (id, "tireId", tipo, fecha, notas, metadata, "createdAt")
       SELECT
         gen_random_uuid()::text,
         tr."tireId",
-        t."companyId",
-        tr.to_vida,
-        tr.transition_date,                             -- open the new life
-        NULL,                                            -- still open
-        CASE WHEN tr.to_vida = 'fin' THEN 'reencauche' ELSE NULL END,
-        0,
-        16,
-        NOW(), NOW()
+        CASE WHEN tr.to_vida = 'fin'
+             THEN 'retiro'::"TireEventType"
+             ELSE 'reencauche'::"TireEventType" END,
+        tr.transition_date,
+        tr.to_vida::text,
+        jsonb_build_object('source', 'merquepro_vida_reconstruction',
+                           'derived_from', 'inspection_state_transition'),
+        NOW()
       FROM transitions tr
-      JOIN "Tire" t ON t.id = tr."tireId"
       WHERE NOT EXISTS (
-        SELECT 1 FROM tire_vida_snapshots s
-        WHERE s."tireId" = tr."tireId" AND s."vida" = tr.to_vida
+        SELECT 1 FROM tire_eventos e
+        WHERE e."tireId" = tr."tireId"
+          AND e.notas    = tr.to_vida::text
+          AND e.tipo IN ('reencauche'::"TireEventType",
+                         'retiro'::"TireEventType",
+                         'montaje'::"TireEventType")
       )
     `);
-    console.log(`  vida snapshots added: ${vidaPass}`);
+    console.log(`  vida transitions logged: ${vidaPass}`);
   }
 
   if (APPLY && !SKIP_REFRESH) {
