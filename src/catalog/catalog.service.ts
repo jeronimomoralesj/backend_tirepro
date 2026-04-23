@@ -761,7 +761,8 @@ export class CatalogService {
     return { total, page, pageSize, items };
   }
 
-  /** Full SKU detail including every image this distributor has uploaded. */
+  /** Full SKU detail including every image + the single video this
+   *  distributor has uploaded (videos are 1-per-SKU by unique constraint). */
   async distGet(catalogId: string, companyId: string) {
     const sku = await this.prisma.tireMasterCatalog.findUnique({
       where: { id: catalogId },
@@ -770,10 +771,64 @@ export class CatalogService {
           where: { companyId },
           orderBy: { coverIndex: 'asc' },
         },
+        videos: {
+          where: { companyId },
+          take: 1,
+        },
       },
     });
     if (!sku) throw new NotFoundException('SKU not found');
-    return sku;
+    // Flatten the video array into a single field — the UI cares about
+    // 1-or-0, and returning an array invites confusion later if we ever
+    // relax the uniqueness.
+    const { videos, ...rest } = sku as typeof sku & { videos: Array<Record<string, unknown>> };
+    return { ...rest, video: videos?.[0] ?? null };
+  }
+
+  /** Replace (or create) the single video for this (dist, SKU) pair. If
+   *  one already exists we keep the row and overwrite its URL — simpler
+   *  than delete-then-create and avoids FK cascades. */
+  async setCatalogVideo(params: {
+    catalogId: string;
+    companyId: string;
+    url: string;
+    originalName?: string | null;
+    mimeType?: string | null;
+    sizeBytes?: number | null;
+  }) {
+    const sku = await this.prisma.tireMasterCatalog.findUnique({
+      where:  { id: params.catalogId },
+      select: { id: true },
+    });
+    if (!sku) throw new NotFoundException('SKU not found');
+
+    return this.prisma.catalogVideo.upsert({
+      where: { catalogId_companyId: { catalogId: params.catalogId, companyId: params.companyId } },
+      create: {
+        catalogId:    params.catalogId,
+        companyId:    params.companyId,
+        url:          params.url,
+        originalName: params.originalName ?? null,
+        mimeType:     params.mimeType ?? null,
+        sizeBytes:    params.sizeBytes ?? null,
+      },
+      update: {
+        url:          params.url,
+        originalName: params.originalName ?? null,
+        mimeType:     params.mimeType ?? null,
+        sizeBytes:    params.sizeBytes ?? null,
+      },
+    });
+  }
+
+  async deleteCatalogVideo(catalogId: string, companyId: string) {
+    const existing = await this.prisma.catalogVideo.findUnique({
+      where: { catalogId_companyId: { catalogId, companyId } },
+      select: { id: true },
+    });
+    if (!existing) throw new NotFoundException('Video no encontrado');
+    await this.prisma.catalogVideo.delete({ where: { id: existing.id } });
+    return { ok: true };
   }
 
   /** Persist a new image row after the S3 upload already succeeded. */

@@ -87,6 +87,64 @@ export class S3Service {
     return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
   }
 
+  private validateVideo(buffer: Buffer, mime: string | undefined): void {
+    // 50 MB cap — enough for a 1-2 min instructional clip at reasonable
+    // quality, small enough that S3 upload fits in one request and the
+    // dist's customer can actually download it over mobile data.
+    if (buffer.length > 50 * 1024 * 1024) {
+      throw new BadRequestException('El video es demasiado grande. Máximo 50 MB.');
+    }
+    const allowed = new Set([
+      'video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska',
+    ]);
+    if (!mime || !allowed.has(mime.toLowerCase())) {
+      throw new BadRequestException('Formato de video no soportado. Usa MP4, MOV o WebM.');
+    }
+  }
+
+  async uploadCatalogVideo(
+    buffer: Buffer,
+    companyId: string,
+    catalogId: string,
+    contentType: string,
+  ): Promise<string> {
+    this.validateVideo(buffer, contentType);
+    const ext = (contentType.split('/')[1] ?? 'mp4').replace('quicktime', 'mov').replace('x-matroska', 'mkv');
+    const key = `catalog-videos/${companyId}/${catalogId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+    try {
+      await this.s3.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: buffer,
+          ContentType: contentType,
+        }),
+      );
+    } catch (err) {
+      this.logger.error(`S3 catalog video upload failed`, err);
+      throw new InternalServerErrorException('Failed to upload video');
+    }
+
+    return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
+  }
+
+  /**
+   * Verify a URL belongs to our S3 bucket. Used by the asset-proxy route
+   * so a signed-in user can fetch their catalog uploads via the API
+   * (side-stepping browser CORS) without the endpoint becoming an SSRF.
+   */
+  isOwnBucketUrl(url: string): boolean {
+    try {
+      const u = new URL(url);
+      return u.hostname === `${this.bucket}.s3.${this.region}.amazonaws.com`
+        || u.hostname === `s3.${this.region}.amazonaws.com`
+        || u.hostname === `${this.bucket}.s3.amazonaws.com`;
+    } catch {
+      return false;
+    }
+  }
+
   async uploadCatalogImage(
     buffer: Buffer,
     companyId: string,

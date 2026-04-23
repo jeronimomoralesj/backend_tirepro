@@ -321,6 +321,7 @@ model Company {
   // Catalog — per-distributor SKU photos + per-download events
   catalogImages    CatalogImage[]
   catalogDownloads CatalogDownload[]
+  catalogVideos    CatalogVideo[]
 
   @@index([plan])
 }
@@ -1468,6 +1469,7 @@ model TireMasterCatalog {
 
   listings  DistributorListing[]
   images    CatalogImage[]
+  videos    CatalogVideo[]
   downloads CatalogDownload[]
 
   @@index([marca, dimension])
@@ -1536,6 +1538,29 @@ model CatalogDownload {
   @@index([companyId, catalogId])
   @@index([userId, createdAt])
   @@map("catalog_downloads")
+}
+
+// One instructional / product video per (catalog SKU, distributor). Used as
+// an attachment the salesperson sends alongside the PDF — never embedded
+// in the PDF itself. Kept on a separate table (vs. mixing with
+// catalog_images) so size limits, MIME whitelist, and the "one per combo"
+// uniqueness can be enforced at the schema level.
+model CatalogVideo {
+  id          String   @id @default(uuid())
+  catalogId   String
+  companyId   String   // owning distributor — same tenant scoping as images
+  url         String
+  originalName String?
+  mimeType    String?
+  sizeBytes   Int?
+  createdAt   DateTime @default(now())
+
+  catalog TireMasterCatalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+  company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([catalogId, companyId])   // one video max per dist/SKU pair
+  @@index([companyId])
+  @@map("catalog_videos")
 }
 
 // =============================================================================

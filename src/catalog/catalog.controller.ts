@@ -1,6 +1,7 @@
 import {
   Controller, Get, Post, Put, Delete, Query, Body, Param,
-  UseGuards, UseInterceptors, UploadedFile, Req, ForbiddenException, BadRequestException,
+  UseGuards, UseInterceptors, UploadedFile, Req, Res,
+  ForbiddenException, BadRequestException, NotFoundException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { CatalogService } from './catalog.service';
@@ -9,6 +10,9 @@ import { AdminPasswordGuard } from '../auth/guards/admin-password.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { S3Service } from '../companies/s3.service';
+import type { Response } from 'express';
+import { request as httpsRequest } from 'node:https';
+import { URL as NodeURL } from 'node:url';
 
 @Controller('catalog')
 export class CatalogController {
@@ -278,6 +282,82 @@ export class CatalogController {
   async distDeleteImage(@Req() req: any, @Param('imageId') imageId: string) {
     const { companyId } = await this.requireDistributor(req);
     return this.catalogService.deleteCatalogImage(imageId, companyId);
+  }
+
+  // ─── Video (one per SKU per dist) ─────────────────────────────────────────
+
+  @Post('dist/:id/video')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('video'))
+  async distUploadVideo(
+    @Req() req: any,
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    const { companyId } = await this.requireDistributor(req);
+    if (!file) throw new BadRequestException('video file required');
+    const url = await this.s3.uploadCatalogVideo(file.buffer, companyId, id, file.mimetype);
+    return this.catalogService.setCatalogVideo({
+      catalogId:    id,
+      companyId,
+      url,
+      originalName: file.originalname ?? null,
+      mimeType:     file.mimetype ?? null,
+      sizeBytes:    file.size ?? null,
+    });
+  }
+
+  @Delete('dist/:id/video')
+  @UseGuards(JwtAuthGuard)
+  async distDeleteVideo(@Req() req: any, @Param('id') id: string) {
+    const { companyId } = await this.requireDistributor(req);
+    return this.catalogService.deleteCatalogVideo(id, companyId);
+  }
+
+  // ─── Asset proxy ──────────────────────────────────────────────────────────
+  // Streams an S3 object back to the caller. Exists so the frontend PDF
+  // generator can embed catalog images without relying on the bucket's
+  // CORS config — every fetch() goes through our auth-aware API origin
+  // instead of direct S3. Hardened: only URLs pointing at our own bucket
+  // are proxied, so this isn't a generic SSRF hole.
+
+  @Get('dist/asset-proxy')
+  @UseGuards(JwtAuthGuard)
+  async distAssetProxy(
+    @Req() req: any,
+    @Query('url') url: string,
+    @Res() res: Response,
+  ) {
+    await this.requireDistributor(req);
+    if (!url || !this.s3.isOwnBucketUrl(url)) {
+      throw new BadRequestException('URL inválida');
+    }
+    const u = new NodeURL(url);
+    await new Promise<void>((resolve, reject) => {
+      const upstream = httpsRequest(
+        { host: u.host, path: u.pathname + u.search, method: 'GET' },
+        (r) => {
+          if (!r.statusCode || r.statusCode >= 400) {
+            res.status(r.statusCode ?? 502).send('');
+            r.resume();
+            return resolve();
+          }
+          const contentType = r.headers['content-type'];
+          if (contentType) res.setHeader('Content-Type', contentType);
+          const contentLength = r.headers['content-length'];
+          if (contentLength) res.setHeader('Content-Length', contentLength);
+          // Small browser-side cache — the PDF flow re-fetches per click
+          // and catalog images don't change after upload, so letting the
+          // browser cache for a few minutes saves round-trips.
+          res.setHeader('Cache-Control', 'private, max-age=300');
+          r.pipe(res);
+          r.on('end', () => resolve());
+          r.on('error', reject);
+        },
+      );
+      upstream.on('error', reject);
+      upstream.end();
+    });
   }
 
   @Post('dist/:id/track-download')
