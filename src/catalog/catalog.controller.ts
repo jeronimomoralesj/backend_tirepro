@@ -1,7 +1,7 @@
 import {
   Controller, Get, Post, Put, Delete, Query, Body, Param,
   UseGuards, UseInterceptors, UploadedFile, Req, Res,
-  ForbiddenException, BadRequestException, NotFoundException,
+  ForbiddenException, BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { CatalogService } from './catalog.service';
@@ -11,8 +11,6 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { S3Service } from '../companies/s3.service';
 import type { Response } from 'express';
-import { request as httpsRequest } from 'node:https';
-import { URL as NodeURL } from 'node:url';
 
 @Controller('catalog')
 export class CatalogController {
@@ -256,6 +254,44 @@ export class CatalogController {
     });
   }
 
+  // ─── Asset proxy ──────────────────────────────────────────────────────────
+  // Streams an S3 object back to the caller. Exists so the frontend PDF
+  // generator can embed catalog images without relying on the bucket's
+  // CORS config — every fetch() goes through our auth-aware API origin
+  // instead of direct S3. Hardened: only URLs pointing at our own bucket
+  // are proxied, so this isn't a generic SSRF hole.
+  //
+  // MUST be declared before `dist/:id` — Nest's underlying router matches
+  // in declaration order, and `dist/asset-proxy` would otherwise be eaten
+  // by the :id handler with id="asset-proxy" (→ 404, PDF images fail).
+  @Get('dist/asset-proxy')
+  @UseGuards(JwtAuthGuard)
+  async distAssetProxy(
+    @Req() req: any,
+    @Query('url') url: string,
+    @Res() res: Response,
+  ) {
+    await this.requireDistributor(req);
+    if (!url || !this.s3.isOwnBucketUrl(url)) {
+      throw new BadRequestException('URL inválida');
+    }
+    // Buffered fetch — simpler than streaming https.request through
+    // Nest's @Res, and the objects we proxy are single-digit-MB images
+    // so loading them into memory is fine.
+    const upstream = await fetch(url);
+    if (!upstream.ok) {
+      res.status(upstream.status === 404 ? 404 : 502).send('');
+      return;
+    }
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'application/octet-stream');
+    res.setHeader('Content-Length', String(buf.length));
+    // Short browser-side cache — the PDF flow re-fetches per click and
+    // catalog images don't change after upload.
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(buf);
+  }
+
   @Get('dist/:id')
   @UseGuards(JwtAuthGuard)
   async distGet(@Req() req: any, @Param('id') id: string) {
@@ -312,52 +348,6 @@ export class CatalogController {
   async distDeleteVideo(@Req() req: any, @Param('id') id: string) {
     const { companyId } = await this.requireDistributor(req);
     return this.catalogService.deleteCatalogVideo(id, companyId);
-  }
-
-  // ─── Asset proxy ──────────────────────────────────────────────────────────
-  // Streams an S3 object back to the caller. Exists so the frontend PDF
-  // generator can embed catalog images without relying on the bucket's
-  // CORS config — every fetch() goes through our auth-aware API origin
-  // instead of direct S3. Hardened: only URLs pointing at our own bucket
-  // are proxied, so this isn't a generic SSRF hole.
-
-  @Get('dist/asset-proxy')
-  @UseGuards(JwtAuthGuard)
-  async distAssetProxy(
-    @Req() req: any,
-    @Query('url') url: string,
-    @Res() res: Response,
-  ) {
-    await this.requireDistributor(req);
-    if (!url || !this.s3.isOwnBucketUrl(url)) {
-      throw new BadRequestException('URL inválida');
-    }
-    const u = new NodeURL(url);
-    await new Promise<void>((resolve, reject) => {
-      const upstream = httpsRequest(
-        { host: u.host, path: u.pathname + u.search, method: 'GET' },
-        (r) => {
-          if (!r.statusCode || r.statusCode >= 400) {
-            res.status(r.statusCode ?? 502).send('');
-            r.resume();
-            return resolve();
-          }
-          const contentType = r.headers['content-type'];
-          if (contentType) res.setHeader('Content-Type', contentType);
-          const contentLength = r.headers['content-length'];
-          if (contentLength) res.setHeader('Content-Length', contentLength);
-          // Small browser-side cache — the PDF flow re-fetches per click
-          // and catalog images don't change after upload, so letting the
-          // browser cache for a few minutes saves round-trips.
-          res.setHeader('Cache-Control', 'private, max-age=300');
-          r.pipe(res);
-          r.on('end', () => resolve());
-          r.on('error', reject);
-        },
-      );
-      upstream.on('error', reject);
-      upstream.end();
-    });
   }
 
   @Post('dist/:id/track-download')
