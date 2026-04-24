@@ -297,24 +297,41 @@ async function main() {
   // and wrongly orphaned ones that had legitimate multi-month gaps.
   const currentStateVehRaw = loadAll('currentstateveh_p');
   const enOpIds = new Set<number>();
+  // Plate-keyed "active" index — a physical truck is En Operación if ANY
+  // of its historical vehicleIds is. Merquellantas reuses vehicleIds (one
+  // plate → many ids over time), so id-based orphan logic wrongly marks
+  // older ids for the same still-active truck as fuera_de_operacion. Plate
+  // is the stable identity we should key on.
+  const enOpPlates = new Set<string>();
   // Also capture per-vehicle currentMileage — it's the only mileage source
   // for ~1.5k vehicles that have never shown up in /vehicles transactions.
   const currentMileageByVehId = new Map<number, number>();
   for (const r of currentStateVehRaw) {
     if (typeof r?.id !== 'number') continue;
-    if (String(r?.state).trim() === 'En Operación') enOpIds.add(r.id);
+    if (String(r?.state).trim() === 'En Operación') {
+      enOpIds.add(r.id);
+      const pl = cleanPlate(r?.plate);
+      if (pl) enOpPlates.add(pl.toLowerCase());
+    }
     const km = toNum(r?.currentMileage);
     if (km > 0) currentMileageByVehId.set(r.id, km);
   }
   console.log(`En Operación vehicles per /currentstatevehicles: ${enOpIds.size} / ${currentStateVehRaw.length}`);
+  console.log(`  En Operación distinct plates: ${enOpPlates.size}`);
   console.log(`  currentMileage populated: ${currentMileageByVehId.size}`);
 
-  const isOrphan = (vid: number): boolean => {
-    // Presence in enOpIds is the only activo signal. If the vehicle
-    // isn't listed at all, treat it as orphan too — we can't vouch for
-    // its current state. Fall back to the legacy months-based rule
-    // only when we have zero data from /currentstatevehicles (e.g.
-    // the dump wasn't refreshed and the Set is empty).
+  const isOrphan = (vid: number, plate?: string | null): boolean => {
+    // Key decision order:
+    //   1. If the plate itself is En Operación (any vehicleId for this
+    //      plate is active) → NOT orphan. This catches merquepro's id-reuse
+    //      pattern where an older id gets filtered out but the truck is
+    //      still running under a fresher id.
+    //   2. If this specific vid is En Operación → NOT orphan.
+    //   3. If enOpIds has data but this one isn't in it (and plate isn't
+    //      either) → orphan.
+    //   4. If we have zero data from currentstatevehicles → legacy
+    //      months-based fallback.
+    if (enOpPlates.size > 0 && plate && enOpPlates.has(plate.toLowerCase())) return false;
     if (enOpIds.size > 0) return !enOpIds.has(vid);
     const inf = inactiveById.get(vid);
     return !!inf && inf.months >= ORPHAN_MONTHS_THRESHOLD;
@@ -581,7 +598,7 @@ async function main() {
     const configuracion = mapConfiguracionFromType(meta.vehicleType);
     const tipovhc       = normalizeTipoVhc(meta.vehicleType);
     const inactive      = inactiveById.get(meta.vehicleId);
-    const orphan        = isOrphan(meta.vehicleId);
+    const orphan        = isOrphan(meta.vehicleId, meta.plate);
     // Orphans don't link to any fleet; every other field is preserved.
     const companyId: string | null = orphan ? null : clientCompanyId;
 
@@ -698,7 +715,7 @@ async function main() {
   // the tires that belong to them in the next section.
   const orphanPlateKeys = new Set<string>();
   for (const meta of vehMetas) {
-    if (!isOrphan(meta.vehicleId)) continue;
+    if (!isOrphan(meta.vehicleId, meta.plate)) continue;
     const cid = clientToCompanyId.get(meta.client);
     if (!cid || !meta.plate) continue;
     orphanPlateKeys.add(`${cid}|${meta.plate.toLowerCase()}`);
