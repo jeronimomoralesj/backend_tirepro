@@ -982,9 +982,34 @@ export class CatalogService {
     }
   }
 
-  /** Replace (or create) the single video for this (dist, SKU) pair. If
-   *  one already exists we keep the row and overwrite its URL — simpler
-   *  than delete-then-create and avoids FK cascades. */
+  /** Per-(dist, SKU) media caps. 5 was picked as a product-sheet norm —
+   *  a hero + 3-4 angle shots covers most catalog entries; past that the
+   *  spec sheet PDF starts throwing thumbnails past the page margin.
+   *  Videos are capped at 1 (the model's unique key enforces it too). */
+  static readonly MAX_IMAGES_PER_SKU = 5;
+  static readonly MAX_VIDEOS_PER_SKU = 1;
+
+  /** Current image count for a (dist, SKU). Used by the controller to
+   *  gate the S3 upload before we waste bandwidth on a rejected file. */
+  async countCatalogImages(catalogId: string, companyId: string): Promise<number> {
+    return this.prisma.catalogImage.count({
+      where: { catalogId, companyId },
+    });
+  }
+
+  /** Whether this (dist, SKU) already has a video attached. */
+  async hasCatalogVideo(catalogId: string, companyId: string): Promise<boolean> {
+    const existing = await this.prisma.catalogVideo.findUnique({
+      where:  { catalogId_companyId: { catalogId, companyId } },
+      select: { id: true },
+    });
+    return !!existing;
+  }
+
+  /** Create the single video for this (dist, SKU) pair. Throws if one
+   *  already exists — the dist must explicitly delete the old video
+   *  before uploading a new one so a careless click can't silently
+   *  overwrite a product demo they'd already shared with clients. */
   async setCatalogVideo(params: {
     catalogId: string;
     companyId: string;
@@ -1000,17 +1025,20 @@ export class CatalogService {
     if (!sku) throw new NotFoundException('SKU not found');
     await this.requireSubscription(params.catalogId, params.companyId);
 
-    return this.prisma.catalogVideo.upsert({
-      where: { catalogId_companyId: { catalogId: params.catalogId, companyId: params.companyId } },
-      create: {
+    // Belt-and-suspenders: the controller already short-circuits this
+    // path with a friendly 400 before hitting S3. Keep the check here so
+    // direct service callers (tests, scripts, future endpoints) can't
+    // bypass the cap.
+    if (await this.hasCatalogVideo(params.catalogId, params.companyId)) {
+      throw new BadRequestException(
+        'Ya hay un video cargado. Elimínalo antes de subir uno nuevo.',
+      );
+    }
+
+    return this.prisma.catalogVideo.create({
+      data: {
         catalogId:    params.catalogId,
         companyId:    params.companyId,
-        url:          params.url,
-        originalName: params.originalName ?? null,
-        mimeType:     params.mimeType ?? null,
-        sizeBytes:    params.sizeBytes ?? null,
-      },
-      update: {
         url:          params.url,
         originalName: params.originalName ?? null,
         mimeType:     params.mimeType ?? null,
@@ -1041,6 +1069,17 @@ export class CatalogService {
     });
     if (!sku) throw new NotFoundException('SKU not found');
     await this.requireSubscription(params.catalogId, params.companyId);
+
+    // Enforce the 5-image cap at the service layer too. The controller
+    // pre-checks this before hitting S3 so the user sees a clean 400
+    // without us uploading an orphan object; this is the belt to that
+    // pre-check's suspenders.
+    const count = await this.countCatalogImages(params.catalogId, params.companyId);
+    if (count >= CatalogService.MAX_IMAGES_PER_SKU) {
+      throw new BadRequestException(
+        `Máximo ${CatalogService.MAX_IMAGES_PER_SKU} imágenes por producto. Elimina una antes de subir otra.`,
+      );
+    }
 
     // New image lands at the end of the gallery.
     const last = await this.prisma.catalogImage.findFirst({

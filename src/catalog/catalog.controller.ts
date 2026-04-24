@@ -497,6 +497,14 @@ export class CatalogController {
   ) {
     const { companyId } = await this.requireDistributor(req);
     if (!file) throw new BadRequestException('image file required');
+    // Check the per-SKU cap BEFORE touching S3 — otherwise a rejected
+    // 6th upload would leave an orphaned object in the bucket.
+    const count = await this.catalogService.countCatalogImages(id, companyId);
+    if (count >= CatalogService.MAX_IMAGES_PER_SKU) {
+      throw new BadRequestException(
+        `Máximo ${CatalogService.MAX_IMAGES_PER_SKU} imágenes por producto. Elimina una antes de subir otra.`,
+      );
+    }
     const url = await this.s3.uploadCatalogImage(file.buffer, companyId, id, file.mimetype);
     return this.catalogService.addCatalogImage({ catalogId: id, companyId, url });
   }
@@ -520,6 +528,14 @@ export class CatalogController {
   ) {
     const { companyId } = await this.requireDistributor(req);
     if (!file) throw new BadRequestException('video file required');
+    // One video max per (dist, SKU). Check BEFORE S3 so a redundant
+    // upload never leaves an orphan. The dist must delete the existing
+    // video first — explicit beats accidental overwrite for a 50MB asset.
+    if (await this.catalogService.hasCatalogVideo(id, companyId)) {
+      throw new BadRequestException(
+        'Ya hay un video cargado. Elimínalo antes de subir uno nuevo.',
+      );
+    }
     const url = await this.s3.uploadCatalogVideo(file.buffer, companyId, id, file.mimetype);
     return this.catalogService.setCatalogVideo({
       catalogId:    id,
