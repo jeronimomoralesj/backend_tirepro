@@ -346,18 +346,38 @@ export class CatalogController {
       pctPavimento?: number;
       terreno?: string;
       categoria?: 'nueva' | 'reencauche';
+      indiceCarga?: string;
+      indiceVelocidad?: string;
+      minRtdMm?: number;
+      minPsiRecomendado?: number;
+      cinturones?: string;
+      pr?: string;
+      construccion?: string;
+      segmento?: string;
+      tipo?: string;
+      tipoBanda?: string;
     } = {},
   ) {
     const { companyId } = await this.requireDistributor(req);
     return this.catalogService.distRecommend({
       companyId,
-      dimension:     body.dimension,
-      eje:           body.eje,
-      reencauchable: body.reencauchable,
-      tier:          body.tier,
-      pctPavimento:  typeof body.pctPavimento === 'number' ? body.pctPavimento : undefined,
-      terreno:       body.terreno,
-      categoria:     body.categoria,
+      dimension:         body.dimension,
+      eje:               body.eje,
+      reencauchable:     body.reencauchable,
+      tier:              body.tier,
+      pctPavimento:      typeof body.pctPavimento === 'number' ? body.pctPavimento : undefined,
+      terreno:           body.terreno,
+      categoria:         body.categoria,
+      indiceCarga:       body.indiceCarga,
+      indiceVelocidad:   body.indiceVelocidad,
+      minRtdMm:          typeof body.minRtdMm === 'number' ? body.minRtdMm : undefined,
+      minPsiRecomendado: typeof body.minPsiRecomendado === 'number' ? body.minPsiRecomendado : undefined,
+      cinturones:        body.cinturones,
+      pr:                body.pr,
+      construccion:      body.construccion,
+      segmento:          body.segmento,
+      tipo:              body.tipo,
+      tipoBanda:         body.tipoBanda,
     });
   }
 

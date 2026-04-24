@@ -1237,13 +1237,25 @@ export class CatalogService {
    */
   async distRecommend(params: {
     companyId: string;
+    // Hard filters (narrow the candidate set)
     dimension?: string;
     eje?: string;
     reencauchable?: boolean;
+    categoria?: 'nueva' | 'reencauche';
+    indiceCarga?: string;
+    indiceVelocidad?: string;
+    minRtdMm?: number;
+    minPsiRecomendado?: number;
+    cinturones?: string;
+    pr?: string;
+    construccion?: string;
+    segmento?: string;
+    tipo?: string;
+    tipoBanda?: string;
+    // Soft (contribute to the fit score instead of filtering)
     tier?: 'premium' | 'mid' | 'value';
     pctPavimento?: number;
     terreno?: string;
-    categoria?: 'nueva' | 'reencauche';
   }) {
     const where: Prisma.TireMasterCatalogWhereInput = {
       subscriptions: { some: { companyId: params.companyId } },
@@ -1252,6 +1264,20 @@ export class CatalogService {
     if (params.eje)         where.ejeTirePro = params.eje as EjeType;
     if (params.categoria)   where.categoria  = { equals: params.categoria, mode: 'insensitive' };
     if (params.reencauchable !== undefined) where.reencauchable = params.reencauchable;
+
+    // Additional hard filters — every one is optional; specifying it
+    // just narrows further. Numeric "min*" fields use gte so "at least
+    // 16mm of depth" makes sense from a sales-pitch perspective.
+    if (params.indiceCarga)     where.indiceCarga     = { contains: params.indiceCarga,     mode: 'insensitive' };
+    if (params.indiceVelocidad) where.indiceVelocidad = { contains: params.indiceVelocidad, mode: 'insensitive' };
+    if (params.cinturones)      where.cinturones      = { contains: params.cinturones,      mode: 'insensitive' };
+    if (params.pr)              where.pr              = { contains: params.pr,              mode: 'insensitive' };
+    if (params.construccion)    where.construccion    = { contains: params.construccion,    mode: 'insensitive' };
+    if (params.segmento)        where.segmento        = { contains: params.segmento,        mode: 'insensitive' };
+    if (params.tipo)            where.tipo            = { contains: params.tipo,            mode: 'insensitive' };
+    if (params.tipoBanda)       where.tipoBanda       = { contains: params.tipoBanda,       mode: 'insensitive' };
+    if (params.minRtdMm !== undefined)          where.rtdMm          = { gte: params.minRtdMm };
+    if (params.minPsiRecomendado !== undefined) where.psiRecomendado = { gte: params.minPsiRecomendado };
 
     // Cap the candidate set. Most distributors have < 1 k subscribed
     // SKUs; 200 is comfortably enough to find the top 10 matches and
