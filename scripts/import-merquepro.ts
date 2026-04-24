@@ -1526,6 +1526,29 @@ async function main() {
          AND (i.cpk IS NULL OR i.cpk <> t."currentCpk")
     `);
     console.log(`  (D) mirrored currentCpk onto inspecciones: ${d}`);
+
+    // (E) Compute cpkProyectado from current CPK + wear fraction.
+    // cpkProyectado = currentCpk × (consumedDepth / originalDepth) — what
+    // the CPK converges to if the tire keeps wearing at the current rate
+    // until zero depth. The UI shows this in a separate "CPK Proy." column.
+    const e = await prisma.$executeRawUnsafe(`
+      UPDATE inspecciones i
+         SET "cpkProyectado" = ROUND(
+           (t."currentCpk" * GREATEST(
+             (t."profundidadInicial" - t."currentProfundidad") / NULLIF(t."profundidadInicial", 0),
+             0
+           ))::numeric,
+           2
+         )
+        FROM "Tire" t
+       WHERE i."tireId" = t.id
+         AND t."externalSourceId" LIKE 'merquepro:%'
+         AND t."currentCpk" IS NOT NULL
+         AND t."profundidadInicial" > 0
+         AND t."currentProfundidad" IS NOT NULL
+         AND t."currentProfundidad" < t."profundidadInicial"
+    `);
+    console.log(`  (E) computed cpkProyectado on inspecciones: ${e}`);
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────
