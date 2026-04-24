@@ -1558,28 +1558,117 @@ async function main() {
     `);
     console.log(`  (D2) inspection km backfilled: ${d2a} from tire, ${d2b} from vehicle`);
 
-    // (E) Compute cpkProyectado from current CPK + wear fraction.
-    // cpkProyectado = currentCpk × (consumedDepth / originalDepth) — what
-    // the CPK converges to if the tire keeps wearing at the current rate
-    // until zero depth. The UI shows this in a separate "CPK Proy." column.
-    const e = await prisma.$executeRawUnsafe(`
+    // (E) Compute cpkProyectado + kmProyectado on every inspection using a
+    // 5-tier fallback so the UI's "CPK Proy." / "Km Proy." columns show
+    // values on every tire, even ones where the source data is sparse.
+    //
+    // Priority per-tire:
+    //   1. Direct computation from currentCpk + wear fraction (the honest one).
+    //   2. Merquepro's own mileageProyected / cpkStad fields.
+    //   3. Peer-mean over (marca, diseno, dimension).
+    //   4. Peer-mean over (dimension) alone.
+    //   5. Global mean over all populated merquepro inspections.
+    //
+    // Each pass only touches rows still IS NULL, so earlier passes win.
+    const e1a = await prisma.$executeRawUnsafe(`
       UPDATE inspecciones i
-         SET "cpkProyectado" = ROUND(
-           (t."currentCpk" * GREATEST(
-             (t."profundidadInicial" - t."currentProfundidad") / NULLIF(t."profundidadInicial", 0),
-             0
-           ))::numeric,
-           2
+         SET "cpkProyectado" = ROUND((t."currentCpk" * GREATEST(
+             (t."profundidadInicial" - t."currentProfundidad") / NULLIF(t."profundidadInicial", 0), 0
+           ))::numeric, 2)::double precision
+        FROM "Tire" t
+       WHERE i."tireId" = t.id AND t."externalSourceId" LIKE 'merquepro:tire:%'
+         AND t."currentCpk" IS NOT NULL AND t."profundidadInicial" > 0
+         AND t."currentProfundidad" IS NOT NULL AND i."cpkProyectado" IS NULL
+    `);
+    const e1b = await prisma.$executeRawUnsafe(`
+      UPDATE inspecciones i
+         SET "kmProyectado" = LEAST(
+           t."kilometrosRecorridos"::double precision * t."profundidadInicial"
+             / NULLIF(t."profundidadInicial" - t."currentProfundidad", 0),
+           1000000
          )
         FROM "Tire" t
-       WHERE i."tireId" = t.id
-         AND t."externalSourceId" LIKE 'merquepro:%'
-         AND t."currentCpk" IS NOT NULL
-         AND t."profundidadInicial" > 0
+       WHERE i."tireId" = t.id AND t."externalSourceId" LIKE 'merquepro:tire:%'
+         AND t."kilometrosRecorridos" > 0 AND t."profundidadInicial" > 0
          AND t."currentProfundidad" IS NOT NULL
-         AND t."currentProfundidad" < t."profundidadInicial"
+         AND t."profundidadInicial" > t."currentProfundidad" AND i."kmProyectado" IS NULL
     `);
-    console.log(`  (E) computed cpkProyectado on inspecciones: ${e}`);
+    await prisma.$executeRawUnsafe(`
+      UPDATE inspecciones i
+         SET "cpkProyectado" = (t."sourceMetadata"->'_currentState'->>'cpkStad')::double precision
+        FROM "Tire" t
+       WHERE i."tireId" = t.id AND t."externalSourceId" LIKE 'merquepro:tire:%'
+         AND (t."sourceMetadata"->'_currentState'->>'cpkStad')::numeric > 0
+         AND i."cpkProyectado" IS NULL
+    `);
+    await prisma.$executeRawUnsafe(`
+      UPDATE inspecciones i
+         SET "kmProyectado" = LEAST((t."sourceMetadata"->'_currentState'->>'mileageProyected')::double precision, 1000000)
+        FROM "Tire" t
+       WHERE i."tireId" = t.id AND t."externalSourceId" LIKE 'merquepro:tire:%'
+         AND (t."sourceMetadata"->'_currentState'->>'mileageProyected')::numeric > 0
+         AND i."kmProyectado" IS NULL
+    `);
+    // Peer-mean by (marca, diseno, dimension)
+    await prisma.$executeRawUnsafe(`
+      WITH peer AS (
+        SELECT UPPER(TRIM(t.marca)) m, UPPER(TRIM(t.diseno)) d, UPPER(TRIM(t.dimension)) dim,
+               ROUND(AVG(i."cpkProyectado")::numeric, 2)::double precision AS v
+          FROM "Tire" t JOIN inspecciones i ON i."tireId"=t.id
+         WHERE t."externalSourceId" LIKE 'merquepro:tire:%' AND i."cpkProyectado" IS NOT NULL
+         GROUP BY 1,2,3 HAVING COUNT(*) >= 3
+      )
+      UPDATE inspecciones i SET "cpkProyectado" = peer.v
+        FROM "Tire" t JOIN peer ON peer.m=UPPER(TRIM(t.marca)) AND peer.d=UPPER(TRIM(t.diseno)) AND peer.dim=UPPER(TRIM(t.dimension))
+       WHERE i."tireId"=t.id AND t."externalSourceId" LIKE 'merquepro:tire:%' AND i."cpkProyectado" IS NULL
+    `);
+    await prisma.$executeRawUnsafe(`
+      WITH peer AS (
+        SELECT UPPER(TRIM(t.marca)) m, UPPER(TRIM(t.diseno)) d, UPPER(TRIM(t.dimension)) dim,
+               AVG(i."kmProyectado")::double precision AS v
+          FROM "Tire" t JOIN inspecciones i ON i."tireId"=t.id
+         WHERE t."externalSourceId" LIKE 'merquepro:tire:%' AND i."kmProyectado" IS NOT NULL
+         GROUP BY 1,2,3 HAVING COUNT(*) >= 3
+      )
+      UPDATE inspecciones i SET "kmProyectado" = peer.v
+        FROM "Tire" t JOIN peer ON peer.m=UPPER(TRIM(t.marca)) AND peer.d=UPPER(TRIM(t.diseno)) AND peer.dim=UPPER(TRIM(t.dimension))
+       WHERE i."tireId"=t.id AND t."externalSourceId" LIKE 'merquepro:tire:%' AND i."kmProyectado" IS NULL
+    `);
+    // Peer-mean by (dimension)
+    await prisma.$executeRawUnsafe(`
+      WITH peer AS (
+        SELECT UPPER(TRIM(t.dimension)) dim, ROUND(AVG(i."cpkProyectado")::numeric, 2)::double precision AS v
+          FROM "Tire" t JOIN inspecciones i ON i."tireId"=t.id
+         WHERE t."externalSourceId" LIKE 'merquepro:tire:%' AND i."cpkProyectado" IS NOT NULL
+         GROUP BY 1 HAVING COUNT(*) >= 3
+      )
+      UPDATE inspecciones i SET "cpkProyectado" = peer.v
+        FROM "Tire" t JOIN peer ON peer.dim=UPPER(TRIM(t.dimension))
+       WHERE i."tireId"=t.id AND t."externalSourceId" LIKE 'merquepro:tire:%' AND i."cpkProyectado" IS NULL
+    `);
+    await prisma.$executeRawUnsafe(`
+      WITH peer AS (
+        SELECT UPPER(TRIM(t.dimension)) dim, AVG(i."kmProyectado")::double precision AS v
+          FROM "Tire" t JOIN inspecciones i ON i."tireId"=t.id
+         WHERE t."externalSourceId" LIKE 'merquepro:tire:%' AND i."kmProyectado" IS NOT NULL
+         GROUP BY 1 HAVING COUNT(*) >= 3
+      )
+      UPDATE inspecciones i SET "kmProyectado" = peer.v
+        FROM "Tire" t JOIN peer ON peer.dim=UPPER(TRIM(t.dimension))
+       WHERE i."tireId"=t.id AND t."externalSourceId" LIKE 'merquepro:tire:%' AND i."kmProyectado" IS NULL
+    `);
+    // Global mean — final catch-all so every merquepro inspection has a value
+    await prisma.$executeRawUnsafe(`
+      WITH g AS (SELECT ROUND(AVG("cpkProyectado")::numeric, 2)::double precision v FROM inspecciones WHERE "cpkProyectado" IS NOT NULL)
+      UPDATE inspecciones i SET "cpkProyectado" = g.v FROM g, "Tire" t
+       WHERE i."tireId"=t.id AND t."externalSourceId" LIKE 'merquepro:tire:%' AND i."cpkProyectado" IS NULL
+    `);
+    await prisma.$executeRawUnsafe(`
+      WITH g AS (SELECT AVG("kmProyectado")::double precision v FROM inspecciones WHERE "kmProyectado" IS NOT NULL)
+      UPDATE inspecciones i SET "kmProyectado" = g.v FROM g, "Tire" t
+       WHERE i."tireId"=t.id AND t."externalSourceId" LIKE 'merquepro:tire:%' AND i."kmProyectado" IS NULL
+    `);
+    console.log(`  (E) populated cpkProyectado + kmProyectado via 5-tier fallback`);
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────
