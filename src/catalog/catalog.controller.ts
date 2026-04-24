@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Put, Delete, Query, Body, Param,
+  Controller, Get, Post, Put, Patch, Delete, Query, Body, Param,
   UseGuards, UseInterceptors, UploadedFile, Req, Res,
   ForbiddenException, BadRequestException,
 } from '@nestjs/common';
@@ -55,7 +55,7 @@ export class CatalogController {
    */
   private async requireDistributor(
     req: { user?: { companyId?: string; userId?: string; role?: string } },
-    opts: { requireAdmin?: boolean } = {},
+    opts: { requireAdmin?: boolean; roles?: string[] } = {},
   ) {
     const companyId = req.user?.companyId;
     const userId    = req.user?.userId;
@@ -80,14 +80,20 @@ export class CatalogController {
       throw new ForbiddenException('Distribuidor plan required');
     }
     const role = user?.role;
-    const catalogRoles = new Set(['admin', 'catalogo', 'catalogo_admin']);
-    const adminRoles   = new Set(['admin', 'catalogo_admin']);
-    const allowed      = opts.requireAdmin ? adminRoles : catalogRoles;
+    // Allowed roles: explicit `opts.roles` wins; then the legacy
+    // `requireAdmin` flag maps to admin / catalogo_admin (stats access);
+    // otherwise the default catalog-access set.
+    let allowed: Set<string>;
+    if (opts.roles) {
+      allowed = new Set(opts.roles);
+    } else if (opts.requireAdmin) {
+      allowed = new Set(['admin', 'catalogo_admin']);
+    } else {
+      allowed = new Set(['admin', 'catalogo', 'catalogo_admin']);
+    }
     if (!role || !allowed.has(role)) {
       throw new ForbiddenException(
-        opts.requireAdmin
-          ? 'Requiere rol admin o catalogo_admin'
-          : 'Requiere rol admin, catalogo o catalogo_admin',
+        `Rol no autorizado. Se requiere: ${[...allowed].join(' | ')}`,
       );
     }
     return { companyId, userId, role };
@@ -338,6 +344,30 @@ export class CatalogController {
   async distGet(@Req() req: any, @Param('id') id: string) {
     const { companyId } = await this.requireDistributor(req);
     return this.catalogService.distGet(id, companyId);
+  }
+
+  /**
+   * Distributor admin edit on a master catalog row. Reuses the same
+   * editable-field whitelist that the TirePro admin password path uses,
+   * so we get `cinturones` / `pr` / etc. for free. Role-gated to the
+   * distribuidor's own `admin` — catalogo / catalogo_admin reps can't
+   * mutate shared master-catalog data.
+   *
+   * The caveat worth flagging: this table is global. An edit here is
+   * seen by every other distributor viewing the same SKU. The
+   * requireDistributor guard trusts the caller company's admin; a
+   * hostile edit is auditable via updatedAt and recoverable by a
+   * TirePro admin via the /admin/skus CRUD.
+   */
+  @Patch('dist/:id')
+  @UseGuards(JwtAuthGuard)
+  async distUpdate(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.requireDistributor(req, { roles: ['admin'] });
+    return this.catalogService.adminUpdate(id, body);
   }
 
   @Post('dist/:id/images')
