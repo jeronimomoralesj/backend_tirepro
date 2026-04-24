@@ -1225,6 +1225,147 @@ export class CatalogService {
     };
   }
 
+  /**
+   * Sales advisor — takes a soft-requirement profile the salesperson
+   * fills in for a prospect and returns the best-matching SKUs from
+   * THEIR OWN catalog (subscribed only), ranked by fit score.
+   *
+   * `dimension`, `eje`, and `reencauchable` are hard filters (a wrong
+   * dimension is never the answer). Everything else contributes to
+   * the score — tier match against BrandInfo, terreno, pavimento %
+   * proximity, categoria (nueva/reencauche).
+   */
+  async distRecommend(params: {
+    companyId: string;
+    dimension?: string;
+    eje?: string;
+    reencauchable?: boolean;
+    tier?: 'premium' | 'mid' | 'value';
+    pctPavimento?: number;
+    terreno?: string;
+    categoria?: 'nueva' | 'reencauche';
+  }) {
+    const where: Prisma.TireMasterCatalogWhereInput = {
+      subscriptions: { some: { companyId: params.companyId } },
+    };
+    if (params.dimension)   where.dimension  = { contains: params.dimension, mode: 'insensitive' };
+    if (params.eje)         where.ejeTirePro = params.eje as EjeType;
+    if (params.categoria)   where.categoria  = { equals: params.categoria, mode: 'insensitive' };
+    if (params.reencauchable !== undefined) where.reencauchable = params.reencauchable;
+
+    // Cap the candidate set. Most distributors have < 1 k subscribed
+    // SKUs; 200 is comfortably enough to find the top 10 matches and
+    // keeps the in-memory scoring step quick.
+    const candidates = await this.prisma.tireMasterCatalog.findMany({
+      where,
+      take: 200,
+      orderBy: [{ marca: 'asc' }, { modelo: 'asc' }],
+      include: {
+        images: {
+          where: { companyId: params.companyId },
+          orderBy: { coverIndex: 'asc' },
+          take: 1,
+        },
+      },
+    });
+
+    if (candidates.length === 0) {
+      return { items: [] };
+    }
+
+    // Tier join — one BrandInfo lookup for every distinct marca on the
+    // candidate set. Small set, fast query.
+    const marcas = [...new Set(candidates.map((c) => c.marca).filter(Boolean))];
+    const brands = await this.prisma.brandInfo.findMany({
+      where:  { name: { in: marcas, mode: 'insensitive' } },
+      select: { name: true, tier: true, country: true, logoUrl: true },
+    });
+    const brandByName = new Map<string, typeof brands[number]>();
+    for (const b of brands) brandByName.set(b.name.toLowerCase(), b);
+
+    // Scoring — max ~100 when every soft dimension matches perfectly.
+    // We deliberately don't cap: over 100 still sorts correctly.
+    const tierOrder: Record<string, number> = { premium: 3, mid: 2, value: 1 };
+    const scored = candidates.map((sku) => {
+      const brand = brandByName.get(sku.marca?.toLowerCase() ?? '') ?? null;
+      const reasons: string[] = [];
+      let score = 0;
+
+      if (params.tier) {
+        const want = tierOrder[params.tier] ?? 0;
+        const have = tierOrder[brand?.tier ?? ''] ?? 0;
+        if (want && have) {
+          const diff = Math.abs(want - have);
+          if (diff === 0)      { score += 40; reasons.push(`Calidad ${params.tier}`); }
+          else if (diff === 1) { score += 18; reasons.push('Calidad cercana'); }
+        }
+      }
+
+      if (params.pctPavimento !== undefined) {
+        const diff = Math.abs(params.pctPavimento - sku.pctPavimento);
+        // 30 points at perfect match, scaling down linearly to 0 at a
+        // 60-pt difference. Past 60pts no credit — the tire is tuned
+        // for a very different mix.
+        const pavScore = Math.max(0, 30 - (diff * 0.5));
+        score += pavScore;
+        if (pavScore >= 20) reasons.push(`Uso: ${sku.pctPavimento}% pavimento`);
+      }
+
+      if (params.terreno && sku.terreno) {
+        if (sku.terreno.toLowerCase() === params.terreno.toLowerCase()) {
+          score += 20;
+          reasons.push(`Terreno ${sku.terreno}`);
+        }
+      }
+
+      if (params.categoria && sku.categoria
+          && sku.categoria.toLowerCase() === params.categoria.toLowerCase()) {
+        score += 10;
+      }
+
+      return {
+        sku,
+        brand,
+        score: Math.round(score),
+        reasons,
+      };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    // Drop obvious non-matches (no soft-score hit at all) when we have
+    // enough good options. If the user's filter is super specific and
+    // nothing scored, we still surface the hard-filter matches.
+    const topN     = scored.slice(0, 12);
+    const hasScore = topN.some((r) => r.score > 0);
+    const items    = hasScore ? topN.filter((r) => r.score > 0) : topN;
+
+    return {
+      items: items.map((r) => ({
+        id:         r.sku.id,
+        marca:      r.sku.marca,
+        modelo:     r.sku.modelo,
+        dimension:  r.sku.dimension,
+        categoria:  r.sku.categoria,
+        terreno:    r.sku.terreno,
+        ejeTirePro: r.sku.ejeTirePro,
+        pctPavimento: r.sku.pctPavimento,
+        pctDestapado: r.sku.pctDestapado,
+        reencauchable: r.sku.reencauchable,
+        kmEstimadosReales: r.sku.kmEstimadosReales,
+        cpkEstimado: r.sku.cpkEstimado,
+        image:  r.sku.images[0]?.url ?? null,
+        brand:  r.brand ? {
+          name:    r.brand.name,
+          tier:    r.brand.tier,
+          country: r.brand.country,
+          logoUrl: r.brand.logoUrl,
+        } : null,
+        score:   r.score,
+        reasons: r.reasons,
+      })),
+    };
+  }
+
   /** TirePro admin reads — every catalog image across every distributor. */
   async adminListImages(catalogId: string) {
     return this.prisma.catalogImage.findMany({

@@ -329,6 +329,38 @@ export class CatalogController {
     return this.catalogService.unsubscribe(id, companyId);
   }
 
+  /**
+   * Sales advisor — find the best options from this dist's own catalog
+   * for a prospect's profile. Accessible to every catalog-role user
+   * (admins, sales managers, sales reps) since it's a selling tool.
+   */
+  @Post('dist/recommend')
+  @UseGuards(JwtAuthGuard)
+  async distRecommend(
+    @Req() req: any,
+    @Body() body: {
+      dimension?: string;
+      eje?: string;
+      reencauchable?: boolean;
+      tier?: 'premium' | 'mid' | 'value';
+      pctPavimento?: number;
+      terreno?: string;
+      categoria?: 'nueva' | 'reencauche';
+    } = {},
+  ) {
+    const { companyId } = await this.requireDistributor(req);
+    return this.catalogService.distRecommend({
+      companyId,
+      dimension:     body.dimension,
+      eje:           body.eje,
+      reencauchable: body.reencauchable,
+      tier:          body.tier,
+      pctPavimento:  typeof body.pctPavimento === 'number' ? body.pctPavimento : undefined,
+      terreno:       body.terreno,
+      categoria:     body.categoria,
+    });
+  }
+
   // ─── Asset proxy ──────────────────────────────────────────────────────────
   // Streams an S3 object back to the caller. Exists so the frontend PDF
   // generator can embed catalog images without relying on the bucket's
