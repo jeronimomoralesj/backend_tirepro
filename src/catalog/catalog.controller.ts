@@ -12,6 +12,25 @@ import { PrismaService } from '../prisma/prisma.service';
 import { S3Service } from '../companies/s3.service';
 import type { Response } from 'express';
 
+/**
+ * Return the image MIME type of a buffer based on its leading magic
+ * bytes, or null if it doesn't look like one of the formats jspdf can
+ * consume. Used by the asset-proxy as a last-resort when S3 hands back
+ * application/octet-stream instead of the Content-Type we set on upload.
+ */
+function sniffImageMime(buf: Buffer): string | null {
+  if (buf.length < 12) return null;
+  // JPEG: FF D8 FF
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  // PNG: 89 50 4E 47
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  // WebP: "RIFF" + xxxx + "WEBP"
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  // GIF: "GIF87a" or "GIF89a"
+  if (buf.toString('ascii', 0, 3) === 'GIF') return 'image/gif';
+  return null;
+}
+
 @Controller('catalog')
 export class CatalogController {
   constructor(
@@ -275,19 +294,41 @@ export class CatalogController {
     if (!url || !this.s3.isOwnBucketUrl(url)) {
       throw new BadRequestException('URL inválida');
     }
-    // Buffered fetch — simpler than streaming https.request through
-    // Nest's @Res, and the objects we proxy are single-digit-MB images
-    // so loading them into memory is fine.
-    const upstream = await fetch(url);
+    // Buffered fetch — simpler than streaming through Nest's @Res, and
+    // catalog images are single-digit MB. fetch() is Node's undici;
+    // S3 is a happy target (unlike some ancient .NET backends).
+    // Note: `Response` type in this file refers to express's Response
+    // (imported at the top). Let inference give us the Fetch API Response
+    // from `fetch()` — don't annotate.
+    let upstream: Awaited<ReturnType<typeof fetch>>;
+    try {
+      upstream = await fetch(url);
+    } catch (err) {
+      // Log and 502 — lets the frontend fall back + gives us a trail.
+      console.warn(`[asset-proxy] upstream fetch failed for ${url}:`, (err as Error).message);
+      res.status(502).send('');
+      return;
+    }
     if (!upstream.ok) {
+      console.warn(`[asset-proxy] upstream ${upstream.status} for ${url}`);
       res.status(upstream.status === 404 ? 404 : 502).send('');
       return;
     }
     const buf = Buffer.from(await upstream.arrayBuffer());
-    res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'application/octet-stream');
+
+    // Resolve Content-Type:
+    //   1. Upstream header (best — matches what we PUT to S3)
+    //   2. Magic-number sniff from the leading bytes (covers S3 responses
+    //      that come back as application/octet-stream, which would
+    //      otherwise break jspdf's format detection on the frontend)
+    //   3. Fall back to application/octet-stream
+    let contentType = upstream.headers.get('content-type') ?? '';
+    if (!contentType || contentType === 'application/octet-stream') {
+      contentType = sniffImageMime(buf) ?? 'application/octet-stream';
+    }
+
+    res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Length', String(buf.length));
-    // Short browser-side cache — the PDF flow re-fetches per click and
-    // catalog images don't change after upload.
     res.setHeader('Cache-Control', 'private, max-age=300');
     res.send(buf);
   }

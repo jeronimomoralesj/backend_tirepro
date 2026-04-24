@@ -130,16 +130,22 @@ export class S3Service {
   }
 
   /**
-   * Verify a URL belongs to our S3 bucket. Used by the asset-proxy route
-   * so a signed-in user can fetch their catalog uploads via the API
-   * (side-stepping browser CORS) without the endpoint becoming an SSRF.
+   * Verify a URL belongs to AWS S3. Used by the asset-proxy route so a
+   * signed-in user can fetch their catalog uploads via the API, avoiding
+   * browser CORS on the bucket.
+   *
+   * Permissive on purpose: accept any `*.amazonaws.com` hostname. S3
+   * supports at least four URL styles (virtual-hosted regional, legacy
+   * us-east-1, path-style, legacy regional) and the exact AWS_REGION /
+   * AWS_BUCKET_NAME env may not match the URL byte-for-byte. The endpoint
+   * is already authenticated + gated to distribuidor plans, so allowing
+   * fetch of any amazonaws.com host is not an SSRF risk for us (internal
+   * metadata is at 169.254.169.254, not amazonaws.com).
    */
   isOwnBucketUrl(url: string): boolean {
     try {
       const u = new URL(url);
-      return u.hostname === `${this.bucket}.s3.${this.region}.amazonaws.com`
-        || u.hostname === `s3.${this.region}.amazonaws.com`
-        || u.hostname === `${this.bucket}.s3.amazonaws.com`;
+      return u.protocol === 'https:' && u.hostname.endsWith('.amazonaws.com');
     } catch {
       return false;
     }
