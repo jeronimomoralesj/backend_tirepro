@@ -319,9 +319,10 @@ model Company {
   marketplaceOrders MarketplaceOrder[]   @relation("MarketplaceOrders")
 
   // Catalog — per-distributor SKU photos + per-download events
-  catalogImages    CatalogImage[]
-  catalogDownloads CatalogDownload[]
-  catalogVideos    CatalogVideo[]
+  catalogImages        CatalogImage[]
+  catalogDownloads     CatalogDownload[]
+  catalogVideos        CatalogVideo[]
+  catalogSubscriptions CatalogSubscription[]
 
   @@index([plan])
 }
@@ -1474,10 +1475,11 @@ model TireMasterCatalog {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  listings  DistributorListing[]
-  images    CatalogImage[]
-  videos    CatalogVideo[]
-  downloads CatalogDownload[]
+  listings      DistributorListing[]
+  images        CatalogImage[]
+  videos        CatalogVideo[]
+  downloads     CatalogDownload[]
+  subscriptions CatalogSubscription[]
 
   @@index([marca, dimension])
   @@index([dimension])
@@ -1568,6 +1570,27 @@ model CatalogVideo {
   @@unique([catalogId, companyId])   // one video max per dist/SKU pair
   @@index([companyId])
   @@map("catalog_videos")
+}
+
+// Subscription list — each distributor curates which master-catalog SKUs
+// appear in their catalogoSku view. Everything dist-side (search, detail,
+// image/video upload, edit, PDF) is filtered against this table so a
+// distributor starts with an empty list and explicitly adds what they
+// sell. Existing per-dist activity (images / videos / downloads) gets
+// backfilled as subscriptions in the accompanying migration so nobody
+// loses their current view.
+model CatalogSubscription {
+  catalogId     String
+  companyId     String
+  addedByUserId String?
+  createdAt     DateTime @default(now())
+
+  catalog TireMasterCatalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+  company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@id([catalogId, companyId])
+  @@index([companyId, createdAt])
+  @@map("catalog_subscriptions")
 }
 
 // =============================================================================

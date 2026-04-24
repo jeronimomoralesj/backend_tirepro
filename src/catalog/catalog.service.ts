@@ -585,7 +585,8 @@ export class CatalogService {
   /** Distribuidor-admin edit. Re-uses adminUpdate's Prisma + error path
    *  but filters incoming keys against distEditableFields so fleet-
    *  derived fields (vidas, km, precioCop) can't be overwritten. */
-  async distUpdate(id: string, data: Record<string, any>) {
+  async distUpdate(id: string, companyId: string, data: Record<string, any>) {
+    await this.requireSubscription(id, companyId);
     const payload = this.pickEditable(data, this.distEditableFields);
     if (payload.dimension) payload.dimension = normalizeDimension(payload.dimension);
     try {
@@ -753,7 +754,15 @@ export class CatalogService {
   // all images via `getAllCatalogImages`.
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /** Fuzzy search across marca/modelo/dimension with eje/terreno/categoria filters. */
+  /**
+   * Search the SUBSCRIBED slice of the master catalog — i.e. only SKUs
+   * this distributor has explicitly added to their list. New dists see
+   * an empty result until they use /dist/discover + subscribe.
+   *
+   * Fuzzy token expansion, field-OR / token-AND, and the existing
+   * eje/terreno/categoria filters all apply as before — just scoped to
+   * their subscriptions instead of the whole catalog.
+   */
   async distSearch(params: {
     companyId: string;
     q?: string;
@@ -766,7 +775,9 @@ export class CatalogService {
   }) {
     const page = Math.max(1, params.page ?? 1);
     const pageSize = Math.min(100, Math.max(1, params.pageSize ?? 24));
-    const where: Prisma.TireMasterCatalogWhereInput = {};
+    const where: Prisma.TireMasterCatalogWhereInput = {
+      subscriptions: { some: { companyId: params.companyId } },
+    };
 
     if (params.marca)     where.marca     = { equals: params.marca, mode: 'insensitive' };
     if (params.dimension) where.dimension = { contains: params.dimension, mode: 'insensitive' };
@@ -820,7 +831,9 @@ export class CatalogService {
   }
 
   /** Full SKU detail including every image + the single video this
-   *  distributor has uploaded (videos are 1-per-SKU by unique constraint). */
+   *  distributor has uploaded (videos are 1-per-SKU by unique constraint).
+   *  Also surfaces a `subscribed` flag so the UI can decide whether to
+   *  show the edit/upload controls vs. an "add to catalog" CTA. */
   async distGet(catalogId: string, companyId: string) {
     const sku = await this.prisma.tireMasterCatalog.findUnique({
       where: { id: catalogId },
@@ -833,14 +846,140 @@ export class CatalogService {
           where: { companyId },
           take: 1,
         },
+        subscriptions: {
+          where: { companyId },
+          select: { createdAt: true },
+        },
       },
     });
     if (!sku) throw new NotFoundException('SKU not found');
-    // Flatten the video array into a single field — the UI cares about
-    // 1-or-0, and returning an array invites confusion later if we ever
-    // relax the uniqueness.
-    const { videos, ...rest } = sku as typeof sku & { videos: Array<Record<string, unknown>> };
-    return { ...rest, video: videos?.[0] ?? null };
+    const { videos, subscriptions, ...rest } = sku as typeof sku & {
+      videos: Array<Record<string, unknown>>;
+      subscriptions: Array<{ createdAt: Date }>;
+    };
+    return {
+      ...rest,
+      video:      videos?.[0] ?? null,
+      subscribed: subscriptions.length > 0,
+      subscribedAt: subscriptions[0]?.createdAt ?? null,
+    };
+  }
+
+  /**
+   * Discovery endpoint — searches the FULL master catalog (not just the
+   * dist's subscriptions) and returns each row with a `subscribed`
+   * boolean so the UI can render "Ya en tu catálogo" instead of an
+   * "Agregar" button when appropriate.
+   *
+   * Distributor admins use this to curate their list.
+   */
+  async distDiscover(params: {
+    companyId: string;
+    q?: string;
+    marca?: string;
+    dimension?: string;
+    eje?: string;
+    categoria?: string;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const page = Math.max(1, params.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, params.pageSize ?? 24));
+    const where: Prisma.TireMasterCatalogWhereInput = {};
+
+    if (params.marca)     where.marca     = { equals: params.marca, mode: 'insensitive' };
+    if (params.dimension) where.dimension = { contains: params.dimension, mode: 'insensitive' };
+    if (params.eje)       where.ejeTirePro = params.eje as EjeType;
+    if (params.categoria) where.categoria = { equals: params.categoria, mode: 'insensitive' };
+    if (params.q) {
+      const tokens = params.q.trim().split(/\s+/).filter(Boolean);
+      if (tokens.length > 0) {
+        const variants = await Promise.all(tokens.map((t) => this.expandTokenFuzzy(t)));
+        where.AND = variants.map((alts) => ({
+          OR: alts.flatMap((v) => [
+            { marca:     { contains: v, mode: 'insensitive' as const } },
+            { modelo:    { contains: v, mode: 'insensitive' as const } },
+            { dimension: { contains: v, mode: 'insensitive' as const } },
+            { skuRef:    { contains: v, mode: 'insensitive' as const } },
+          ]),
+        }));
+      }
+    }
+
+    const [total, items] = await Promise.all([
+      this.prisma.tireMasterCatalog.count({ where }),
+      this.prisma.tireMasterCatalog.findMany({
+        where,
+        orderBy: [{ marca: 'asc' }, { modelo: 'asc' }, { dimension: 'asc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          subscriptions: {
+            where: { companyId: params.companyId },
+            select: { catalogId: true },
+            take: 1,
+          },
+        },
+      }),
+    ]);
+
+    return {
+      total, page, pageSize,
+      items: items.map((r) => {
+        const subs = (r as unknown as { subscriptions: { catalogId: string }[] }).subscriptions;
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { subscriptions, ...rest } = r as any;
+        return { ...rest, subscribed: subs.length > 0 };
+      }),
+    };
+  }
+
+  /** Add a master-catalog SKU to this dist's list. Idempotent via upsert. */
+  async subscribe(catalogId: string, companyId: string, userId?: string) {
+    const sku = await this.prisma.tireMasterCatalog.findUnique({
+      where:  { id: catalogId },
+      select: { id: true },
+    });
+    if (!sku) throw new NotFoundException('SKU not found');
+    return this.prisma.catalogSubscription.upsert({
+      where: { catalogId_companyId: { catalogId, companyId } },
+      update: {},
+      create: {
+        catalogId,
+        companyId,
+        addedByUserId: userId ?? null,
+      },
+    });
+  }
+
+  /** Remove from the list. Leaves images/video/downloads untouched so
+   *  re-subscribing restores the previous state. */
+  async unsubscribe(catalogId: string, companyId: string) {
+    try {
+      await this.prisma.catalogSubscription.delete({
+        where: { catalogId_companyId: { catalogId, companyId } },
+      });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') {
+        // Already not subscribed — treat as success.
+        return { ok: true };
+      }
+      throw e;
+    }
+    return { ok: true };
+  }
+
+  /** Throw ForbiddenException if this dist hasn't subscribed to the SKU.
+   *  Used to gate every write path (images, video, edits, tracking) so
+   *  a dist can't mutate a tire they haven't added to their catalog. */
+  private async requireSubscription(catalogId: string, companyId: string) {
+    const sub = await this.prisma.catalogSubscription.findUnique({
+      where:  { catalogId_companyId: { catalogId, companyId } },
+      select: { catalogId: true },
+    });
+    if (!sub) {
+      throw new BadRequestException('Primero agrega esta llanta a tu catálogo');
+    }
   }
 
   /** Replace (or create) the single video for this (dist, SKU) pair. If
@@ -859,6 +998,7 @@ export class CatalogService {
       select: { id: true },
     });
     if (!sku) throw new NotFoundException('SKU not found');
+    await this.requireSubscription(params.catalogId, params.companyId);
 
     return this.prisma.catalogVideo.upsert({
       where: { catalogId_companyId: { catalogId: params.catalogId, companyId: params.companyId } },
@@ -900,6 +1040,7 @@ export class CatalogService {
       select: { id: true },
     });
     if (!sku) throw new NotFoundException('SKU not found');
+    await this.requireSubscription(params.catalogId, params.companyId);
 
     // New image lands at the end of the gallery.
     const last = await this.prisma.catalogImage.findFirst({
@@ -947,6 +1088,7 @@ export class CatalogService {
     if (!['none', 'sin_iva', 'con_iva'].includes(params.priceMode)) {
       throw new BadRequestException('Invalid priceMode');
     }
+    await this.requireSubscription(params.catalogId, params.companyId);
     return this.prisma.catalogDownload.create({
       data: {
         userId:         params.userId,

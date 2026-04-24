@@ -279,6 +279,56 @@ export class CatalogController {
     });
   }
 
+  /**
+   * Discovery feed — searches the full master catalog (not just
+   * subscriptions) so dist admins can curate what lands in their
+   * catalog list. Each row comes back with a `subscribed: boolean`
+   * flag so the UI can render "Agregar" vs "Ya en tu catálogo".
+   */
+  @Get('dist/discover')
+  @UseGuards(JwtAuthGuard)
+  async distDiscover(
+    @Req() req: any,
+    @Query('q')         q?: string,
+    @Query('marca')     marca?: string,
+    @Query('dimension') dimension?: string,
+    @Query('eje')       eje?: string,
+    @Query('categoria') categoria?: string,
+    @Query('page')      page = '1',
+    @Query('pageSize')  pageSize = '24',
+  ) {
+    const { companyId } = await this.requireDistributor(req, {
+      roles: ['admin', 'catalogo_admin'],
+    });
+    return this.catalogService.distDiscover({
+      companyId, q, marca, dimension, eje, categoria,
+      page: Number(page), pageSize: Number(pageSize),
+    });
+  }
+
+  /** Add an SKU to the dist's catalog. Open to admin + catalogo_admin:
+   *  sales managers curate their list too, not just company admins.
+   *  Plain catalogo (sales rep) can't. */
+  @Post('dist/:id/subscribe')
+  @UseGuards(JwtAuthGuard)
+  async distSubscribe(@Req() req: any, @Param('id') id: string) {
+    const { companyId, userId } = await this.requireDistributor(req, {
+      roles: ['admin', 'catalogo_admin'],
+    });
+    return this.catalogService.subscribe(id, companyId, userId);
+  }
+
+  /** Remove an SKU from the dist's catalog. Images / videos / download
+   *  history are preserved; they resurface if the dist re-subscribes. */
+  @Delete('dist/:id/subscribe')
+  @UseGuards(JwtAuthGuard)
+  async distUnsubscribe(@Req() req: any, @Param('id') id: string) {
+    const { companyId } = await this.requireDistributor(req, {
+      roles: ['admin', 'catalogo_admin'],
+    });
+    return this.catalogService.unsubscribe(id, companyId);
+  }
+
   // ─── Asset proxy ──────────────────────────────────────────────────────────
   // Streams an S3 object back to the caller. Exists so the frontend PDF
   // generator can embed catalog images without relying on the bucket's
@@ -366,10 +416,12 @@ export class CatalogController {
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ) {
-    await this.requireDistributor(req, { roles: ['admin'] });
+    const { companyId } = await this.requireDistributor(req, { roles: ['admin'] });
     // Narrower whitelist than the TirePro admin path — dists can't
     // overwrite fleet-derived fields (vidas, km estimates, precioCop).
-    return this.catalogService.distUpdate(id, body);
+    // Also gated on subscription: you can only edit a tire you've
+    // added to your catalog.
+    return this.catalogService.distUpdate(id, companyId, body);
   }
 
   @Post('dist/:id/images')
