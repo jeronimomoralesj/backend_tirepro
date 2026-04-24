@@ -68,8 +68,13 @@ const DATA_DIR = '/tmp/merquepro';
 const MERQUELLANTAS_COMPANY_ID = '1cc199e8-354e-4e51-9d62-666c8b68662c';
 
 const EXT_VEHICLE = (id: number | string) => `merquepro:vehicle:${id}`;
-const EXT_TIRE    = (id: string)           => `merquepro:tire:${id}`;
-const EXT_INSP    = (id: string)           => `merquepro:insp:${id}`;
+// IMPORTANT: Merquellantas regenerates the UUID `id` field on each API
+// call — the only stable identifier is the numeric `tireId`. Same for
+// inspections (numeric `inspectionId` or fallback to `consecutiveInspection`
+// per tire). Using the unstable UUID caused 37k duplicate tires before.
+const EXT_TIRE    = (tireIdNumeric: number | string) => `merquepro:tire:${tireIdNumeric}`;
+const EXT_INSP    = (tireId: number | string, consecutive: number | string) =>
+  `merquepro:insp:${tireId}:${consecutive}`;
 
 // =============================================================================
 // Pretty-printing
@@ -656,20 +661,38 @@ async function main() {
     };
 
     if (existing) {
-      const upd = await retry(() => prisma.vehicle.update({
-        where: { id: existing.id },
-        data: {
-          ...baseCommon,
-          placa:         plateLower,
-          configuracion: configuracion ?? existing.configuracion,
-          companyId,
-          ...(existing.externalSourceId ? {} : { externalSourceId: ext }),
-        },
-        select: { id: true },
-      }), 'vehicle.update');
-      vehicleIdMap.set(meta.vehicleId, upd.id);
-      if (orphan) vehicleOrphaned++;
-      vehicleUpdated++;
+      try {
+        const upd = await retry(() => prisma.vehicle.update({
+          where: { id: existing.id },
+          data: {
+            ...baseCommon,
+            placa:         plateLower,
+            configuracion: configuracion ?? existing.configuracion,
+            companyId,
+            ...(existing.externalSourceId ? {} : { externalSourceId: ext }),
+          },
+          select: { id: true },
+        }), 'vehicle.update');
+        vehicleIdMap.set(meta.vehicleId, upd.id);
+        if (orphan) vehicleOrphaned++;
+        vehicleUpdated++;
+      } catch (err: any) {
+        if (err?.code !== 'P2002') throw err;
+        // Another row already has (companyId, placa). That row is a
+        // previously-imported duplicate of the same physical vehicle.
+        // Merge: migrate tires + drop our orphan, point vehicleIdMap at
+        // the surviving winner so downstream tire linkage lands correctly.
+        const winnerRow = await prisma.vehicle.findFirst({
+          where: { placa: plateLower, companyId: companyId ?? undefined, NOT: { id: existing.id } },
+          select: { id: true },
+        });
+        if (!winnerRow) throw err;
+        await prisma.$executeRawUnsafe(`UPDATE "Tire" SET "vehicleId" = $1 WHERE "vehicleId" = $2`, winnerRow.id, existing.id);
+        await prisma.$executeRawUnsafe(`UPDATE "Tire" SET "lastVehicleId" = $1 WHERE "lastVehicleId" = $2`, winnerRow.id, existing.id);
+        try { await prisma.vehicle.delete({ where: { id: existing.id } }); } catch {}
+        vehicleIdMap.set(meta.vehicleId, winnerRow.id);
+        vehicleUpdated++;
+      }
     } else {
       try {
         const created = await retry(() => prisma.vehicle.create({
@@ -692,29 +715,53 @@ async function main() {
         vehicleCreated++;
       } catch (err: any) {
         if (err?.code !== 'P2002') throw err;
-        // Raced with another wave-mate or a pre-existing row we missed.
-        // Re-fetch and update instead of failing the import.
-        const found = await prisma.vehicle.findFirst({
-          where: { placa: plateLower, OR: [{ companyId: clientCompanyId }, { companyId: null, externalSourceId: ext }] },
+        // Pre-existing row we didn't preload (wasn't in the set of
+        // in-scope companyIds). Two collision cases:
+        //   (a) externalSourceId unique hit — our ext is already on a row.
+        //   (b) (companyId, placa) unique hit — different row has same pair.
+        // Look up by ext first (cheapest); fall back to (companyId, plate).
+        let found: any = await prisma.vehicle.findUnique({
+          where: { externalSourceId: ext },
           select: { id: true, externalSourceId: true, configuracion: true },
         });
+        if (!found) {
+          found = await prisma.vehicle.findFirst({
+            where: { placa: plateLower, companyId: companyId ?? undefined },
+            select: { id: true, externalSourceId: true, configuracion: true },
+          });
+        }
         if (!found) throw err;
-        const upd = await prisma.vehicle.update({
-          where: { id: found.id },
-          data: {
-            ...baseCommon,
-            configuracion: configuracion ?? found.configuracion,
-            companyId,
-            ...(found.externalSourceId ? {} : { externalSourceId: ext }),
-          },
-          select: { id: true },
-        });
-        vehicleIdMap.set(meta.vehicleId, upd.id);
-        const rec = { id: upd.id, externalSourceId: found.externalSourceId ?? ext, configuracion: configuracion ?? found.configuracion };
-        if (rec.externalSourceId) existingVehBySrc.set(rec.externalSourceId, rec);
-        existingVehByPlate.set(`${clientCompanyId}|${plateLower}`, rec);
-        if (orphan) vehicleOrphaned++;
-        vehicleUpdated++;
+        try {
+          const upd = await prisma.vehicle.update({
+            where: { id: found.id },
+            data: {
+              ...baseCommon,
+              placa:         plateLower,
+              configuracion: configuracion ?? found.configuracion,
+              companyId,
+              ...(found.externalSourceId ? {} : { externalSourceId: ext }),
+            },
+            select: { id: true },
+          });
+          vehicleIdMap.set(meta.vehicleId, upd.id);
+          const rec = { id: upd.id, externalSourceId: found.externalSourceId ?? ext, configuracion: configuracion ?? found.configuracion };
+          if (rec.externalSourceId) existingVehBySrc.set(rec.externalSourceId, rec);
+          existingVehByPlate.set(`${clientCompanyId ?? '__orphan__'}|${plateLower}`, rec);
+          if (orphan) vehicleOrphaned++;
+          vehicleUpdated++;
+        } catch (err2: any) {
+          // Still P2002 — the (companyId, placa) slot is occupied by YET
+          // another row. Map this vehicleId to that other row's id and
+          // accept the duplicate in DB for now (cleanup script can merge).
+          if (err2?.code !== 'P2002') throw err2;
+          const winner = await prisma.vehicle.findFirst({
+            where: { placa: plateLower, companyId: companyId ?? undefined, NOT: { id: found.id } },
+            select: { id: true },
+          });
+          if (!winner) throw err2;
+          vehicleIdMap.set(meta.vehicleId, winner.id);
+          vehicleSkipped++;
+        }
       }
     }
   }
@@ -866,8 +913,12 @@ async function main() {
     const cs = r.tireId != null ? currentByTireId.get(Number(r.tireId)) : undefined;
     const sourceState = (cs?.state ?? r.state) as string | undefined;
 
-    const extTire = EXT_TIRE(r.id);
-    const dial    = r.dialNumber ? String(r.dialNumber) : r.id;
+    // Use numeric tireId (stable) not UUID (regenerated per API call).
+    // Fall back to UUID only if tireId is missing — defensive; shouldn't
+    // happen in real data.
+    const stableTireId = r.tireId != null ? r.tireId : r.id;
+    const extTire = EXT_TIRE(stableTireId);
+    const dial    = r.dialNumber ? String(r.dialNumber) : String(stableTireId);
     const rcKey   = `${client.toLowerCase()}__${r.dialNumber}`;
     const retreadCount = retreadCountByKey.get(rcKey) ?? 0;
     const vidaActual   = mapVidaActual(sourceState, retreadCount || 1);
@@ -1123,7 +1174,12 @@ async function main() {
         inspSkipped++; return;
       }
 
-      const extInsp = EXT_INSP(i.id);
+      // Stable inspection id: (tireId, consecutiveInspection). Merquellantas
+      // regenerates the row-UUID per API call just like for tires. The
+      // numeric tireId + the tire-scoped consecutive number is stable.
+      const stableInspTireId = i.tireId != null ? i.tireId : `dial_${i.dialNumber}`;
+      const stableConsec = i.consecutiveInspection ?? i.consecutive ?? i.id;
+      const extInsp = EXT_INSP(stableInspTireId, stableConsec);
       const rawMileage = Math.round(toNum(i.mileage));
       const mileage = rawMileage > 0 ? capVehicleKm(rawMileage) : null;
       const inspData = {
