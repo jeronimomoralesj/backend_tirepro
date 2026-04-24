@@ -1419,6 +1419,8 @@ model TireMasterCatalog {
   indiceVelocidad String? // speed rating
   psiRecomendado  Float? // recommended pressure (PSI)
   pesoKg          Float? // tire weight
+  cinturones      String? // belt configuration — e.g. "4B+2N", "Steel 2"
+  pr              String? // ply rating — e.g. "16", "18PR", "16/18"
 
   // Expected life
   kmEstimadosReales  Int? // realistic km estimate for Colombia

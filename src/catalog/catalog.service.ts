@@ -541,11 +541,15 @@ export class CatalogService {
   // ADMIN CRUD
   // ═══════════════════════════════════════════════════════════════════════════
 
+  // Everything an admin can edit on a master SKU row. Crowd* fields are
+  // deliberately excluded — they're computed by crowdsourceUpsert and
+  // letting a human edit them would corrupt the aggregation.
   private readonly adminEditableFields = [
     'marca', 'modelo', 'dimension', 'skuRef',
     'anchoMm', 'perfil', 'rin',
     'posicion', 'ejeTirePro', 'terreno', 'pctPavimento', 'pctDestapado',
     'rtdMm', 'indiceCarga', 'indiceVelocidad', 'psiRecomendado', 'pesoKg',
+    'cinturones', 'pr',
     'kmEstimadosReales', 'kmEstimadosFabrica',
     'reencauchable', 'vidasReencauche',
     'precioCop', 'cpkEstimado',
