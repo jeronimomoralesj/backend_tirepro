@@ -330,6 +330,17 @@ export class CatalogController {
   }
 
   /**
+   * Distinct dimensions present in this dist's subscribed catalog — powers
+   * the advisor's dimension dropdown. Read-only, every catalog role.
+   */
+  @Get('dist/dimensions')
+  @UseGuards(JwtAuthGuard)
+  async distDimensions(@Req() req: any) {
+    const { companyId } = await this.requireDistributor(req);
+    return this.catalogService.distDimensions(companyId);
+  }
+
+  /**
    * Sales advisor — find the best options from this dist's own catalog
    * for a prospect's profile. Accessible to every catalog-role user
    * (admins, sales managers, sales reps) since it's a selling tool.

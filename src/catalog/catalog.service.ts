@@ -1260,9 +1260,13 @@ export class CatalogService {
     const where: Prisma.TireMasterCatalogWhereInput = {
       subscriptions: { some: { companyId: params.companyId } },
     };
-    if (params.dimension)   where.dimension  = { contains: params.dimension, mode: 'insensitive' };
+    // Dimension: exact-match (case-insensitive). The advisor form feeds
+    // this from a dropdown of known dimensions so there's no reason to
+    // accept typos or partial strings — doing so could surface
+    // "295/80R22.5" when the rep picked "295/80R22.5G".
+    if (params.dimension)   where.dimension  = { equals:   params.dimension, mode: 'insensitive' };
     if (params.eje)         where.ejeTirePro = params.eje as EjeType;
-    if (params.categoria)   where.categoria  = { equals: params.categoria, mode: 'insensitive' };
+    if (params.categoria)   where.categoria  = { equals:   params.categoria, mode: 'insensitive' };
     if (params.reencauchable !== undefined) where.reencauchable = params.reencauchable;
 
     // Additional hard filters — every one is optional; specifying it
@@ -1309,61 +1313,90 @@ export class CatalogService {
     const brandByName = new Map<string, typeof brands[number]>();
     for (const b of brands) brandByName.set(b.name.toLowerCase(), b);
 
-    // Scoring — max ~100 when every soft dimension matches perfectly.
-    // We deliberately don't cap: over 100 still sorts correctly.
+    // Scoring — normalized to a 0-100 fit percentage so the threshold
+    // means the same thing regardless of which soft filters the rep
+    // picked. Max points per dimension:
+    //   tier           40   exact tier match, 18 for adjacent
+    //   pctPavimento   30   linear from 0 at >=60pt diff
+    //   terreno        20   exact (case-insensitive) match
+    //   categoria      10   soft bonus (categoria is also a hard filter,
+    //                       so this mainly differentiates Mixto cases)
+    // `maxPossible` is the sum of maxes for the soft filters the rep
+    // actually specified — if they only specified tier, 40 = 100%.
     const tierOrder: Record<string, number> = { premium: 3, mid: 2, value: 1 };
+
+    let maxPossible = 0;
+    if (params.tier !== undefined)          maxPossible += 40;
+    if (params.pctPavimento !== undefined)  maxPossible += 30;
+    if (params.terreno)                     maxPossible += 20;
+    if (params.categoria)                   maxPossible += 10;
+
     const scored = candidates.map((sku) => {
       const brand = brandByName.get(sku.marca?.toLowerCase() ?? '') ?? null;
       const reasons: string[] = [];
-      let score = 0;
+      let raw = 0;
 
       if (params.tier) {
         const want = tierOrder[params.tier] ?? 0;
         const have = tierOrder[brand?.tier ?? ''] ?? 0;
         if (want && have) {
           const diff = Math.abs(want - have);
-          if (diff === 0)      { score += 40; reasons.push(`Calidad ${params.tier}`); }
-          else if (diff === 1) { score += 18; reasons.push('Calidad cercana'); }
+          if (diff === 0)      { raw += 40; reasons.push(`Calidad ${params.tier}`); }
+          else if (diff === 1) { raw += 18; reasons.push('Calidad cercana'); }
         }
       }
 
       if (params.pctPavimento !== undefined) {
         const diff = Math.abs(params.pctPavimento - sku.pctPavimento);
-        // 30 points at perfect match, scaling down linearly to 0 at a
-        // 60-pt difference. Past 60pts no credit — the tire is tuned
-        // for a very different mix.
         const pavScore = Math.max(0, 30 - (diff * 0.5));
-        score += pavScore;
+        raw += pavScore;
         if (pavScore >= 20) reasons.push(`Uso: ${sku.pctPavimento}% pavimento`);
       }
 
       if (params.terreno && sku.terreno) {
         if (sku.terreno.toLowerCase() === params.terreno.toLowerCase()) {
-          score += 20;
+          raw += 20;
           reasons.push(`Terreno ${sku.terreno}`);
         }
       }
 
       if (params.categoria && sku.categoria
           && sku.categoria.toLowerCase() === params.categoria.toLowerCase()) {
-        score += 10;
+        raw += 10;
       }
 
-      return {
-        sku,
-        brand,
-        score: Math.round(score),
-        reasons,
-      };
+      // Normalize: if the rep specified no soft filters, every candidate
+      // gets 100 (they're all just hard-filter matches). Otherwise the
+      // score is the fraction of max achievable.
+      const score = maxPossible > 0
+        ? Math.round((raw / maxPossible) * 100)
+        : 100;
+
+      return { sku, brand, score, raw, reasons };
     });
 
-    scored.sort((a, b) => b.score - a.score);
-    // Drop obvious non-matches (no soft-score hit at all) when we have
-    // enough good options. If the user's filter is super specific and
-    // nothing scored, we still surface the hard-filter matches.
-    const topN     = scored.slice(0, 12);
-    const hasScore = topN.some((r) => r.score > 0);
-    const items    = hasScore ? topN.filter((r) => r.score > 0) : topN;
+    // Hard-filter out obvious nonsense: if the rep specified a terreno
+    // and the candidate's terreno is set AND different AND neither side
+    // is "Mixto" (which reads as a universal fit), drop it. A rep asking
+    // for off-road tires shouldn't see carretera tires just because they
+    // happened to pass the dimension + eje filter.
+    const compatibleTerreno = (sku: typeof candidates[number]) => {
+      if (!params.terreno || !sku.terreno) return true;
+      const a = params.terreno.toLowerCase();
+      const b = sku.terreno.toLowerCase();
+      return a === b || a === 'mixto' || b === 'mixto';
+    };
+
+    // Minimum fit percentage — below this a recommendation is more
+    // noise than signal, so we just hide it. Kept at 40% which passes
+    // "mostly match one soft filter" but drops "matches nothing".
+    const MIN_FIT = 40;
+    const filtered = scored
+      .filter((r) => compatibleTerreno(r.sku))
+      .filter((r) => maxPossible === 0 ? true : r.score >= MIN_FIT);
+
+    filtered.sort((a, b) => b.score - a.score || b.raw - a.raw);
+    const items = filtered.slice(0, 12);
 
     return {
       items: items.map((r) => ({
@@ -1390,6 +1423,34 @@ export class CatalogService {
         reasons: r.reasons,
       })),
     };
+  }
+
+  /**
+   * Distinct dimensions in a dist's subscribed catalog — used by the
+   * sales advisor's dimension dropdown. Exact-match picks kill the whole
+   * class of "295/80R22.5 vs 295/80 R22.5 vs 295/80r22.5" typos that
+   * made the previous free-text field so fragile.
+   *
+   * Sorted by rin ascending, then ancho — a rep scanning for "22.5" rin
+   * tires should find them grouped together.
+   */
+  async distDimensions(companyId: string): Promise<{ dimensions: string[] }> {
+    const rows = await this.prisma.tireMasterCatalog.findMany({
+      where:  { subscriptions: { some: { companyId } } },
+      select: { dimension: true, rin: true, anchoMm: true },
+      distinct: ['dimension'],
+    });
+    // Sort: rin asc (numeric), then ancho asc. Fallback to lexicographic.
+    const parseRin = (r: string | null): number =>
+      r ? Number(r.replace(/[^\d.]/g, '')) || 9999 : 9999;
+    rows.sort((a, b) => {
+      const dr = parseRin(a.rin) - parseRin(b.rin);
+      if (dr !== 0) return dr;
+      const da = (a.anchoMm ?? 9999) - (b.anchoMm ?? 9999);
+      if (da !== 0) return da;
+      return (a.dimension ?? '').localeCompare(b.dimension ?? '');
+    });
+    return { dimensions: rows.map((r) => r.dimension).filter((d): d is string => !!d) };
   }
 
   /** TirePro admin reads — every catalog image across every distributor. */
