@@ -1669,6 +1669,64 @@ async function main() {
        WHERE i."tireId"=t.id AND t."externalSourceId" LIKE 'merquepro:tire:%' AND i."kmProyectado" IS NULL
     `);
     console.log(`  (E) populated cpkProyectado + kmProyectado via 5-tier fallback`);
+
+    // (F) Mirror cpkProyectado into Inspeccion.cpk + lifetimeCpk wherever
+    // those are null, and propagate the latest-inspection cpk back onto
+    // Tire.currentCpk. Ensures UI paths that read cpk directly (not
+    // through the cpkProyectado fallback) also see a value. Inventory
+    // tires with no inspections fall back to (marca, diseno, dimension)
+    // peer mean, then (dimension), then global mean.
+    await prisma.$executeRawUnsafe(`
+      UPDATE inspecciones SET cpk = "cpkProyectado"
+       WHERE cpk IS NULL AND "cpkProyectado" IS NOT NULL
+         AND "tireId" IN (SELECT id FROM "Tire" WHERE "externalSourceId" LIKE 'merquepro:tire:%')
+    `);
+    await prisma.$executeRawUnsafe(`
+      UPDATE inspecciones SET "lifetimeCpk" = "cpkProyectado"
+       WHERE "lifetimeCpk" IS NULL AND "cpkProyectado" IS NOT NULL
+         AND "tireId" IN (SELECT id FROM "Tire" WHERE "externalSourceId" LIKE 'merquepro:tire:%')
+    `);
+    await prisma.$executeRawUnsafe(`
+      UPDATE "Tire" tgt
+         SET "currentCpk" = sub.cpk,
+             "lastInspeccionDate" = COALESCE(tgt."lastInspeccionDate", sub.fecha)
+        FROM (
+          SELECT DISTINCT ON ("tireId") "tireId", cpk, fecha FROM inspecciones
+           WHERE cpk IS NOT NULL ORDER BY "tireId", fecha DESC
+        ) sub
+       WHERE tgt.id = sub."tireId"
+         AND tgt."externalSourceId" LIKE 'merquepro:tire:%'
+         AND tgt."currentCpk" IS NULL
+    `);
+    await prisma.$executeRawUnsafe(`
+      WITH peer AS (
+        SELECT UPPER(TRIM(marca)) m, UPPER(TRIM(diseno)) d, UPPER(TRIM(dimension)) dim,
+               ROUND(AVG("currentCpk")::numeric, 2)::double precision AS v
+          FROM "Tire" WHERE "externalSourceId" LIKE 'merquepro:tire:%' AND "currentCpk" IS NOT NULL
+         GROUP BY 1,2,3 HAVING COUNT(*) >= 3
+      )
+      UPDATE "Tire" t SET "currentCpk" = peer.v FROM peer
+       WHERE peer.m=UPPER(TRIM(t.marca)) AND peer.d=UPPER(TRIM(t.diseno)) AND peer.dim=UPPER(TRIM(t.dimension))
+         AND t."externalSourceId" LIKE 'merquepro:tire:%' AND t."currentCpk" IS NULL
+    `);
+    await prisma.$executeRawUnsafe(`
+      WITH peer AS (
+        SELECT UPPER(TRIM(dimension)) dim, ROUND(AVG("currentCpk")::numeric, 2)::double precision AS v
+          FROM "Tire" WHERE "externalSourceId" LIKE 'merquepro:tire:%' AND "currentCpk" IS NOT NULL
+         GROUP BY 1 HAVING COUNT(*) >= 3
+      )
+      UPDATE "Tire" t SET "currentCpk" = peer.v FROM peer
+       WHERE peer.dim=UPPER(TRIM(t.dimension))
+         AND t."externalSourceId" LIKE 'merquepro:tire:%' AND t."currentCpk" IS NULL
+    `);
+    await prisma.$executeRawUnsafe(`
+      UPDATE "Tire" t SET "currentCpk" = (
+        SELECT ROUND(AVG("currentCpk")::numeric, 2)::double precision
+          FROM "Tire" WHERE "externalSourceId" LIKE 'merquepro:tire:%' AND "currentCpk" IS NOT NULL
+      )
+       WHERE t."externalSourceId" LIKE 'merquepro:tire:%' AND t."currentCpk" IS NULL
+    `);
+    console.log(`  (F) cpk + Tire.currentCpk now 100% populated for merquepro`);
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────
