@@ -91,6 +91,29 @@ type EndpointSpec = {
   rowFilter?: (row: any) => boolean;
 };
 
+// Merquellantas customers fall into several "client types" — we only want
+// the CPK contract (clientTypeId=2). The /currentstatetires + /currentstate­vehicles
+// endpoints honour the ClientType=2 query param server-side; the other
+// endpoints (/vehicles, /inactive, /tires, /inspection) accept the param but
+// IGNORE it. To filter those, we do a two-phase fetch: (1) pull currentstate
+// first with ClientType=2 to learn the CPK client names, then (2) client-side
+// filter the non-compliant endpoints against that set.
+const CLIENT_TYPE_CPK = '2';
+const cpkClientNames = new Set<string>();
+const keepOnlyCpk = (row: any) => {
+  if (!row) return true;
+  const t = row.clientTypeId ?? row.clientType;
+  if (t != null) {
+    return String(t) === CLIENT_TYPE_CPK || String(t).toLowerCase() === 'cpk';
+  }
+  // No clientType field — fall back to the name index once it's populated.
+  // Before the index is populated (the very first fetch, currentstate),
+  // keep everything.
+  if (cpkClientNames.size === 0) return true;
+  const c = typeof row.client === 'string' ? row.client.trim() : '';
+  return c ? cpkClientNames.has(c) : false;
+};
+
 const ENDPOINTS: EndpointSpec[] = [
   {
     name:       'vehicles',
@@ -98,6 +121,8 @@ const ENDPOINTS: EndpointSpec[] = [
     path:       '/api/report/vehicles',
     filePrefix: 'vehicles',
     paginated:  true,   // merged into vehicles.json at the end
+    extraQuery: { ClientType: CLIENT_TYPE_CPK },
+    rowFilter:  keepOnlyCpk,
   },
   {
     name:       'inactive',
@@ -105,6 +130,8 @@ const ENDPOINTS: EndpointSpec[] = [
     path:       '/api/report/vehiclesWithoutTransaction',
     filePrefix: 'vehiclesWithoutTransaction',
     paginated:  true,
+    extraQuery: { ClientType: CLIENT_TYPE_CPK },
+    rowFilter:  keepOnlyCpk,
   },
   {
     // Authoritative per-vehicle current state. The `state` field ("En
@@ -117,6 +144,8 @@ const ENDPOINTS: EndpointSpec[] = [
     path:       '/api/report/currentstatevehicles',
     filePrefix: 'currentstateveh',             // → currentstateveh_pN.json
     paginated:  true,
+    extraQuery: { ClientType: CLIENT_TYPE_CPK },
+    rowFilter:  keepOnlyCpk,
   },
   {
     name:       'tires',
@@ -124,6 +153,8 @@ const ENDPOINTS: EndpointSpec[] = [
     path:       '/api/report/tires',
     filePrefix: 'tires',                       // → tires_p0.json, tires_p1.json, ...
     paginated:  true,
+    extraQuery: { ClientType: CLIENT_TYPE_CPK },
+    rowFilter:  keepOnlyCpk,
   },
   {
     // Authoritative "current snapshot" per tire — carries tireStateId
@@ -137,7 +168,8 @@ const ENDPOINTS: EndpointSpec[] = [
     path:       '/api/report/currentstatetires',
     filePrefix: 'currentstate',                // → currentstate_p0.json, …
     paginated:  true,
-    extraQuery: { ClientType: '2' },
+    extraQuery: { ClientType: CLIENT_TYPE_CPK },
+    rowFilter:  keepOnlyCpk,
   },
   {
     name:       'inspections',
@@ -145,14 +177,15 @@ const ENDPOINTS: EndpointSpec[] = [
     path:       '/api/report/inspection',
     filePrefix: 'inspections',                 // → inspections_p0.json, ...
     paginated:  true,
-    // Incremental mode: drop rows older than --since. The API still returns
-    // them (pagination ordering is newest-first per the spec), so we filter
-    // client-side rather than trusting a server-side `date=>` query param
-    // which may not exist.
-    rowFilter: SINCE_ISO ? (row) => {
+    extraQuery: { ClientType: CLIENT_TYPE_CPK },
+    // Combine CPK filter with incremental --since filter. API returns rows
+    // newest-first per spec, so client-side filtering is reliable.
+    rowFilter: (row) => {
+      if (!keepOnlyCpk(row)) return false;
+      if (!SINCE_ISO) return true;
       const d = row?.date ? new Date(String(row.date)) : null;
       return d ? d.getTime() >= new Date(SINCE_ISO + 'T00:00:00Z').getTime() : true;
-    } : undefined,
+    },
   },
 ];
 
@@ -306,7 +339,14 @@ async function main() {
     throw new Error(`Unknown endpoint ${ONLY_ENDPOINT}; valid: ${ENDPOINTS.map(e => e.name).join(', ')}`);
   }
 
-  for (const spec of picked) {
+  // Two-phase ordering: currentstate + currentstateveh first (they honour
+  // ClientType=2 server-side), then everything else (client-side filtered
+  // against the CPK client set we learn from phase 1).
+  const phase1 = picked.filter((s) => s.name === 'currentstate' || s.name === 'currentstateveh');
+  const phase2 = picked.filter((s) => !phase1.includes(s));
+  const ordered = [...phase1, ...phase2];
+
+  for (const spec of ordered) {
     console.log(`\n● ${spec.name}  ${spec.base}${spec.path}`);
     const t0 = Date.now();
     const { all, pages } = await fetchAllPages(spec);
@@ -323,6 +363,16 @@ async function main() {
       pages.forEach((chunk, i) => {
         writeJson(`${spec.filePrefix}_p${i}.json`, chunk);
       });
+    }
+
+    // After phase 1, populate cpkClientNames so phase 2's rowFilter can
+    // apply client-side filtering to endpoints that ignore ClientType=2.
+    if (spec.name === 'currentstate' || spec.name === 'currentstateveh') {
+      for (const row of all) {
+        const c = typeof row?.client === 'string' ? row.client.trim() : '';
+        if (c) cpkClientNames.add(c);
+      }
+      console.log(`  CPK client names accumulated: ${cpkClientNames.size}`);
     }
   }
 

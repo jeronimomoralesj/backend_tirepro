@@ -354,16 +354,31 @@ async function main() {
       if (c) clientSet.add(c);
     }
   }
+  // Per-client "has any active vehicle" check — a client whose entire fleet
+  // is fuera de operación doesn't deserve its own Company row in our UI
+  // (would show up as "0 vehicles" in every dashboard). Build the set of
+  // clients with ≥1 active vehicle from /currentstatevehicles; vehicles
+  // themselves are still imported for those clients as orphans with
+  // companyId=null.
+  const activeClientSet = new Set<string>();
+  for (const r of currentStateVehRaw) {
+    if (String(r?.state).trim() !== 'En Operación') continue;
+    const c = typeof r?.client === 'string' ? r.client.trim() : '';
+    if (c) activeClientSet.add(c);
+  }
   let clients = [...clientSet].sort();
   if (ONLY_CLIENT) clients = clients.filter((c) => c.toLowerCase().includes(ONLY_CLIENT.toLowerCase()));
   if (CLIENTS_LIMIT) clients = clients.slice(0, CLIENTS_LIMIT);
-
-  console.log(`Unique clients to process: ${clients.length}`);
+  const skippedClientSet = new Set(clients.filter((c) => !activeClientSet.has(c)));
+  console.log(`Unique clients seen: ${clients.length}`);
+  console.log(`  with ≥1 active vehicle: ${clients.length - skippedClientSet.size}`);
+  console.log(`  all-inactive (no Company created, vehicles stay orphan): ${skippedClientSet.size}`);
 
   // ── Upsert Company + DistributorAccess per client ────────────────────────
   const clientToCompanyId = new Map<string, string>();
 
   for (const client of clients) {
+    if (skippedClientSet.has(client)) continue;
     const pretty = prettyCompanyName(client);
     // Prefer finding by exact normalised match; otherwise case-insensitive.
     const existing = await prisma.company.findFirst({
@@ -566,10 +581,13 @@ async function main() {
   // still maps them to the winner's TirePro id.
   const winnerByPlateKey = new Map<string, VehMeta>();          // "companyId|placa" → winner meta
   const aliasByVehicleId = new Map<number, number>();            // loser vehicleId → winner vehicleId
+  const ORPHAN_COMPANY_KEY = '__orphan__';
   for (const meta of vehicleMetaById.values()) {
     if (!meta.plate) continue;
-    const companyId = clientToCompanyId.get(meta.client);
-    if (!companyId) continue;
+    // When the client was all-inactive, clientToCompanyId has no entry —
+    // we still dedup + import those as clientless orphans so we don't
+    // lose the data entirely.
+    const companyId = clientToCompanyId.get(meta.client) ?? ORPHAN_COMPANY_KEY;
     const key = `${companyId}|${meta.plate.toLowerCase()}`;
     const prev = winnerByPlateKey.get(key);
     if (!prev || meta.actualMileage > prev.actualMileage) {
@@ -586,8 +604,10 @@ async function main() {
 
   async function processVehicle(meta: VehMeta) {
     if (!meta.plate) { vehicleSkipped++; return; }
-    const clientCompanyId = clientToCompanyId.get(meta.client);
-    if (!clientCompanyId) { vehicleSkipped++; return; }
+    // A client with no Company row (all vehicles fuera_de_operacion) still
+    // gets its vehicles imported — they land as orphans with companyId=null.
+    const clientCompanyId = clientToCompanyId.get(meta.client) ?? null;
+    const clientIsOrphan  = clientCompanyId === null;
 
     const ext = EXT_VEHICLE(meta.vehicleId);
     if (!APPLY) {
@@ -598,8 +618,8 @@ async function main() {
     const configuracion = mapConfiguracionFromType(meta.vehicleType);
     const tipovhc       = normalizeTipoVhc(meta.vehicleType);
     const inactive      = inactiveById.get(meta.vehicleId);
-    const orphan        = isOrphan(meta.vehicleId, meta.plate);
-    // Orphans don't link to any fleet; every other field is preserved.
+    const orphan        = clientIsOrphan || isOrphan(meta.vehicleId, meta.plate);
+    // Orphans (per-vehicle OR whole-client) don't link to any fleet.
     const companyId: string | null = orphan ? null : clientCompanyId;
 
     // sourceMetadata — lossless blob of every source field we don't promote
@@ -832,8 +852,11 @@ async function main() {
 
   async function processTire(r: TireRow) {
     const client = (r.client ?? '').trim();
-    const clientCompanyId = clientToCompanyId.get(client);
-    if (!clientCompanyId) { tireSkipped++; return; }
+    // Tires for clients with no Company row still get imported as orphans
+    // (companyId=null). Keeps us from silently dropping tire data just
+    // because the client's entire fleet happened to be fuera de operación.
+    const clientCompanyId = clientToCompanyId.get(client) ?? null;
+    const clientIsOrphan  = clientCompanyId === null;
 
     // Authoritative snapshot from /currentstatetires — carries the true
     // current state (including Desecho), commercialCost per life, and
@@ -937,8 +960,9 @@ async function main() {
     // means it never surfaces in any fleet dashboard but is still queryable
     // for cross-fleet analytics.
     const hostIsOrphan = !!plateKey && orphanPlateKeys.has(plateKey);
-    const companyId: string | null = hostIsOrphan ? null : clientCompanyId;
-    if (hostIsOrphan) tireOrphaned++;
+    const tireIsOrphan = clientIsOrphan || hostIsOrphan;
+    const companyId: string | null = tireIsOrphan ? null : clientCompanyId;
+    if (tireIsOrphan) tireOrphaned++;
 
     const baseTireData = {
       companyId,
