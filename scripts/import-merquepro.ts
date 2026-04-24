@@ -1510,6 +1510,22 @@ async function main() {
          AND t."externalSourceId" LIKE 'merquepro:%'
     `);
     console.log(`  (C) synced latest inspection snapshot: ${c} tires`);
+
+    // (D) Mirror tire.currentCpk onto every inspection's cpk/lifetimeCpk.
+    // The analyst UI reads Inspeccion.cpk (latest inspection wins), not
+    // Tire.currentCpk — without this pass every merquepro fleet showed
+    // blank CPK even when we had computed it on the tire row.
+    const d = await prisma.$executeRawUnsafe(`
+      UPDATE inspecciones i
+         SET cpk = t."currentCpk",
+             "lifetimeCpk" = t."currentCpk"
+        FROM "Tire" t
+       WHERE i."tireId" = t.id
+         AND t."externalSourceId" LIKE 'merquepro:%'
+         AND t."currentCpk" IS NOT NULL
+         AND (i.cpk IS NULL OR i.cpk <> t."currentCpk")
+    `);
+    console.log(`  (D) mirrored currentCpk onto inspecciones: ${d}`);
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────
