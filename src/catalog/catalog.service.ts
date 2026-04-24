@@ -772,23 +772,27 @@ export class CatalogService {
     if (params.dimension) where.dimension = { contains: params.dimension, mode: 'insensitive' };
     if (params.eje)       where.ejeTirePro = params.eje as EjeType;
     if (params.categoria) where.categoria = { equals: params.categoria, mode: 'insensitive' };
-    // Token-aware search. A query like "continental hdr 295" used to fail
-    // because `contains: "continental hdr 295"` never matches any single
-    // field — marca is "Continental", modelo is "HDR2", dimension is
-    // "295/80R22.5". Splitting on whitespace and requiring each token to
-    // hit SOME field via AND-of-ORs gives natural "narrow as you type"
-    // behavior. Dimension hits still work because digits match within
-    // "295/80R22.5" regardless of surrounding punctuation.
+    // Token-aware + typo-tolerant search. A query like "continental hdr
+    // 295" used to fail because `contains: "continental hdr 295"` never
+    // matches any single field — marca is "Continental", modelo is
+    // "HDR2", dimension is "295/80R22.5". Splitting on whitespace and
+    // requiring each token to hit SOME field via AND-of-ORs gives
+    // natural "narrow as you type" behavior.
+    //
+    // On top of that, each alphabetic token is fuzzy-expanded against
+    // the distinct set of marcas + modelos in the catalog — so
+    // "hanckook" picks up the real "hankook" via Levenshtein distance.
     if (params.q) {
       const tokens = params.q.trim().split(/\s+/).filter(Boolean);
       if (tokens.length > 0) {
-        where.AND = tokens.map((tok) => ({
-          OR: [
-            { marca:     { contains: tok, mode: 'insensitive' as const } },
-            { modelo:    { contains: tok, mode: 'insensitive' as const } },
-            { dimension: { contains: tok, mode: 'insensitive' as const } },
-            { skuRef:    { contains: tok, mode: 'insensitive' as const } },
-          ],
+        const variants = await Promise.all(tokens.map((t) => this.expandTokenFuzzy(t)));
+        where.AND = variants.map((alts) => ({
+          OR: alts.flatMap((v) => [
+            { marca:     { contains: v, mode: 'insensitive' as const } },
+            { modelo:    { contains: v, mode: 'insensitive' as const } },
+            { dimension: { contains: v, mode: 'insensitive' as const } },
+            { skuRef:    { contains: v, mode: 'insensitive' as const } },
+          ]),
         }));
       }
     }
@@ -1086,5 +1090,90 @@ export class CatalogService {
       orderBy: [{ companyId: 'asc' }, { coverIndex: 'asc' }],
       include: { company: { select: { id: true, name: true, plan: true } } },
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Fuzzy search — typo tolerance for distSearch
+  // Caches every distinct marca + modelo from the master catalog and
+  // lets the distSearch token matcher include near-misses via
+  // Levenshtein distance. Cheap in memory (low-thousands of strings)
+  // and fast to compute against per-query (few hundred Levenshtein
+  // comparisons, each early-terminated at distance > maxDist).
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private fuzzyTermsCache: { terms: string[]; expiresAt: number } | null = null;
+
+  private async getFuzzyTerms(): Promise<string[]> {
+    if (this.fuzzyTermsCache && this.fuzzyTermsCache.expiresAt > Date.now()) {
+      return this.fuzzyTermsCache.terms;
+    }
+    const [brands, models] = await Promise.all([
+      this.prisma.tireMasterCatalog.findMany({
+        select: { marca: true }, distinct: ['marca'],
+      }),
+      this.prisma.tireMasterCatalog.findMany({
+        select: { modelo: true }, distinct: ['modelo'],
+      }),
+    ]);
+    const set = new Set<string>();
+    for (const r of brands) if (r.marca)  set.add(r.marca.toLowerCase());
+    for (const r of models) if (r.modelo) set.add(r.modelo.toLowerCase());
+    const terms = [...set];
+    // Refresh every hour — master catalog edits are rare and distSearch
+    // does not need to feel them instantly.
+    this.fuzzyTermsCache = { terms, expiresAt: Date.now() + 60 * 60 * 1000 };
+    return terms;
+  }
+
+  private levenshtein(a: string, b: string, cap: number): number {
+    // Early-return if the length delta alone already exceeds the budget
+    // — tight loop on the full matrix is only worth it for close pairs.
+    if (Math.abs(a.length - b.length) > cap) return cap + 1;
+    const m = a.length, n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    let prev = new Array<number>(n + 1);
+    let curr = new Array<number>(n + 1);
+    for (let j = 0; j <= n; j++) prev[j] = j;
+    for (let i = 1; i <= m; i++) {
+      curr[0] = i;
+      let rowMin = i;
+      for (let j = 1; j <= n; j++) {
+        curr[j] = a[i - 1] === b[j - 1]
+          ? prev[j - 1]
+          : 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
+        if (curr[j] < rowMin) rowMin = curr[j];
+      }
+      if (rowMin > cap) return cap + 1;
+      [prev, curr] = [curr, prev];
+    }
+    return prev[n];
+  }
+
+  /**
+   * Given a user-typed token, return the original plus any catalog
+   * terms within Levenshtein distance `maxDist`. Pure-numeric tokens
+   * (dimension-like "295") skip fuzzy expansion since digit typos
+   * don't usually mean a different tire size. Tokens shorter than 4
+   * chars also skip — at that length a single edit collapses too
+   * many real brands together ("BFG" vs "GFK" etc.).
+   */
+  private async expandTokenFuzzy(token: string): Promise<string[]> {
+    const tok = token.toLowerCase();
+    if (!tok || tok.length < 4) return [token];
+    if (/^[0-9./-]+$/.test(tok)) return [token];
+    // 1 edit per 5 chars, floor, capped at 2. Keeps Continental →
+    // Continetal (1 edit) but refuses runaway fuzziness on long strings.
+    const maxDist = Math.max(1, Math.min(2, Math.floor(tok.length / 5)));
+    const terms = await this.getFuzzyTerms();
+    const matches = new Set<string>([token]);
+    for (const t of terms) {
+      if (t === tok) continue;
+      // Cheap prefilter: if t doesn't share at least one of the first
+      // two chars with tok, they're almost certainly too far apart.
+      if (t[0] !== tok[0] && t[1] !== tok[1]) continue;
+      if (this.levenshtein(tok, t, maxDist) <= maxDist) matches.add(t);
+    }
+    return [...matches];
   }
 }
