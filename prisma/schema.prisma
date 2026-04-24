@@ -1428,7 +1428,12 @@ model TireMasterCatalog {
 
   // Retread info
   reencauchable   Boolean @default(false)
-  vidasReencauche Int     @default(0) // max number of retreads
+  vidasReencauche Int     @default(0) // max number of retreads — TirePro
+                                       // computes the real average from
+                                       // fleet data, so distribuidor admins
+                                       // can't edit this (only TirePro
+                                       // admins via blog/admin).
+  tipoBanda       String? // retread band type / model for this SKU
 
   // Financial
   precioCop   Float? // retail price in COP

@@ -367,7 +367,9 @@ export class CatalogController {
     @Body() body: Record<string, unknown>,
   ) {
     await this.requireDistributor(req, { roles: ['admin'] });
-    return this.catalogService.adminUpdate(id, body);
+    // Narrower whitelist than the TirePro admin path — dists can't
+    // overwrite fleet-derived fields (vidas, km estimates, precioCop).
+    return this.catalogService.distUpdate(id, body);
   }
 
   @Post('dist/:id/images')

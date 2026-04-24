@@ -541,9 +541,10 @@ export class CatalogService {
   // ADMIN CRUD
   // ═══════════════════════════════════════════════════════════════════════════
 
-  // Everything an admin can edit on a master SKU row. Crowd* fields are
-  // deliberately excluded — they're computed by crowdsourceUpsert and
-  // letting a human edit them would corrupt the aggregation.
+  // Everything a TirePro admin can edit on a master SKU row. Crowd*
+  // fields are deliberately excluded — they're computed by
+  // crowdsourceUpsert and letting a human edit them would corrupt the
+  // aggregation.
   private readonly adminEditableFields = [
     'marca', 'modelo', 'dimension', 'skuRef',
     'anchoMm', 'perfil', 'rin',
@@ -551,18 +552,55 @@ export class CatalogService {
     'rtdMm', 'indiceCarga', 'indiceVelocidad', 'psiRecomendado', 'pesoKg',
     'cinturones', 'pr',
     'kmEstimadosReales', 'kmEstimadosFabrica',
-    'reencauchable', 'vidasReencauche',
+    'reencauchable', 'vidasReencauche', 'tipoBanda',
     'precioCop', 'cpkEstimado',
     'categoria', 'segmento', 'tipo', 'construccion',
     'notasColombia', 'fuente', 'url',
   ];
 
-  private pickEditable(data: Record<string, any>) {
+  // Narrower whitelist for distribuidor admins editing via /dist/:id.
+  // Deliberately omits the fields TirePro derives from fleet averages:
+  //   - vidasReencauche + kmEstimadosReales/Fabrica  (fleet averages)
+  //   - precioCop / cpkEstimado                      (our pricing column)
+  // so a distribuidor can't overwrite them with a local-opinion number.
+  private readonly distEditableFields = [
+    'marca', 'modelo', 'dimension', 'skuRef',
+    'anchoMm', 'perfil', 'rin',
+    'posicion', 'ejeTirePro', 'terreno', 'pctPavimento', 'pctDestapado',
+    'rtdMm', 'indiceCarga', 'indiceVelocidad', 'psiRecomendado', 'pesoKg',
+    'cinturones', 'pr',
+    'reencauchable', 'tipoBanda',
+    'categoria', 'segmento', 'tipo', 'construccion',
+    'notasColombia', 'fuente', 'url',
+  ];
+
+  private pickEditable(data: Record<string, any>, whitelist: readonly string[] = this.adminEditableFields) {
     const out: Record<string, any> = {};
-    for (const k of this.adminEditableFields) {
+    for (const k of whitelist) {
       if (k in data) out[k] = data[k] === '' ? null : data[k];
     }
     return out;
+  }
+
+  /** Distribuidor-admin edit. Re-uses adminUpdate's Prisma + error path
+   *  but filters incoming keys against distEditableFields so fleet-
+   *  derived fields (vidas, km, precioCop) can't be overwritten. */
+  async distUpdate(id: string, data: Record<string, any>) {
+    const payload = this.pickEditable(data, this.distEditableFields);
+    if (payload.dimension) payload.dimension = normalizeDimension(payload.dimension);
+    try {
+      const updated = await this.prisma.tireMasterCatalog.update({
+        where: { id },
+        data:  payload,
+      });
+      await Promise.all([this.cache.del('catalog:brands'), this.cache.del('catalog:dimensions')]);
+      return updated;
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') {
+        throw new NotFoundException('SKU not found');
+      }
+      throw e;
+    }
   }
 
   async adminList(params: { query?: string; marca?: string; dimension?: string; categoria?: string; page: number; pageSize: number }) {
