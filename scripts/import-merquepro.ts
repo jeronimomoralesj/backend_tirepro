@@ -1527,28 +1527,32 @@ async function main() {
     `);
     console.log(`  (D) mirrored currentCpk onto inspecciones: ${d}`);
 
-    // (D2) Backfill inspection km from the tire + mounted vehicle.
-    // Synthetic inspections (from currentstate) and a handful of /inspection
-    // rows with zero mileage land with kmActualVehiculo=null. If the tire
-    // has accumulated km, mirror it to the inspection; otherwise fall back
-    // to the vehicle's odometer. The UI uses kmActualVehiculo for several
-    // per-inspection metrics.
+    // (D2) Set tire-life km on every merquepro inspection. The UI's "Km"
+    // column reads kilometrosEstimados; semantically that's THIS tire's km
+    // (life-km), NOT the vehicle's lifetime odometer. Earlier versions of
+    // this pass wrote vehicle.kilometrajeActual into all three columns,
+    // which made fresh tires (~3mm worn) display impossibly-high values
+    // like 186k km because that was the vehicle's accumulated odometer.
+    //
+    //   kilometrosEstimados / kmEfectivos = tire.kilometrosRecorridos
+    //   kmActualVehiculo                  = vehicle odometer at inspection
+    //                                        (already populated from
+    //                                        /inspection.mileage for real
+    //                                        rows; vehicle fallback below
+    //                                        for synthetic rows)
     const d2a = await prisma.$executeRawUnsafe(`
-      UPDATE inspecciones i
-         SET "kilometrosEstimados" = t."kilometrosRecorridos",
-             "kmActualVehiculo"    = t."kilometrosRecorridos",
-             "kmEfectivos"         = t."kilometrosRecorridos"
-        FROM "Tire" t
-       WHERE i."tireId" = t.id
-         AND t."externalSourceId" LIKE 'merquepro:tire:%'
-         AND t."kilometrosRecorridos" > 0
-         AND (i."kmActualVehiculo" IS NULL OR i."kmActualVehiculo" = 0)
+      UPDATE inspecciones
+         SET "kilometrosEstimados" = NULLIF(src.t_km, 0),
+             "kmEfectivos"         = NULLIF(src.t_km, 0)
+        FROM (
+          SELECT t.id AS tid, t."kilometrosRecorridos" AS t_km
+            FROM "Tire" t WHERE t."externalSourceId" LIKE 'merquepro:tire:%'
+        ) src
+       WHERE inspecciones."tireId" = src.tid
     `);
     const d2b = await prisma.$executeRawUnsafe(`
       UPDATE inspecciones i
-         SET "kmActualVehiculo"     = v."kilometrajeActual",
-             "kilometrosEstimados"  = COALESCE(i."kilometrosEstimados", v."kilometrajeActual"),
-             "kmEfectivos"          = COALESCE(i."kmEfectivos",         v."kilometrajeActual")
+         SET "kmActualVehiculo" = v."kilometrajeActual"
         FROM "Tire" t
         JOIN "Vehicle" v ON v.id = t."vehicleId"
        WHERE i."tireId" = t.id
@@ -1556,7 +1560,7 @@ async function main() {
          AND (i."kmActualVehiculo" IS NULL OR i."kmActualVehiculo" = 0)
          AND v."kilometrajeActual" > 0
     `);
-    console.log(`  (D2) inspection km backfilled: ${d2a} from tire, ${d2b} from vehicle`);
+    console.log(`  (D2) inspection km set: ${d2a} tire-life, ${d2b} vehicle-odo`);
 
     // (E) Compute cpkProyectado + kmProyectado on every inspection using a
     // 5-tier fallback so the UI's "CPK Proy." / "Km Proy." columns show
