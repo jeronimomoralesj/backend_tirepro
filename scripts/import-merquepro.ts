@@ -382,14 +382,30 @@ async function main() {
   // ── Upsert Company + DistributorAccess per client ────────────────────────
   const clientToCompanyId = new Map<string, string>();
 
+  // Pre-load every existing company once and index by a normalized key
+  // (strip punctuation + spaces, lowercase). This prevents creating
+  // "Remax SAS" alongside an existing "Remax S.A.S" — the case-insensitive
+  // exact match was missing punctuation variants and spawning duplicates.
+  const allCompanies = await prisma.company.findMany({ select: { id: true, name: true } });
+  const normKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const companyByNormKey = new Map<string, { id: string; name: string }>();
+  for (const c of allCompanies) {
+    companyByNormKey.set(normKey(c.name), c);
+  }
+
   for (const client of clients) {
     if (skippedClientSet.has(client)) continue;
     const pretty = prettyCompanyName(client);
-    // Prefer finding by exact normalised match; otherwise case-insensitive.
-    const existing = await prisma.company.findFirst({
-      where: { name: { equals: pretty, mode: 'insensitive' } },
-      select: { id: true, name: true },
-    });
+    // Match on normalized key first (Remax SAS == Remax S.A.S == REMAX S.A.S.)
+    // — falling back to case-insensitive exact only when normalization gives
+    // no hit (defensive; the normalized form should always match).
+    let existing = companyByNormKey.get(normKey(pretty)) ?? null;
+    if (!existing) {
+      existing = await prisma.company.findFirst({
+        where: { name: { equals: pretty, mode: 'insensitive' } },
+        select: { id: true, name: true },
+      });
+    }
 
     let companyId: string;
     if (existing) {
@@ -400,6 +416,9 @@ async function main() {
         select: { id: true },
       });
       companyId = created.id;
+      // Register in the normalized index so later clients with a different
+      // punctuation variant of the same name pick up this just-created row.
+      companyByNormKey.set(normKey(pretty), { id: companyId, name: pretty });
     } else {
       companyId = 'dryrun-' + Math.random().toString(36).slice(2, 10);
     }
