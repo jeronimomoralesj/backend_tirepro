@@ -65,21 +65,28 @@ async function main() {
   const rows: any[] = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { raw: false, defval: '' });
   console.log(`Excel rows: ${rows.length}`);
 
-  // Pre-load Adispetrol vehicles + tires
-  const vehicles = await prisma.vehicle.findMany({
+  // Pre-load Adispetrol vehicles
+  let vehicles = await prisma.vehicle.findMany({
     where: { companyId: COMPANY_ID },
     select: { id: true, placa: true, kilometrajeActual: true },
   });
   const vehByPlate = new Map<string, typeof vehicles[number]>();
   for (const v of vehicles) vehByPlate.set(v.placa.toLowerCase().replace(/\s+/g, ''), v);
 
-  const tires = await prisma.tire.findMany({
+  // No auto-create — the big Excel is multi-client. Only Excel rows whose
+  // placa already exists under Adispetrol get processed; rows for other
+  // Remax clients pass through silently.
+
+  let tireRows = await prisma.tire.findMany({
     where: { companyId: COMPANY_ID, vehicleId: { not: null } },
     select: { id: true, vehicleId: true, posicion: true },
   });
-  const tireByVP = new Map<string, typeof tires[number]>();
-  for (const t of tires) tireByVP.set(`${t.vehicleId}|${t.posicion}`, t);
-  console.log(`Adispetrol vehicles: ${vehicles.length}, tires: ${tires.length}, mounted by position: ${tireByVP.size}`);
+  const tireByVP = new Map<string, typeof tireRows[number]>();
+  for (const t of tireRows) tireByVP.set(`${t.vehicleId}|${t.posicion}`, t);
+  console.log(`Adispetrol vehicles: ${vehicles.length}, tires: ${tireRows.length}, mounted by position: ${tireByVP.size}`);
+
+  // No auto-create on tires either — only update existing Adispetrol tire
+  // slots. Inventory tires (no vehicle/position) are left alone.
 
   // Aggregate Excel rows per tire-slot. The latest mount-date row defines
   // the tire's core fields (placa, marca, diseno, vida, profundidadInicial,
@@ -181,6 +188,7 @@ async function main() {
     });
 
     // 4. Create one inspection per Excel row.
+    let inspIdx = 0;
     for (const row of slot.rows) {
       const fecha = parseDate(row['Fecha Inspeccion']);
       if (!fecha) continue;
@@ -191,7 +199,8 @@ async function main() {
       const kmA  = num(row['Km Actual']);
       const kmR  = num(row['Km  Recorrido'] || row['Km Recorrido']);
       const cap  = (n: number) => Math.min(Math.max(0, Math.round(n)), 250000);
-      const insp = await prisma.inspeccion.create({
+      inspIdx++;
+      try { const insp = await prisma.inspeccion.create({
         data: {
           tireId: slot.tireId,
           fecha,
@@ -203,12 +212,13 @@ async function main() {
           kilometrosEstimados: kmR ? cap(kmR) : null,
           kmEfectivos: kmR ? cap(kmR) : null,
           vidaAlMomento: mapVida(String(row['Nueva/Reencauche'] || ''), String(row['Banda Reencauche'] || '').trim()),
-          externalSourceId: `adispetrol:rich:${slot.tireId}:${fecha.toISOString().slice(0, 10)}:${row.Posicion || ''}`,
+          externalSourceId: `adispetrol:rich:${slot.tireId}:${fecha.toISOString().slice(0, 10)}:${row.Posicion || ''}:${inspIdx}`,
           sourceMetadata: { source: 'adispetrol_rich_excel_replay' } as any,
         },
         select: { id: true },
       });
       inspsCreated++;
+      } catch (err: any) { if (err?.code !== 'P2002') throw err; }
     }
   }
 
