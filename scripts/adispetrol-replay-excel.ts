@@ -17,7 +17,7 @@ const XLSX = require('xlsx');
 const prisma = new PrismaClient();
 
 const COMPANY_ID = '9f958ac8-39a3-4012-9695-a2e96ae9aee9';
-const EXCEL_PATH = '/Users/jeronimo/Downloads/informacion actualizada remax (1) (1).xlsx';
+const EXCEL_PATH = '/Users/jeronimo/Downloads/informacion actualizada remax 2.xlsx';
 const APPLY = process.argv.includes('--apply');
 
 // Excel "Fecha Inspeccion" comes through as either an ISO-ish string or an

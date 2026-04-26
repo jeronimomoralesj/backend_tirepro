@@ -73,9 +73,47 @@ async function main() {
   const vehByPlate = new Map<string, typeof vehicles[number]>();
   for (const v of vehicles) vehByPlate.set(v.placa.toLowerCase().replace(/\s+/g, ''), v);
 
-  // No auto-create — the big Excel is multi-client. Only Excel rows whose
-  // placa already exists under Adispetrol get processed; rows for other
-  // Remax clients pass through silently.
+  // Auto-create vehicles for placas in Excel that don't yet exist under
+  // Adispetrol. The big INFORMACION REMAX Excel is the authoritative
+  // Adispetrol fleet snapshot (472 placas). Skip placas that already
+  // belong to OTHER companies (don't poach them).
+  const placasInExcel = new Set<string>();
+  const placaToTipoVhc = new Map<string, string>();
+  const placaToKm      = new Map<string, number>();
+  for (const row of rows) {
+    const p = String(row.PLACA || '').toLowerCase().replace(/\s+/g, '');
+    if (!p) continue;
+    placasInExcel.add(p);
+    if (!placaToTipoVhc.has(p)) placaToTipoVhc.set(p, String(row.Tipologia || '').trim().toLowerCase() || 'otro');
+    const km = num(row['Km Actual']);
+    if (km > (placaToKm.get(p) ?? 0)) placaToKm.set(p, km);
+  }
+  let vehCreated = 0, vehSkipped = 0;
+  for (const placa of placasInExcel) {
+    if (vehByPlate.has(placa)) continue;
+    // Check if placa belongs to another company before creating
+    const otherCo: any[] = await prisma.$queryRaw`
+      SELECT id FROM "Vehicle" WHERE LOWER(REPLACE(placa, ' ', '')) = ${placa} AND "companyId" IS NOT NULL LIMIT 1`;
+    if (otherCo.length > 0) { vehSkipped++; continue; }
+    if (!APPLY) { vehCreated++; continue; }
+    const created = await prisma.vehicle.create({
+      data: {
+        companyId: COMPANY_ID,
+        placa,
+        tipovhc: placaToTipoVhc.get(placa) || 'otro',
+        kilometrajeActual: Math.min(placaToKm.get(placa) ?? 0, 2_000_000),
+        carga: 'seca',
+        pesoCarga: 0,
+        originalClient: 'ADISPETROL SA',
+        sourceMetadata: { source: 'created_from_INFORMACION_REMAX_excel' } as any,
+      },
+      select: { id: true, placa: true, kilometrajeActual: true },
+    });
+    vehByPlate.set(placa, created);
+    vehCreated++;
+  }
+  console.log(`Vehicles auto-created: ${vehCreated}  skipped (other company): ${vehSkipped}`);
+  vehicles = [...vehByPlate.values()];
 
   let tireRows = await prisma.tire.findMany({
     where: { companyId: COMPANY_ID, vehicleId: { not: null } },
@@ -85,8 +123,45 @@ async function main() {
   for (const t of tireRows) tireByVP.set(`${t.vehicleId}|${t.posicion}`, t);
   console.log(`Adispetrol vehicles: ${vehicles.length}, tires: ${tireRows.length}, mounted by position: ${tireByVP.size}`);
 
-  // No auto-create on tires either — only update existing Adispetrol tire
-  // slots. Inventory tires (no vehicle/position) are left alone.
+  // Auto-create tires for slots in Excel that don't have one in DB yet.
+  if (APPLY) {
+    let tCreated = 0;
+    const seenSlot = new Set<string>();
+    for (const row of rows) {
+      const p = String(row.PLACA || '').toLowerCase().replace(/\s+/g, '');
+      const pos = parseInt(String(row.Posicion || '0'), 10);
+      const veh = vehByPlate.get(p);
+      if (!veh || !pos) continue;
+      const k = `${veh.id}|${pos}`;
+      if (seenSlot.has(k)) continue;
+      seenSlot.add(k);
+      if (tireByVP.has(k)) continue;
+      const dial = String(row.ID || '').trim() || `${p}-${pos}`;
+      const banda = String(row['Banda Reencauche'] || '').trim();
+      const created = await prisma.tire.create({
+        data: {
+          companyId: COMPANY_ID,
+          vehicleId: veh.id,
+          placa: dial,
+          marca: String(row.Marca || 'DESCONOCIDA').trim(),
+          diseno: (banda || String(row['Diseño'] || row.Diseño || 'N/A').trim()) || 'N/A',
+          dimension: String(row.Dimension || 'N/A').trim(),
+          eje: mapEje(String(row.Eje || '')),
+          posicion: pos,
+          profundidadInicial: num(row['Prof. Original']) || 22,
+          vidaActual: mapVida(String(row['Nueva/Reencauche'] || ''), banda),
+          totalVidas: 0,
+          kilometrosRecorridos: 0,
+          fechaInstalacion: parseDate(row['Fecha Montaje']) ?? new Date(),
+          sourceMetadata: { source: 'created_from_INFORMACION_REMAX_excel' } as any,
+        },
+        select: { id: true, vehicleId: true, posicion: true },
+      });
+      tireByVP.set(k, created);
+      tCreated++;
+    }
+    console.log(`Tires auto-created: ${tCreated}`);
+  }
 
   // Aggregate Excel rows per tire-slot. The latest mount-date row defines
   // the tire's core fields (placa, marca, diseno, vida, profundidadInicial,
