@@ -106,6 +106,16 @@ async function main() {
 
     if (!APPLY) { updated++; continue; }
 
+    // Tire-life km = vehicle odo at inspection − vehicle odo at mount.
+    // Excel "Km Actual" is the vehicle's lifetime odometer (often 1M+ on
+    // heavy trucks); we don't want that on the Tire row. Cap at 250k as a
+    // sanity guard for cases where Km Montaje is 0/missing.
+    const kmMontaje = parseFloat(String(row['Km Montaje'] || '0')) || 0;
+    const tireLifeKm = km && kmMontaje >= 0
+      ? Math.min(Math.max(0, Math.round(km - kmMontaje)), 250000)
+      : 0;
+    const vida = mapVidaFromExcel(String(row['Nueva/Reencauche'] || ''), banda);
+
     // 1. Update tire core fields
     await prisma.tire.update({
       where: { id: tire.id },
@@ -115,10 +125,11 @@ async function main() {
         ...(diseno       ? { diseno: banda || diseno } : {}),
         ...(dimension    ? { dimension } : {}),
         eje: mapEje(String(row.Eje || '')),
-        vidaActual: mapVidaFromExcel(String(row['Nueva/Reencauche'] || ''), banda),
+        vidaActual: vida,
+        totalVidas: vida === VidaValue.nueva ? 0 : 1,
         ...(profOrig     ? { profundidadInicial: profOrig } : {}),
         ...(fechaMontaje ? { fechaInstalacion: fechaMontaje } : {}),
-        ...(km           ? { kilometrosRecorridos: Math.round(km) } : {}),
+        kilometrosRecorridos: tireLifeKm,
       },
     });
 
@@ -153,10 +164,13 @@ async function main() {
             profundidadCen: cen ?? 0,
             profundidadExt: ext ?? 0,
             presionPsi: psi,
+            // kmActualVehiculo IS the vehicle odometer at inspection — keep it
+            // raw. kilometrosEstimados / kmEfectivos must be tire-life km
+            // (vehicle odo at inspection − vehicle odo at mount), capped 250k.
             kmActualVehiculo: km ? Math.round(km) : (veh.kilometrajeActual || null),
-            kilometrosEstimados: km ? Math.round(km) : null,
-            kmEfectivos: km ? Math.round(km) : null,
-            vidaAlMomento: mapVidaFromExcel(String(row['Nueva/Reencauche'] || ''), banda),
+            kilometrosEstimados: tireLifeKm || null,
+            kmEfectivos: tireLifeKm || null,
+            vidaAlMomento: vida,
             externalSourceId: `adispetrol:excel:${tire.id}:${fechaInsp.toISOString().slice(0,10)}`,
             sourceMetadata: { source: 'adispetrol_excel_replay', row: { ...row } } as any,
           },
