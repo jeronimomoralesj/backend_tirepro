@@ -591,6 +591,11 @@ model Tire {
   @@index([dimension, marca]) // cross-fleet benchmark queries
   @@index([companyId, inventoryBucketId])
   @@index([companyId, inventoryEnteredAt])
+  // Partial unique index on (vehicleId, posicion) where vehicleId IS NOT
+  // NULL AND posicion > 0 — declared via raw SQL in
+  // prisma/migrations/20260427011129_tire_unique_position_per_vehicle/
+  // because Prisma's @@unique can't express partial filters. Prevents
+  // two tires from sitting on the same wheel position via a race.
 }
 
 // =============================================================================

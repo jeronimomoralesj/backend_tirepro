@@ -292,7 +292,11 @@ export interface InspectionRow {
 
 interface CpkMetrics {
   cpk: number;
-  cpt: number;
+  // null when no time has elapsed yet (e.g., the inspection written at a
+  // reencauche transition has mesesEnUso=0). Persisted as null so the UI
+  // can show "—" instead of "$0/mes", which previously masked missing
+  // data as a real $0 value.
+  cpt: number | null;
   cpkProyectado: number;
   cptProyectado: number;
   projectedKm: number;
@@ -520,7 +524,10 @@ function calcCpkMetrics(
     cpk = 0;
   }
 
-  const cpt = meses > 0 ? totalCost / meses : 0;
+  // null instead of 0 when no time has elapsed — distinguishes "no data
+  // yet" from "the cost really is zero per month" so dashboards can show
+  // a sentinel ("—") instead of a misleading $0.
+  const cpt: number | null = meses > 0 ? totalCost / meses : null;
 
   const projectedMonths = projectedKm / C.KM_POR_MES;
   const cpkProyectado   = projectedKm     > 0 ? totalCost / projectedKm     : 0;
@@ -3743,7 +3750,12 @@ export class TireService {
         projectedKm = totalTireKm + (totalTireKm / mmWorn) * mmLeft;
       }
       const cpkProyectado = projectedKm > 0 ? totalCost / projectedKm : 0;
-      const projectedMonths = projectedKm > 0 ? projectedKm / 7000 : 0; // ~7000 km/month
+      // Use the canonical fleet-wide constant — the previous 7000 here
+      // diverged from C.KM_POR_MES (6000) used everywhere else, so the
+      // same tire's cptProyectado would shift depending on whether the
+      // inspection was created (calcCpkMetrics path, 6k) or edited
+      // (this path, 7k). One source of truth.
+      const projectedMonths = projectedKm > 0 ? projectedKm / C.KM_POR_MES : 0;
       const cptProyectado = projectedMonths > 0 ? totalCost / projectedMonths : 0;
 
       data.cpk = cpk;
