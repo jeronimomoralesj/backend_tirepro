@@ -157,7 +157,7 @@ export class AuthService {
       envUrl && !envUrl.includes('localhost') && !envUrl.includes('127.0.0.1')
         ? envUrl.replace(/\/$/, '')
         : 'https://www.tirepro.com.co';
-    return `${baseUrl}/verify-email?token=${token}`;
+    return `${baseUrl}/verify?token=${token}`;
   }
 
   // -------------------------------------------------------------------------

@@ -83,6 +83,10 @@ export class UsersService {
 
     const hashedPassword    = await bcrypt.hash(password, 12);
     const verificationToken = randomBytes(32).toString('hex');
+    // Same 48h TTL as the standalone /auth/register flow — see the
+    // auth-cleanup cron, which deletes unverified users past this
+    // threshold when their company is also unverified.
+    const verificationTokenExpiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
 
     const newUser = await this.prisma.user.create({
       data: {
@@ -92,8 +96,14 @@ export class UsersService {
         companyId:         companyId || '',
         role:              resolvedRole,
         puntos:            0,
-        isVerified:        true,
+        // Every new user — public signup AND admin invite — must verify
+        // their email before they can log in. This closes the bypass
+        // path where a bot could POST /companies/register followed by
+        // POST /users/register to create a fully-active account
+        // without any email gate.
+        isVerified:        false,
         verificationToken,
+        verificationTokenExpiresAt,
         preferredLanguage: preferredLanguage || 'es',
       },
       select: USER_PUBLIC_SELECT,
@@ -102,11 +112,36 @@ export class UsersService {
     // Invalidate the company user list — it no longer includes this new user
     await this.cache.del(this.usersKey(companyId)); // ← added
 
-    this.emailService.sendWelcomeEmailEs(email, name).catch(err =>
-      this.logger.error(`Welcome email failed for ${email}: ${err.message}`),
+    // Send the activation link instead of the plain "welcome" email so
+    // the user has a path to verify. Same fire-and-forget pattern: a
+    // transient SMTP failure doesn't fail account creation, but the
+    // user can't log in until they click. If the email truly didn't
+    // arrive, they'll be auto-cleaned up after 48h.
+    const verifyLink = this.buildVerifyLink(verificationToken);
+    const sendInLang = (preferredLanguage || 'es') === 'en'
+      ? this.emailService.sendWelcomeEmailWithVerification.bind(this.emailService)
+      : this.emailService.sendWelcomeEmailWithVerificationEs.bind(this.emailService);
+    sendInLang(email, name, verifyLink).catch((err) =>
+      this.logger.error(`Verification email failed for ${email}: ${err.message}`),
     );
 
-    return { message: 'User created successfully.', user: newUser };
+    return {
+      message:
+        'User created. A verification link was emailed — the account must be verified within 48 hours.',
+      user: newUser,
+    };
+  }
+
+  /** Same logic as auth.service.buildVerifyLink — kept duplicated to avoid a
+   *  cross-module dependency. Pinned to production frontend if FRONTEND_URL
+   *  points at localhost / 127.0.0.1 (local dev misconfig). */
+  private buildVerifyLink(token: string): string {
+    const envUrl = (process.env.FRONTEND_URL ?? '').trim();
+    const baseUrl =
+      envUrl && !envUrl.includes('localhost') && !envUrl.includes('127.0.0.1')
+        ? envUrl.replace(/\/$/, '')
+        : 'https://www.tirepro.com.co';
+    return `${baseUrl}/verify?token=${token}`;
   }
 
   // ===========================================================================
