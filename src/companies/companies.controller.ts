@@ -69,6 +69,21 @@ deleteCompany(@Param('companyId') companyId: string) {
     return this.companiesService.createCompany(dto);
   }
 
+  /**
+   * TirePro-side manual verification of a tenant. Used by support when
+   * onboarding is happening offline (sales call, signed contract) and we
+   * want to spare the company from the auth-cleanup cron's 48-hour purge
+   * even if the registering user hasn't clicked the email link yet.
+   *
+   * Auth: JWT-guarded; further guarded inside the service to require a
+   * TirePro-internal admin role.
+   */
+  @Patch(':companyId/verify')
+  @UseGuards(JwtAuthGuard)
+  verifyCompany(@Param('companyId') companyId: string, @Req() req: any) {
+    return this.companiesService.verifyCompany(companyId, req?.user);
+  }
+
   // ── Agent settings & email (must be before :companyId catch-all) ─────────
 
   @UseGuards(JwtAuthGuard)

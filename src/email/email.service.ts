@@ -118,12 +118,23 @@ export class EmailService implements OnModuleInit {
                   <td align="center" style="padding-bottom: 30px;">
                     <table border="0" cellspacing="0" cellpadding="0">
                       <tr>
+                        <td align="center" style="border-radius: 8px;" bgcolor="#348CCB">
+                          <a href="${verifyLink}" target="_blank" style="font-size: 18px; font-family: 'Inter', sans-serif; color: #ffffff; text-decoration: none; border-radius: 8px; background-color: #348CCB; padding: 15px 25px; border: 1px solid #1E76B6; display: inline-block; font-weight: bold;">
+                            Activate my account
+                          </a>
+                        </td>
                       </tr>
                     </table>
                   </td>
                 </tr>
               </table>
 
+              <p style="font-size: 13px; color: #6b7280; margin-top: 8px; word-break: break-all;">
+                Or paste this link into your browser: <a href="${verifyLink}" style="color: #1E76B6;">${verifyLink}</a>
+              </p>
+              <p style="font-size: 13px; color: #6b7280; margin-top: 16px;">
+                This link expires in 48 hours. After that, the account will be removed.
+              </p>
               <p style="font-size: 14px; color: #173D68; margin-top: 20px;">If you didn't create an account, or if you received this email by mistake, please disregard it.</p>
             </td>
           </tr>
@@ -178,6 +189,12 @@ export class EmailService implements OnModuleInit {
                 </tr>
               </table>
 
+              <p style="font-size: 13px; color: #6b7280; margin-top: 8px; word-break: break-all;">
+                O pega este enlace en tu navegador: <a href="${verifyLink}" style="color: #1E76B6;">${verifyLink}</a>
+              </p>
+              <p style="font-size: 13px; color: #6b7280; margin-top: 16px;">
+                Este enlace expira en 48 horas. Si no lo activas, la cuenta será eliminada.
+              </p>
               <p style="font-size: 14px; color: #173D68; margin-top: 20px;">Si tú no solicitaste crear una cuenta o si recibiste este correo por equivocación puedes ignorarlo.</p>
             </td>
           </tr>

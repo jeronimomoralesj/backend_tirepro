@@ -46,14 +46,43 @@ export class UsersController {
 
     const user = await this.prisma.user.findFirst({
       where:  { verificationToken: token },
-      select: { id: true, email: true, name: true, preferredLanguage: true },
+      select: {
+        id: true, email: true, name: true, preferredLanguage: true,
+        // Pull the expiry so we can reject stale tokens — the
+        // auth-cleanup cron may not have purged the row yet (runs
+        // hourly), so the user could still click an old link.
+        verificationTokenExpiresAt: true,
+        companyId: true,
+      },
     });
     if (!user) throw new BadRequestException('Verification token is invalid or expired');
+    if (
+      user.verificationTokenExpiresAt &&
+      user.verificationTokenExpiresAt.getTime() < Date.now()
+    ) {
+      throw new BadRequestException('Verification link expired. Please register again.');
+    }
 
     await this.prisma.user.update({
       where: { id: user.id },
-      data:  { isVerified: true, verificationToken: null },
+      data:  {
+        isVerified:                 true,
+        verificationToken:          null,
+        verificationTokenExpiresAt: null,
+        emailVerifiedAt:            new Date(),
+      },
     });
+
+    // The user verifying their email also implicitly verifies their
+    // company (if any). This covers the "self-served signup that created
+    // a company" flow without forcing a TirePro admin to manually
+    // approve every brand-new tenant.
+    if (user.companyId) {
+      await this.prisma.company.update({
+        where: { id: user.companyId },
+        data:  { isVerified: true, verifiedAt: new Date() },
+      }).catch(() => { /* company may have already been removed */ });
+    }
 
     setTimeoutPromise(600).then(async () => {
       try {

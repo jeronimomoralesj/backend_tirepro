@@ -197,6 +197,13 @@ model User {
   puntos            Int       @default(0)
   isVerified        Boolean   @default(false)
   verificationToken String?
+  // 48-hour TTL on the verification token. The auth-cleanup cron deletes
+  // users where isVerified=false AND createdAt < now-48h AND their
+  // company is also unverified, so this column lets the verify endpoint
+  // refuse expired clicks without scheduling them for deletion mid-flow.
+  verificationTokenExpiresAt DateTime?
+  // When the user actually clicked the verification link. Audit only.
+  emailVerifiedAt   DateTime?
   // Password reset
   resetToken        String?
   resetTokenExpiry  DateTime?
@@ -276,6 +283,11 @@ model Company {
   periodicity  Int         @default(1)
   profileImage String      @default("https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png")
   plan         CompanyPlan @default(pro)
+  // Companies start unverified; a TirePro admin promotes them via
+  // PATCH /companies/:id/verify (or by virtue of the registering user
+  // verifying their email). Pre-migration rows were backfilled to true.
+  isVerified   Boolean     @default(false)
+  verifiedAt   DateTime?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 

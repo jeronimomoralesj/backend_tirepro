@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Inject,
 } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
@@ -102,6 +103,38 @@ export class CompaniesService {
 
     // No cache to invalidate on create — the key doesn't exist yet
     return { message: 'Company registered successfully', companyId: company.id };
+  }
+
+  /**
+   * Manually mark a company as verified, opting it out of the
+   * auth-cleanup cron's 48-hour purge. Restricted to TirePro internal
+   * staff (email domain check) — if you ever introduce a dedicated
+   * tirepro_admin role, swap the domain check for that.
+   */
+  async verifyCompany(companyId: string, requester?: { email?: string }) {
+    const email = (requester?.email ?? '').toLowerCase();
+    // The same internal domain TirePro uses for staff accounts. Anyone
+    // with a real address there is implicitly allowed to mark customers
+    // as verified — no need for a separate role yet.
+    if (!email.endsWith('@tirepro.com.co')) {
+      throw new ForbiddenException('Only TirePro staff can verify companies');
+    }
+
+    const existing = await this.prisma.company.findUnique({
+      where:  { id: companyId },
+      select: { id: true, isVerified: true },
+    });
+    if (!existing) throw new NotFoundException('Company not found');
+    if (existing.isVerified) {
+      return { message: 'Company already verified', companyId };
+    }
+
+    await this.prisma.company.update({
+      where: { id: companyId },
+      data:  { isVerified: true, verifiedAt: new Date() },
+    });
+    await this.invalidateCompanyCache(companyId);
+    return { message: 'Company verified', companyId };
   }
 
   // ── Read ──────────────────────────────────────────────────────────────────

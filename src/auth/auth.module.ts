@@ -6,6 +6,7 @@ import { MailerModule } from '@nestjs-modules/mailer';
 
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
+import { AuthCleanupCron } from './auth-cleanup.cron';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CompanyScopeGuard } from './guards/company-scope.guard';
@@ -89,6 +90,9 @@ import { EmailModule } from '../email/email.module';
     JwtAuthGuard,
     CompanyScopeGuard,
     AdminPasswordGuard,
+    // Hourly purge of unverified accounts past their 48-hour TTL. The
+    // ScheduleModule.forRoot() in app.module activates the @Cron decorator.
+    AuthCleanupCron,
   ],
   controllers: [AuthController],
   exports: [AuthService, JwtAuthGuard, CompanyScopeGuard, AdminPasswordGuard, PassportModule, JwtModule],

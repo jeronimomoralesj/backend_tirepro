@@ -45,6 +45,9 @@ interface AuthUser {
 
 const BCRYPT_ROUNDS = 12;
 const BLOG_PASSWORD_TTL_HOURS = 24;
+// Verification link lifetime. Matches the cleanup cron's purge threshold
+// (see auth-cleanup.cron.ts) so an expired link can't outlive the account.
+export const VERIFICATION_TTL_MS = 48 * 60 * 60 * 1000;
 
 // Dummy hash for constant-time comparison when no record exists.
 const DUMMY_HASH =
@@ -102,6 +105,13 @@ export class AuthService {
     if (existing) throw new BadRequestException('User already exists');
 
     const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    // 48-hour verification window. Matches the auth-cleanup cron's purge
+    // threshold, so an unclicked link expires at the same moment the
+    // account becomes eligible for deletion. Picking a different number
+    // here would create either zombie accounts (link valid past purge)
+    // or dead links (token expired but user still exists, must re-register).
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationTokenExpiresAt = new Date(Date.now() + VERIFICATION_TTL_MS);
 
     const user = await this.prisma.user.create({
       data: {
@@ -112,11 +122,42 @@ export class AuthService {
         role: UserRole.admin,
         userPlan: 'free',
         puntos: 0,
-        isVerified: true, // standalone users skip email verification
+        // Account starts unverified — the user must click the email link
+        // before they can log in. The cleanup cron deletes them after 48h
+        // if they never do.
+        isVerified: false,
+        verificationToken,
+        verificationTokenExpiresAt,
       },
     });
 
-    return { message: 'User registered successfully', userId: user.id };
+    // Send the verification email. Fire-and-forget — a transient SMTP
+    // failure shouldn't block account creation. The user can request a
+    // new link via /auth/resend-verification (TODO if needed).
+    const verifyLink = this.buildVerifyLink(verificationToken);
+    this.emailService
+      .sendWelcomeEmailWithVerificationEs(email, name, verifyLink)
+      .catch((err) =>
+        this.logger.warn(`Verification email failed for ${email}: ${err.message}`),
+      );
+
+    return {
+      message:
+        'Account created. Check your email — you have 48 hours to verify or the account will be deleted.',
+      userId: user.id,
+    };
+  }
+
+  /** Build the click-through link sent in verification emails. Pinned to
+   *  the production frontend even when FRONTEND_URL is misconfigured —
+   *  same defensive pattern the password-reset email uses. */
+  private buildVerifyLink(token: string): string {
+    const envUrl = (this.configService.get<string>('FRONTEND_URL') ?? '').trim();
+    const baseUrl =
+      envUrl && !envUrl.includes('localhost') && !envUrl.includes('127.0.0.1')
+        ? envUrl.replace(/\/$/, '')
+        : 'https://www.tirepro.com.co';
+    return `${baseUrl}/verify-email?token=${token}`;
   }
 
   // -------------------------------------------------------------------------
