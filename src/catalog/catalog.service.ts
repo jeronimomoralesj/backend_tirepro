@@ -674,6 +674,68 @@ export class CatalogService {
     }
   }
 
+  /**
+   * Distributor-self-serve SKU creation. Lets a dist admin / catalogo_admin
+   * add a tire to the master catalog when their search came up empty,
+   * instead of having to ping TirePro support to onboard it.
+   *
+   *   - Whitelists fields against `distEditableFields` (no fleet-derived
+   *     numbers like vidasReencauche or precioCop).
+   *   - Stamps `fuente = 'distribuidor'` so we can later tell which rows
+   *     came from self-serve and curate them if needed.
+   *   - Auto-subscribes the calling company so the new SKU lands directly
+   *     in their catalog list — no extra click.
+   *   - If skuRef collides with an existing row, subscribes them to the
+   *     existing one and surfaces it via SKU_REF_TAKEN so the UI can
+   *     redirect rather than blow up.
+   */
+  async distCreateSku(
+    companyId: string,
+    userId: string,
+    data: Record<string, any>,
+  ) {
+    const payload = this.pickEditable(data, this.distEditableFields);
+    if (!payload.marca || !payload.modelo || !payload.dimension || !payload.skuRef) {
+      throw new BadRequestException(
+        'marca, modelo, dimension y skuRef son obligatorios',
+      );
+    }
+    payload.dimension = normalizeDimension(payload.dimension);
+    const skuRef = String(payload.skuRef).trim();
+    payload.skuRef = skuRef;
+    payload.fuente = 'distribuidor';
+
+    const existing = await this.prisma.tireMasterCatalog.findUnique({
+      where:  { skuRef },
+      select: { id: true, marca: true, modelo: true, dimension: true },
+    });
+    if (existing) {
+      // Already in the master catalog — just subscribe instead of erroring.
+      const subscription = await this.subscribe(existing.id, companyId, userId);
+      throw new ConflictException({
+        message: `skuRef "${skuRef}" ya existe — lo agregamos a tu catálogo.`,
+        code: 'SKU_REF_TAKEN',
+        existing,
+        subscription,
+      });
+    }
+
+    try {
+      const created = await this.prisma.tireMasterCatalog.create({ data: payload as any });
+      const subscription = await this.subscribe(created.id, companyId, userId);
+      await Promise.all([this.cache.del('catalog:brands'), this.cache.del('catalog:dimensions')]);
+      return { sku: created, subscription };
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        throw new ConflictException({
+          message: `skuRef "${skuRef}" ya existe`,
+          code: 'SKU_REF_TAKEN',
+        });
+      }
+      throw e;
+    }
+  }
+
   async adminUpdate(id: string, data: Record<string, any>) {
     const payload = this.pickEditable(data);
     if (payload.dimension) payload.dimension = normalizeDimension(payload.dimension);

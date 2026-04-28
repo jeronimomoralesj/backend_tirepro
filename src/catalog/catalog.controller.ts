@@ -306,6 +306,23 @@ export class CatalogController {
     });
   }
 
+  /**
+   * Distributor self-serve SKU creation. Used by the explorar page when a
+   * dist admin can't find a tire in the master catalog and wants to add it
+   * themselves. Creates the master row + auto-subscribes the dist's
+   * company so the new SKU lands directly in their list.
+   *
+   * Roles: admin / catalogo_admin only — same gate as discover/subscribe.
+   */
+  @Post('dist/skus')
+  @UseGuards(JwtAuthGuard)
+  async distCreateSku(@Req() req: any, @Body() body: any) {
+    const { companyId, userId } = await this.requireDistributor(req, {
+      roles: ['admin', 'catalogo_admin'],
+    });
+    return this.catalogService.distCreateSku(companyId, userId, body ?? {});
+  }
+
   /** Add an SKU to the dist's catalog. Open to admin + catalogo_admin:
    *  sales managers curate their list too, not just company admins.
    *  Plain catalogo (sales rep) can't. */
