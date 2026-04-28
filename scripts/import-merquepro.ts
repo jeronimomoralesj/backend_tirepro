@@ -26,8 +26,24 @@
 import { PrismaClient, EjeType, VidaValue, TireEventType } from '@prisma/client';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { normalizeDimension } from '../src/common/normalize-dimension';
 
-const prisma = new PrismaClient();
+// Bump the Prisma connection pool above the default 10 so concurrent
+// Promise.all batches (CS_BATCH=8 cs-inspections + sub-queries) don't
+// exhaust it under DB latency spikes. pool_timeout 120s gives room for
+// transient-retry backoffs to land before P2024 kicks in.
+function buildDbUrl(): string {
+  const base = process.env.DATABASE_URL ?? '';
+  if (!base) return base;
+  const sep = base.includes('?') ? '&' : '?';
+  const params: string[] = [];
+  if (!base.includes('connection_limit')) params.push('connection_limit=25');
+  if (!base.includes('pool_timeout'))     params.push('pool_timeout=120');
+  return params.length ? `${base}${sep}${params.join('&')}` : base;
+}
+const prisma = new PrismaClient({
+  datasources: { db: { url: buildDbUrl() } },
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transient-error retry
@@ -35,15 +51,21 @@ const prisma = new PrismaClient();
 // query picks up the dead socket and fails with P1001. A 2-hour bulk import
 // hits this at least once. Wrap every DB call below with `retry()`.
 // ─────────────────────────────────────────────────────────────────────────────
-const TRANSIENT_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017']);
-const TRANSIENT_MSG_FRAGS = ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'Connection terminated', 'Connection timed out', 'server closed the connection'];
+// P2024 = pool-fetch timeout (transient under load — backoff lets siblings
+// release connections). P1001/P1002/P1008/P1017 = connection-loss codes.
+const TRANSIENT_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017', 'P2024']);
+const TRANSIENT_MSG_FRAGS = ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'Connection terminated', 'Connection timed out', 'server closed the connection', 'connection pool'];
 function isTransient(err: unknown): boolean {
   const anyErr = err as { code?: string; message?: string };
   if (anyErr?.code && TRANSIENT_CODES.has(anyErr.code)) return true;
   return TRANSIENT_MSG_FRAGS.some((f) => (anyErr?.message ?? '').includes(f));
 }
 async function retry<T>(fn: () => Promise<T>, label = 'db'): Promise<T> {
-  const backoffs = [200, 500, 1500, 4000, 10000];
+  // Extended ladder so a multi-minute DB outage (RDS failover, NLB
+  // maintenance window) doesn't kill a 40-min tire pass. Total worst-case
+  // wait per call: ~7 min. If the DB is down longer than that, something
+  // is genuinely wrong.
+  const backoffs = [200, 500, 1500, 4000, 10000, 20000, 30000, 60000, 120000, 240000];
   for (let i = 0; i <= backoffs.length; i++) {
     try {
       return await fn();
@@ -66,6 +88,11 @@ const CLIENTS_LIMIT  = CLIENTS_ARG ? Number(CLIENTS_ARG.split('=')[1]) : undefin
 
 const DATA_DIR = '/tmp/merquepro';
 const MERQUELLANTAS_COMPANY_ID = '1cc199e8-354e-4e51-9d62-666c8b68662c';
+// Hard guarantee: nothing under this distributor's clients gets touched.
+// Companies linked to Remax (and the merquepro client names that resolve to
+// them) are dropped from the import entirely — no upsert, no orphan-import,
+// no inspections.
+const REMAX_DISTRIBUTOR_ID     = '8be67ba6-2345-428a-846c-1248d6bbc15a';
 
 const EXT_VEHICLE = (id: number | string) => `merquepro:vehicle:${id}`;
 // IMPORTANT: Merquellantas regenerates the UUID `id` field on each API
@@ -163,10 +190,17 @@ function capVehicleKm(km: number): number {
   return Math.round(km);
 }
 
-function mapEje(pos: number | null | undefined): EjeType {
-  // MERQUEPRO stores numeric position only. Without richer metadata we
-  // default to `libre` and let the ingest pipeline flag it later.
-  if (!pos) return EjeType.libre;
+function mapEje(axisType: string | null | undefined): EjeType {
+  // /currentstatetires ships axisType as "Tracción" / "Dirección" /
+  // "Remolque" / etc. Anything we can't recognize stays `libre` so the
+  // ingest pipeline can flag it later. Substring matches are intentionally
+  // forgiving: "TRACCION" / "tracción" / "Tracción" all resolve.
+  const t = (axisType ?? '').trim().toLowerCase();
+  if (!t) return EjeType.libre;
+  if (t.includes('tracc'))                                                return EjeType.traccion;
+  if (t.includes('direcc'))                                               return EjeType.direccion;
+  if (t.includes('remolq') || t.includes('trail') || t.includes('arrast')) return EjeType.remolque;
+  if (t.includes('repuesto') || t.includes('spare'))                      return EjeType.repuesto;
   return EjeType.libre;
 }
 
@@ -351,6 +385,25 @@ async function main() {
   if (!merque) throw new Error('Merquellantas company not found!');
   console.log(`Merquellantas distributor: ${merque.name} (${merque.id})\n`);
 
+  // ── HARD GUARANTEE: never touch anything tied to Remax distributor ───────
+  // Pull every companyId currently linked to Remax via DistributorAccess.
+  // The importer refuses to upsert, update, or even orphan-import any of
+  // these. Any merquepro source row whose `client` resolves to a Remax-owned
+  // Company is silently dropped.
+  const remaxLinks = await prisma.distributorAccess.findMany({
+    where: { distributorId: REMAX_DISTRIBUTOR_ID },
+    select: { companyId: true },
+  });
+  const remaxClientIds = new Set(remaxLinks.map((l) => l.companyId));
+  const isRemaxOwned = (cid: string | null | undefined): boolean =>
+    !!cid && remaxClientIds.has(cid);
+  console.log(`Remax-owned companies (UNTOUCHABLE): ${remaxClientIds.size}`);
+
+  // Populated during the company upsert pass below — client-name strings
+  // whose existing Company is Remax-owned. Used to short-circuit every
+  // downstream loop that consumes vehiclesRaw / tiresRaw / inspsRaw.
+  const remaxBlockedClients = new Set<string>();
+
   // ── Build unique client list ─────────────────────────────────────────────
   const clientSet = new Set<string>();
   for (const src of [vehiclesRaw, tiresRaw, inspsRaw]) {
@@ -407,6 +460,13 @@ async function main() {
       });
     }
 
+    // Remax safety: a name collision against a Remax-owned Company means
+    // we'd otherwise hijack it. Drop the whole client.
+    if (existing && isRemaxOwned(existing.id)) {
+      remaxBlockedClients.add(client);
+      continue;
+    }
+
     let companyId: string;
     if (existing) {
       companyId = existing.id;
@@ -460,6 +520,7 @@ async function main() {
     const vid = r.id;
     if (typeof vid !== 'number') continue;
     const client = (r.client ?? '').trim();
+    if (remaxBlockedClients.has(client)) continue;
     if (!clientToCompanyId.has(client)) continue;
     const meta: VehMeta = {
       vehicleId:    vid,
@@ -483,6 +544,7 @@ async function main() {
     const vid = i.vehicleId;
     if (typeof vid !== 'number' || vehicleMetaById.has(vid)) continue;
     const client = (i.client ?? '').trim();
+    if (remaxBlockedClients.has(client)) continue;
     if (!clientToCompanyId.has(client)) continue;
     vehicleMetaById.set(vid, {
       vehicleId: vid,
@@ -504,6 +566,7 @@ async function main() {
     const vid = r?.id;
     if (typeof vid !== 'number' || vehicleMetaById.has(vid)) continue;
     const client = String(r?.client ?? '').trim();
+    if (remaxBlockedClients.has(client)) continue;
     if (!client || !clientToCompanyId.has(client)) continue;
     vehicleMetaById.set(vid, {
       vehicleId: vid,
@@ -531,6 +594,7 @@ async function main() {
   for (const [vid, inf] of inactiveById.entries()) {
     if (vehicleMetaById.has(vid)) continue;
     const client = inf.partner;
+    if (client && remaxBlockedClients.has(client)) continue;
     if (client && !clientToCompanyId.has(client)) {
       // Ensure the orphan partner still gets a Company row so originalClient
       // + DistributorAccess linkage work later. Track for second-pass upsert.
@@ -557,6 +621,13 @@ async function main() {
       where: { name: { equals: pretty, mode: 'insensitive' } },
       select: { id: true },
     });
+    // Same Remax safety as the main client loop — a name collision against
+    // a Remax-owned Company short-circuits this client entirely.
+    if (existing && isRemaxOwned(existing.id)) {
+      remaxBlockedClients.add(client);
+      clientToCompanyId.delete(client);
+      continue;
+    }
     const companyId = existing?.id ?? (await prisma.company.create({ data: { name: pretty }, select: { id: true } })).id;
     clientToCompanyId.set(client, companyId);
     if (companyId !== MERQUELLANTAS_COMPANY_ID) {
@@ -598,7 +669,11 @@ async function main() {
     console.log(`Pre-loaded vehicles: ${rows.length} (srcIdx=${existingVehBySrc.size}  plateIdx=${existingVehByPlate.size})`);
   }
 
-  const VEH_BATCH = 25;
+  // Lowered from 25 → 5 to dampen Promise.all races during merge: when a
+  // catch-block deletes the loser of a (companyId, placa) collision, a
+  // sibling worker that pre-loaded the same id then sees P2025. The P2025
+  // handler now refetches, but a smaller batch keeps the volume down.
+  const VEH_BATCH = 5;
   // Dedup vehicleIds that resolve to the same (companyId, placa) — MERQUEPRO
   // sometimes assigns two IDs to the same physical vehicle. Keep the one with
   // the highest mileage (newer state), and record the losers so vehicleIdMap
@@ -696,6 +771,41 @@ async function main() {
         if (orphan) vehicleOrphaned++;
         vehicleUpdated++;
       } catch (err: any) {
+        if (err?.code === 'P2025') {
+          // The pre-loaded `existing` row was deleted between pre-load and
+          // update — typically by a concurrent merge in the same
+          // Promise.all batch. Re-resolve against current DB state. If
+          // the row is genuinely gone, skip and let the next run's fresh
+          // pre-load pick it up.
+          const refound =
+            (await prisma.vehicle.findUnique({
+              where: { externalSourceId: ext },
+              select: { id: true, externalSourceId: true, configuracion: true },
+            })) ??
+            (await prisma.vehicle.findFirst({
+              where: { placa: plateLower, companyId: companyId ?? undefined },
+              select: { id: true, externalSourceId: true, configuracion: true },
+            }));
+          if (refound) {
+            const upd = await retry(() => prisma.vehicle.update({
+              where: { id: refound.id },
+              data: {
+                ...baseCommon,
+                placa:         plateLower,
+                configuracion: configuracion ?? refound.configuracion,
+                companyId,
+                ...(refound.externalSourceId ? {} : { externalSourceId: ext }),
+              },
+              select: { id: true },
+            }), 'vehicle.update.refound');
+            vehicleIdMap.set(meta.vehicleId, upd.id);
+            if (orphan) vehicleOrphaned++;
+            vehicleUpdated++;
+            return;
+          }
+          vehicleSkipped++;
+          return;
+        }
         if (err?.code !== 'P2002') throw err;
         // Another row already has (companyId, placa). That row is a
         // previously-imported duplicate of the same physical vehicle.
@@ -706,6 +816,27 @@ async function main() {
           select: { id: true },
         });
         if (!winnerRow) throw err;
+        // Bump source-side tires whose position would collide with a tire
+        // already on the winner. Without this, the partial unique index
+        // (vehicleId, posicion) WHERE vehicleId IS NOT NULL AND posicion > 0
+        // (migration 20260427011129) trips on the bulk move and aborts the
+        // entire import. Bumped tires land in inventory with full provenance
+        // (lastVehicleId/lastPosicion preserved); the next snapshot's
+        // processTire run will re-mount them if still active.
+        await prisma.$executeRawUnsafe(`
+          UPDATE "Tire" t
+             SET "vehicleId"          = NULL,
+                 "posicion"           = 0,
+                 "lastVehicleId"      = $2,
+                 "lastPosicion"       = t."posicion",
+                 "inventoryEnteredAt" = NOW()
+           WHERE t."vehicleId" = $2
+             AND t."posicion" > 0
+             AND t."posicion" IN (
+               SELECT "posicion" FROM "Tire"
+                WHERE "vehicleId" = $1 AND "posicion" > 0
+             )
+        `, winnerRow.id, existing.id);
         await prisma.$executeRawUnsafe(`UPDATE "Tire" SET "vehicleId" = $1 WHERE "vehicleId" = $2`, winnerRow.id, existing.id);
         await prisma.$executeRawUnsafe(`UPDATE "Tire" SET "lastVehicleId" = $1 WHERE "lastVehicleId" = $2`, winnerRow.id, existing.id);
         try { await prisma.vehicle.delete({ where: { id: existing.id } }); } catch {}
@@ -818,6 +949,7 @@ async function main() {
     const client = (r.client ?? '').trim();
     const dial   = r.dialNumber;
     if (!client || dial == null) continue;
+    if (remaxBlockedClients.has(client)) continue;
     const key = `${client.toLowerCase()}__${dial}`;
     const prev = latestByClientDial.get(key);
     const prevDate = prev ? new Date(prev.createdDate ?? 0).getTime() : 0;
@@ -833,6 +965,7 @@ async function main() {
   for (const r of tiresRaw) {
     const client = (r.client ?? '').trim();
     if (!client || r.dialNumber == null) continue;
+    if (remaxBlockedClients.has(client)) continue;
     if (!String(r.state ?? '').startsWith('Reencauche')) continue;
     const key = `${client.toLowerCase()}__${r.dialNumber}`;
     retreadCountByKey.set(key, (retreadCountByKey.get(key) ?? 0) + 1);
@@ -940,18 +1073,40 @@ async function main() {
     const dial    = r.dialNumber ? String(r.dialNumber) : String(stableTireId);
     const rcKey   = `${client.toLowerCase()}__${r.dialNumber}`;
     const retreadCount = retreadCountByKey.get(rcKey) ?? 0;
-    const vidaActual   = mapVidaActual(sourceState, retreadCount || 1);
+    let vidaActual     = mapVidaActual(sourceState, retreadCount || 1);
+
+    // "Tire physically at the retread shop": state=Reencauche but currentstate
+    // shows no vehicle assignment (vehicleId+plate both null). Per spec we
+    // still store the row (cost, mileageProyected, projected CPK stay
+    // useful) but flag vida=fin so it doesn't appear as an actively running
+    // tire. Conservative: require BOTH cs.vehicleId AND cs.plate missing.
+    const csVehicleIdRaw = cs?.vehicleId;
+    const csPlate        = cleanPlate(cs?.plate);
+    const atRetreadShop  =
+      String(sourceState ?? '').trim() === 'Reencauche' &&
+      !csPlate &&
+      (csVehicleIdRaw == null || csVehicleIdRaw === 0);
+    if (atRetreadShop) vidaActual = VidaValue.fin;
+
     const totalVidas   = vidaActual === VidaValue.fin
       ? Math.max(retreadCount, 1)
       : vidaActual === VidaValue.nueva ? 0 : Math.max(retreadCount, 1);
-    const marca       = (cs?.brand ?? r.trademark ?? '').trim() || 'DESCONOCIDA';
     const isRetread   = sourceState === 'Reencauche' || vidaActual !== VidaValue.nueva;
     // tireBand lives on /tires; currentstate uses `tireBand` the same way.
     const bandName    = (cs?.tireBand ?? r.tireBand ?? '').trim();
+    // Reencauche tires: marca AND diseno both equal the band brand. The
+    // carcass brand (cs.brand / r.trademark) describes the OEM shell, not
+    // the product on the road today — for retreads the band IS the product.
+    const marca       = isRetread && bandName && bandName !== '-'
+      ? bandName
+      : ((cs?.brand ?? r.trademark ?? '').trim() || 'DESCONOCIDA');
     const diseno      = isRetread && bandName && bandName !== '-'
       ? bandName
       : (cs?.design ?? r.design ?? '').trim() || 'N/A';
-    const dimension   = (cs?.dimension ?? r.dimension ?? '').trim() || 'N/A';
+    // Normalize on write so re-imports never produce variant duplicates
+    // ("295/80R22.5" vs "295/80 r22.5"). The 20260427 migration already
+    // canonicalized existing rows; this keeps fresh writes consistent.
+    const dimension   = normalizeDimension((cs?.dimension ?? r.dimension ?? '').trim()) || 'N/A';
     // originalDepthRetread applies when the tire is currently on a retread
     // life; otherwise originalDepth (the first mount's banda thickness).
     const rawProfInic = isRetread
@@ -1041,7 +1196,9 @@ async function main() {
       marca:              marca.trim(),
       diseno:             diseno.trim(),
       dimension:          dimension.trim(),
-      eje:                mapEje(r.position),
+      // axisType is "Tracción" / "Dirección" / "Remolque" on /currentstatetires.
+      // /tires usually omits it; fall back to libre when missing.
+      eje:                mapEje(cs?.axisType ?? null),
       posicion:           r.position ?? 0,
       profundidadInicial: profInic,
       vidaActual,
@@ -1068,15 +1225,46 @@ async function main() {
 
     const existingId = existingTireBySrc.get(extTire);
     let tireId: string;
+    // (vehicleId, posicion) is a partial unique index — two tires can't claim
+    // the same wheel position. Snapshots from currentstate sometimes land
+    // multiple tires on the same (vehicle, position) before the post-pass
+    // collision-cleanup runs. On P2002, retry the write with the tire bumped
+    // to inventory; the collision-cleanup pass will reassign it later based
+    // on most-recent-inspection ranking.
+    const inventoryizeForCollision = (data: any) => ({
+      ...data,
+      vehicleId:        null,
+      posicion:         0,
+      lastVehicleId:    data.vehicleId,
+      lastPosicion:     data.posicion,
+      inventoryEnteredAt: new Date(),
+    });
     if (existingId) {
-      await retry(() => prisma.tire.update({ where: { id: existingId }, data: baseTireData }), 'tire.update');
+      try {
+        await retry(() => prisma.tire.update({ where: { id: existingId }, data: baseTireData }), 'tire.update');
+      } catch (err: any) {
+        if (err?.code !== 'P2002') throw err;
+        await retry(() => prisma.tire.update({
+          where: { id: existingId },
+          data: inventoryizeForCollision(baseTireData),
+        }), 'tire.update.bumped');
+      }
       tireId = existingId;
       tireUpdated++;
     } else {
-      const created = await retry(() => prisma.tire.create({
-        data: baseTireData,
-        select: { id: true },
-      }), 'tire.create');
+      let created;
+      try {
+        created = await retry(() => prisma.tire.create({
+          data: baseTireData,
+          select: { id: true },
+        }), 'tire.create');
+      } catch (err: any) {
+        if (err?.code !== 'P2002') throw err;
+        created = await retry(() => prisma.tire.create({
+          data: inventoryizeForCollision(baseTireData),
+          select: { id: true },
+        }), 'tire.create.bumped');
+      }
       tireId = created.id;
       tireCreated++;
       // Remember the new id so a transient retry doesn't try to re-create it
@@ -1161,9 +1349,120 @@ async function main() {
   console.log(`Costs — real: ${costReal}  derived(cpk×km): ${costDerived}  estimated: ${costEstimated}  still-missing: ${costMissing}`);
   console.log(`Km sanity cap applied to: ${kmCapped} tires\n`);
 
+  const tiresNeedingRefresh = new Set<string>();
+
+  // ── Per-snapshot inspections from /currentstatetires ─────────────────────
+  // /currentstatetires returns one row per (tire, snapshot run). Pages are
+  // ordered oldest→newest, so the same physical tire may appear multiple
+  // times — once per snapshot — with different states (Nuevo → Reencauche
+  // → Desecho), depths, and odometer readings. Each row IS an inspection in
+  // time; we persist them all so the inspection history reflects every
+  // state transition Merquellantas captured.
+  //
+  // Dedup key: merquepro:insp:cs:<tireId>:<consecutive>. consecutive is per
+  // snapshot run (same value across all tires in one run, but unique per
+  // (tire, run)) so the (tireId, consecutive) tuple uniquely identifies a
+  // snapshot row.
+  //
+  // Supersedes the legacy "synthetic-from-currentstate" SQL pass that wrote
+  // ONE inspection per tire — we delete those legacy rows up front so we
+  // don't end up with two near-duplicate inspections for tires that already
+  // got the synthetic treatment.
+  let csInspCreated = 0, csInspUpdated = 0, csInspSkipped = 0;
+  if (APPLY) {
+    const legacyDeleted = await prisma.inspeccion.deleteMany({
+      where: { externalSourceId: { startsWith: 'merquepro:insp:synthetic:' } },
+    });
+    console.log(`Removed legacy single-snapshot synthetics: ${legacyDeleted.count}`);
+
+    const csExtPrefix = 'merquepro:insp:cs:';
+    const existingCsInsp = await prisma.inspeccion.findMany({
+      where: { externalSourceId: { startsWith: csExtPrefix } },
+      select: { id: true, externalSourceId: true },
+    });
+    const existingCsInspBySrc = new Map<string, string>();
+    for (const row of existingCsInsp) {
+      if (row.externalSourceId) existingCsInspBySrc.set(row.externalSourceId, row.id);
+    }
+
+    const CS_BATCH = 8;
+    async function processCsRow(row: any) {
+      const rowClient = String(row?.client ?? '').trim();
+      if (!rowClient || row?.dialNumber == null) { csInspSkipped++; return; }
+      if (remaxBlockedClients.has(rowClient))    { csInspSkipped++; return; }
+      const tireLocalId = tireByClientDialId.get(`${rowClient.toLowerCase()}|${row.dialNumber}`);
+      if (!tireLocalId) { csInspSkipped++; return; }
+      const fecha = parseDate(row?.createdDate);
+      if (!fecha)        { csInspSkipped++; return; }
+      const consec = row?.consecutive ?? row?.id;
+      if (consec == null) { csInspSkipped++; return; }
+      const stableTireId = row?.tireId ?? `dial_${row.dialNumber}`;
+      const ext = `${csExtPrefix}${stableTireId}:${consec}`;
+
+      // Skip rows that carry zero data across the board — same guard as
+      // processInsp uses on /inspection rows. Avoids polluting the tire's
+      // depth/vida history with phantom snapshots.
+      const dInt = toNum(row?.currentInternalDepth);
+      const dCen = toNum(row?.currentCentralDepth);
+      const dExt = toNum(row?.currentExternalDepth);
+      const stateStr = String(row?.state ?? '').trim();
+      if (dInt === 0 && dCen === 0 && dExt === 0 && !stateStr) { csInspSkipped++; return; }
+
+      const tireKm = Math.round(toNum(row?.mileageTraveled));
+      const vehKm  = Math.round(toNum(row?.currentKm));
+      const cpkVal = toNum(row?.cpk);
+      const cpkProy = toNum(row?.cpkStad);
+      const kmProy  = toNum(row?.mileageProyected);
+      const data = {
+        tireId:                 tireLocalId,
+        fecha,
+        profundidadInt:         dInt,
+        profundidadCen:         dCen,
+        profundidadExt:         dExt,
+        presionPsi:             null,                                 // currentstate has no pressure
+        kilometrosEstimados:    tireKm > 0 ? tireKm : null,
+        kmActualVehiculo:       vehKm  > 0 ? vehKm  : null,
+        kmEfectivos:            tireKm > 0 ? tireKm : null,
+        inspeccionadoPorNombre: String(row?.adviser ?? '').trim() || null,
+        vidaAlMomento:          mapVidaActual(row?.state),
+        cpk:                    cpkVal  > 0 ? cpkVal  : null,
+        cpkProyectado:          cpkProy > 0 ? cpkProy : null,
+        kmProyectado:           kmProy  > 0 ? kmProy  : null,
+        externalSourceId:       ext,
+        sourceMetadata:         { ...row, _source: 'currentstatetires_snapshot' } as any,
+      };
+      const existingId = existingCsInspBySrc.get(ext);
+      if (existingId) {
+        await retry(() => prisma.inspeccion.update({ where: { id: existingId }, data }), 'cs-insp.update');
+        csInspUpdated++;
+      } else {
+        try {
+          await retry(() => prisma.inspeccion.create({ data }), 'cs-insp.create');
+          existingCsInspBySrc.set(ext, 'just-created');
+          csInspCreated++;
+        } catch (err: any) {
+          if (err?.code === 'P2002') csInspSkipped++;
+          else throw err;
+        }
+      }
+      tiresNeedingRefresh.add(tireLocalId);
+    }
+
+    console.log(`Persisting ${currentStateRaw.length} currentstate snapshots as inspections (batch=${CS_BATCH})…`);
+    const startedCs = Date.now();
+    for (let i = 0; i < currentStateRaw.length; i += CS_BATCH) {
+      const slice = currentStateRaw.slice(i, i + CS_BATCH);
+      await Promise.all(slice.map(processCsRow));
+      if ((i + CS_BATCH) % 5000 === 0 || (i + CS_BATCH) >= currentStateRaw.length) {
+        const elapsed = Math.round((Date.now() - startedCs) / 1000);
+        console.log(`  cs-insp ${Math.min(i + CS_BATCH, currentStateRaw.length)} / ${currentStateRaw.length}   +${csInspCreated}n  ${csInspUpdated}u  ${csInspSkipped}sk  (${elapsed}s)`);
+      }
+    }
+  }
+  console.log(`Currentstate inspections — created: ${csInspCreated}  updated: ${csInspUpdated}  skipped: ${csInspSkipped}\n`);
+
   // ── Upsert Inspecciones (batched concurrency) ───────────────────────────
   let inspCreated = 0, inspUpdated = 0, inspSkipped = 0;
-  const tiresNeedingRefresh = new Set<string>();
 
   if (!SKIP_INSPS && APPLY) {
     // Pre-load every already-imported inspection's externalSourceId so we
@@ -1181,6 +1480,7 @@ async function main() {
     async function processInsp(i: any) {
       const iClient = (i.client ?? '').trim();
       if (!iClient || i.dialNumber == null) { inspSkipped++; return; }
+      if (remaxBlockedClients.has(iClient)) { inspSkipped++; return; }
       const tireLocalId = tireByClientDialId.get(`${iClient.toLowerCase()}|${i.dialNumber}`);
       if (!tireLocalId) { inspSkipped++; return; }
       const fecha = parseDate(i.date);
@@ -1750,6 +2050,48 @@ async function main() {
        WHERE t."externalSourceId" LIKE 'merquepro:tire:%' AND t."currentCpk" IS NULL
     `);
     console.log(`  (F) cpk + Tire.currentCpk now 100% populated for merquepro`);
+
+    // (G) Eje backfill from sourceMetadata._currentState.axisType.
+    // Older runs of this importer always set eje='libre' regardless of the
+    // axisType the API actually shipped. axisType was stored in sourceMetadata
+    // though, so we can recover it. Excludes Remax-owned tires per the
+    // hard guarantee — and they shouldn't be merquepro-source anyway, but
+    // defense in depth.
+    const ejeBackfill = await prisma.$executeRawUnsafe(`
+      UPDATE "Tire" t
+         SET "eje" = CASE
+           WHEN LOWER(t."sourceMetadata"->'_currentState'->>'axisType') LIKE '%tracc%'   THEN 'traccion'::"EjeType"
+           WHEN LOWER(t."sourceMetadata"->'_currentState'->>'axisType') LIKE '%direcc%'  THEN 'direccion'::"EjeType"
+           WHEN LOWER(t."sourceMetadata"->'_currentState'->>'axisType') LIKE '%remolq%'
+             OR LOWER(t."sourceMetadata"->'_currentState'->>'axisType') LIKE '%trail%'
+             OR LOWER(t."sourceMetadata"->'_currentState'->>'axisType') LIKE '%arrast%' THEN 'remolque'::"EjeType"
+           WHEN LOWER(t."sourceMetadata"->'_currentState'->>'axisType') LIKE '%repuest%'
+             OR LOWER(t."sourceMetadata"->'_currentState'->>'axisType') LIKE '%spare%'  THEN 'repuesto'::"EjeType"
+           ELSE t."eje"
+         END
+       WHERE t."externalSourceId" LIKE 'merquepro:tire:%'
+         AND t."sourceMetadata"->'_currentState'->>'axisType' IS NOT NULL
+         AND (t."companyId" IS NULL OR t."companyId" NOT IN (
+           SELECT "companyId" FROM "DistributorAccess"
+            WHERE "distributorId" = '${REMAX_DISTRIBUTOR_ID}'
+         ))
+    `);
+    console.log(`  (G) eje backfilled from axisType: ${ejeBackfill} tires`);
+
+    // (H) Vehicle estadoOperacional reconciliation. Earlier imports left
+    // vehicles with companyId=NULL but estadoOperacional='activo' — that's
+    // an inconsistent state. If a vehicle is companyId=NULL it's by
+    // definition fuera de operación for all queries that scope by company.
+    // Same Remax exclusion as above.
+    const vehStateFix = await prisma.$executeRawUnsafe(`
+      UPDATE "Vehicle" v
+         SET "estadoOperacional"     = 'fuera_de_operacion'::"VehicleOperationalState",
+             "fueraDeOperacionDesde" = COALESCE(v."fueraDeOperacionDesde", v."ultimaActividadAt", NOW())
+       WHERE v."externalSourceId" LIKE 'merquepro:vehicle:%'
+         AND v."companyId" IS NULL
+         AND v."estadoOperacional" <> 'fuera_de_operacion'
+    `);
+    console.log(`  (H) estadoOperacional reconciled: ${vehStateFix} vehicles`);
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────

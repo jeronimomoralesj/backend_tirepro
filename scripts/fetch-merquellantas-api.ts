@@ -108,10 +108,13 @@ const keepOnlyCpk = (row: any) => {
   }
   // No clientType field — fall back to the name index once it's populated.
   // Before the index is populated (the very first fetch, currentstate),
-  // keep everything.
+  // keep everything. vehiclesWithoutTransaction uses `partner` instead of
+  // `client`; check both.
   if (cpkClientNames.size === 0) return true;
-  const c = typeof row.client === 'string' ? row.client.trim() : '';
-  return c ? cpkClientNames.has(c) : false;
+  const candidates: string[] = [];
+  if (typeof row.client === 'string')  candidates.push(row.client.trim());
+  if (typeof row.partner === 'string') candidates.push(row.partner.trim());
+  return candidates.some((c) => c && cpkClientNames.has(c));
 };
 
 const ENDPOINTS: EndpointSpec[] = [
