@@ -992,7 +992,7 @@ export class MarketplaceService {
     const distributors = distributorIds.length > 0
       ? await this.prisma.company.findMany({
           where: { id: { in: distributorIds.map((d) => d.distributorId) } },
-          select: { id: true, name: true, profileImage: true },
+          select: { id: true, slug: true, name: true, profileImage: true, ciudad: true },
           orderBy: { name: 'asc' },
         })
       : [];
