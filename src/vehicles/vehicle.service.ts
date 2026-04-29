@@ -170,25 +170,23 @@ export class VehicleService {
   // ── Read ──────────────────────────────────────────────────────────────────
 
   async findVehiclesByCompany(companyId: string) {
-    const cached = await this.cache.get(this.vehicleKey(companyId));
-    if (cached) return cached;
-
-    const vehicles = await this.prisma.vehicle.findMany({
+    // No cache here on purpose. Every Vehicle row carries _count.tires,
+    // which dashboard/vehiculo renders as the live llantas count. Tire
+    // assignments mutate that count from many services (tires,
+    // inventory-buckets, batch-returns, notifications) and any path that
+    // misses an invalidation leaves stale counts in the UI for the full
+    // TTL. The query itself is small — a single findMany with one count
+    // subquery, indexed by companyId — so the cost of always going to the
+    // DB is well below the cost of investigating "why is the count wrong"
+    // tickets. If this ever becomes a measurable hotspot, prefer a tighter
+    // pub/sub invalidation than re-introducing a TTL cache here.
+    return this.prisma.vehicle.findMany({
       // Archived vehicles (no inspections for ≥ 1 year) are kept in the DB
       // for possible reconnection but hidden from every company-scoped view.
       where:   { companyId, archivedAt: null },
       select:  { ...VEHICLE_SELECT, drivers: true },
       orderBy: { placa: 'asc' },
     });
-
-    // Short TTL because every vehicle row carries _count.tires, which the
-    // dashboard renders as the live llantas-per-vehicle count. Tire moves
-    // happen across multiple services (tires, inventory-buckets, batch
-    // returns) and not every code path reaches over to invalidate the
-    // vehicle list cache. 60s is short enough that any miss is invisible
-    // to a user (one quick refresh) and long enough to absorb burst reads.
-    await this.cache.set(this.vehicleKey(companyId), vehicles, 60 * 1000);
-    return vehicles;
   }
 
   async findAllVehicles() {
