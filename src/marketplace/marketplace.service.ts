@@ -260,12 +260,32 @@ export class MarketplaceService {
       quoteByIdx.set(idx, q);
     });
 
+    // Validate which tireIds in the bid still exist. A tire can be deleted
+    // between bid creation and award (replaced, archived, etc.) — if we
+    // try to `connect` to a missing tire, Prisma throws inside the
+    // transaction and the whole award fails with a 500. Instead, we drop
+    // the connect for any tire that no longer exists and let the
+    // PurchaseOrderItem be created without the tire link (the marca +
+    // dimension + placa fields still describe what was ordered).
+    const candidateTireIds = bidItems
+      .map((it) => (typeof it?.tireId === 'string' && it.tireId.length > 0 ? it.tireId : null))
+      .filter((x): x is string => x !== null);
+    const existingTireIds = candidateTireIds.length > 0
+      ? new Set(
+          (await this.prisma.tire.findMany({
+            where: { id: { in: candidateTireIds } },
+            select: { id: true },
+          })).map((t) => t.id),
+        )
+      : new Set<string>();
+
     // Prisma's checked create input (used by nested `items: { create: [...] }`)
     // exposes `tire: { connect: { id } }` but not the scalar `tireId` — so
     // we build each row with the relation form when a tire is present.
     const poItems = bidItems.map((it, idx) => {
       const q = quoteByIdx.get(idx);
-      const tireId = typeof it?.tireId === 'string' && it.tireId.length > 0 ? it.tireId : null;
+      const rawTireId = typeof it?.tireId === 'string' && it.tireId.length > 0 ? it.tireId : null;
+      const tireId = rawTireId && existingTireIds.has(rawTireId) ? rawTireId : null;
       const row: any = {
         tipo:                      (it?.tipo ?? 'nueva') as string,
         marca:                     String(it?.marca ?? ''),
@@ -274,7 +294,7 @@ export class MarketplaceService {
                                     ? normalizeDimension(it.dimension)
                                     : (it?.dimension ?? ''),
         eje:                       it?.eje ?? null,
-        cantidad:                  typeof it?.cantidad === 'number' ? it.cantidad : 1,
+        cantidad:                  typeof it?.cantidad === 'number' && it.cantidad > 0 ? it.cantidad : 1,
         vehiclePlaca:              it?.vehiclePlaca ?? null,
         urgency:                   it?.urgency ?? null,
         precioUnitario:            typeof q?.precioUnitario === 'number' ? q.precioUnitario : null,
@@ -298,39 +318,56 @@ export class MarketplaceService {
     // ("All elements of the array need to be Prisma Client promises").
     // Callback form runs each step sequentially inside one transaction,
     // with no PrismaPromise typing constraint.
-    const createdOrder = await this.prisma.$transaction(async (tx) => {
-      await tx.bidResponse.update({
-        where: { id: winningResponse.id },
-        data:  { status: BidResponseStatus.ganadora },
+    let createdOrder;
+    try {
+      createdOrder = await this.prisma.$transaction(async (tx) => {
+        await tx.bidResponse.update({
+          where: { id: winningResponse.id },
+          data:  { status: BidResponseStatus.ganadora },
+        });
+        await tx.bidResponse.updateMany({
+          where: { bidRequestId, id: { not: winningResponse.id } },
+          data:  { status: BidResponseStatus.rechazada },
+        });
+        await tx.bidRequest.update({
+          where: { id: bidRequestId },
+          data: {
+            status:     BidRequestStatus.adjudicada,
+            winnerId:   distributorId,
+            resolvedAt: new Date(),
+          },
+        });
+        return tx.purchaseOrder.create({
+          data: {
+            companyId,
+            distributorId,
+            status:          'aceptada',  // fleet committed by adjudicating
+            totalEstimado:   bid.totalEstimado          ?? null,
+            totalCotizado:   winningResponse.totalCotizado ?? null,
+            cotizacionFecha: winningResponse.submittedAt  ?? new Date(),
+            cotizacionNotas: winningResponse.notas        ?? null,
+            resolvedAt:      new Date(),
+            resolvedBy:      companyId,
+            notas:           bid.notas ?? null,
+            items:           { create: poItems },
+          },
+        });
       });
-      await tx.bidResponse.updateMany({
-        where: { bidRequestId, id: { not: winningResponse.id } },
-        data:  { status: BidResponseStatus.rechazada },
+    } catch (err: any) {
+      // Surface the actual root cause to logs so future failures can be
+      // diagnosed without re-deploying for instrumentation. The wrapped
+      // BadRequestException keeps the HTTP response actionable for the
+      // analista UI instead of a generic 500.
+      // eslint-disable-next-line no-console
+      console.error('[awardBid] transaction failed', {
+        bidRequestId, distributorId, companyId,
+        prismaCode: err?.code, message: err?.message,
+        meta: err?.meta,
       });
-      await tx.bidRequest.update({
-        where: { id: bidRequestId },
-        data: {
-          status:     BidRequestStatus.adjudicada,
-          winnerId:   distributorId,
-          resolvedAt: new Date(),
-        },
-      });
-      return tx.purchaseOrder.create({
-        data: {
-          companyId,
-          distributorId,
-          status:          'aceptada',  // fleet committed by adjudicating
-          totalEstimado:   bid.totalEstimado          ?? null,
-          totalCotizado:   winningResponse.totalCotizado ?? null,
-          cotizacionFecha: winningResponse.submittedAt  ?? new Date(),
-          cotizacionNotas: winningResponse.notas        ?? null,
-          resolvedAt:      new Date(),
-          resolvedBy:      companyId,
-          notas:           bid.notas ?? null,
-          items:           { create: poItems },
-        },
-      });
-    });
+      throw new BadRequestException(
+        `No se pudo adjudicar la licitación: ${err?.message ?? 'error desconocido'}`,
+      );
+    }
 
     const out = await this.getBidRequestById(bidRequestId);
     return { ...out, purchaseOrderId: createdOrder.id };
