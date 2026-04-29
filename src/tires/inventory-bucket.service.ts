@@ -147,6 +147,10 @@ export class InventoryBucketsService {
         nombre:         b.nombre,
         color:          b.color,
         icono:          b.icono,
+        // Surface tipo so the UI can hide the delete/rename actions on
+        // system-managed buckets (Reencauche). Defaults to null for
+        // user-created buckets.
+        tipo:           b.tipo ?? null,
         excluirDeFlota: b.excluirDeFlota,
         orden:          b.orden,
         tireCount:      b._count.tires,
@@ -218,6 +222,16 @@ export class InventoryBucketsService {
     });
     if (!bucket) throw new NotFoundException('Bucket not found');
 
+    // Reencauche bucket is system-managed; renaming or recoloring it would
+    // break code paths that find it by name as a fallback when tipo is
+    // missing. The name and emoji are locked even though companyId-level
+    // ownership is correct.
+    if (bucket.tipo === 'reencauche') {
+      throw new BadRequestException(
+        'El bucket de Reencauche es del sistema y no se puede modificar.',
+      );
+    }
+
     // Name uniqueness check (only when name is changing)
     if (dto.nombre && dto.nombre.trim().toLowerCase() !== bucket.nombre.toLowerCase()) {
       const conflict = await this.prisma.tireInventoryBucket.findFirst({
@@ -252,6 +266,17 @@ export class InventoryBucketsService {
       where: { id: bucketId, companyId },
     });
     if (!bucket) throw new NotFoundException('Bucket not found');
+
+    // System-managed Reencauche bucket is undeletable — every company is
+    // guaranteed to have one because the reencauche flow (purchase orders,
+    // analista, inventory move-to-vehicle blocker resolution) all assume
+    // it exists. Allowing delete would break those code paths silently.
+    // Disponible is implicit (no row), so it has no delete vector.
+    if (bucket.tipo === 'reencauche') {
+      throw new BadRequestException(
+        'El bucket de Reencauche es del sistema y no se puede eliminar.',
+      );
+    }
 
     // Move all tires in this bucket to Disponible first (FK safety)
     await this.prisma.tire.updateMany({
