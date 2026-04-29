@@ -280,6 +280,11 @@ model UserLoginLog {
 model Company {
   id           String      @id @default(uuid())
   name         String
+  // URL-safe slug for /marketplace/distributor/<slug>. Generated from name
+  // on create; nullable on the model so the migration can backfill, but in
+  // practice every row has one (enforced by the slug-on-create logic in
+  // CompaniesService and the unique index below).
+  slug         String?     @unique
   periodicity  Int         @default(1)
   profileImage String      @default("https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png")
   plan         CompanyPlan @default(pro)

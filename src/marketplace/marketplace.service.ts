@@ -195,12 +195,12 @@ export class MarketplaceService {
       include: {
         responses: {
           include: {
-            distributor: { select: { id: true, name: true, profileImage: true } },
+            distributor: { select: { id: true, slug: true, name: true, profileImage: true } },
           },
         },
         invitations: {
           include: {
-            distributor: { select: { id: true, name: true } },
+            distributor: { select: { id: true, slug: true, name: true } },
           },
         },
         company: { select: { name: true } },
@@ -214,12 +214,12 @@ export class MarketplaceService {
       include: {
         responses: {
           include: {
-            distributor: { select: { id: true, name: true, profileImage: true } },
+            distributor: { select: { id: true, slug: true, name: true, profileImage: true } },
           },
         },
         invitations: {
           include: {
-            distributor: { select: { id: true, name: true } },
+            distributor: { select: { id: true, slug: true, name: true } },
           },
         },
         company: { select: { id: true, name: true } },
@@ -562,7 +562,7 @@ export class MarketplaceService {
       orderBy: [{ imageQualityScore: 'desc' }, { createdAt: 'desc' }],
       take: 24,
       include: {
-        distributor: { select: { id: true, name: true, profileImage: true } },
+        distributor: { select: { id: true, slug: true, name: true, profileImage: true } },
         catalog: { select: { id: true, terreno: true, kmEstimadosReales: true, cpkEstimado: true, crowdAvgCpk: true } },
         _count: { select: { reviews: true, orders: true } },
         reviews: { select: { rating: true }, take: 10 },
@@ -811,7 +811,7 @@ export class MarketplaceService {
         skip: (page - 1) * limit,
         take: limit,
         include: {
-          distributor: { select: { id: true, name: true, profileImage: true } },
+          distributor: { select: { id: true, slug: true, name: true, profileImage: true } },
           catalog: {
             select: {
               id: true, skuRef: true, terreno: true, reencauchable: true,
@@ -1006,15 +1006,26 @@ export class MarketplaceService {
   // DISTRIBUTOR PUBLIC PROFILE
   // ===========================================================================
 
-  async getDistributorProfile(distributorId: string) {
-    const cacheKey = `distprofile:${distributorId}`;
+  // UUID v4 shape — used to choose between id-lookup and slug-lookup. We
+  // accept both at this endpoint so the public marketplace can use clean
+  // slug URLs (/marketplace/distributor/merquellantas) while internal
+  // dashboards keep linking by UUID without breaking.
+  private readonly UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  async getDistributorProfile(distributorIdOrSlug: string) {
+    const cacheKey = `distprofile:${distributorIdOrSlug}`;
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;
 
+    const where = this.UUID_RE.test(distributorIdOrSlug)
+      ? { id: distributorIdOrSlug }
+      : { slug: distributorIdOrSlug };
+
     const company = await this.prisma.company.findUnique({
-      where: { id: distributorId },
+      where,
       select: {
-        id: true, name: true, profileImage: true, plan: true,
+        id: true, slug: true, name: true, profileImage: true, plan: true,
         emailAtencion: true, telefono: true, descripcion: true,
         bannerImage: true, direccion: true, ciudad: true, sitioWeb: true,
         cobertura: true, tipoEntrega: true, colorMarca: true,
@@ -1079,7 +1090,7 @@ export class MarketplaceService {
     const listing = await this.prisma.distributorListing.findUnique({
       where: { id },
       include: {
-        distributor: { select: { id: true, name: true, profileImage: true, ciudad: true, telefono: true, emailAtencion: true, tipoEntrega: true, cobertura: true } },
+        distributor: { select: { id: true, slug: true, name: true, profileImage: true, ciudad: true, telefono: true, emailAtencion: true, tipoEntrega: true, cobertura: true } },
         catalog: {
           select: {
             id: true, skuRef: true, terreno: true, reencauchable: true,
@@ -1130,7 +1141,7 @@ export class MarketplaceService {
   }) {
     const listing = await this.prisma.distributorListing.findUnique({
       where: { id: data.listingId },
-      include: { distributor: { select: { id: true, name: true, emailAtencion: true } } },
+      include: { distributor: { select: { id: true, slug: true, name: true, emailAtencion: true } } },
     });
     if (!listing) throw new NotFoundException('Listing not found');
 
@@ -1455,7 +1466,7 @@ export class MarketplaceService {
           orderBy: { createdAt: 'desc' },
           take: limit,
           include: {
-            distributor: { select: { id: true, name: true, profileImage: true } },
+            distributor: { select: { id: true, slug: true, name: true, profileImage: true } },
             catalog: { select: { terreno: true, reencauchable: true, cpkEstimado: true, crowdAvgCpk: true, kmEstimadosReales: true } },
             _count: { select: { reviews: true, orders: true } },
             reviews: { select: { rating: true }, take: 10 },
@@ -1486,7 +1497,7 @@ export class MarketplaceService {
         orderBy: { createdAt: 'desc' },
         take: limit,
         include: {
-          distributor: { select: { id: true, name: true, profileImage: true } },
+          distributor: { select: { id: true, slug: true, name: true, profileImage: true } },
           catalog: { select: { terreno: true, reencauchable: true, cpkEstimado: true, crowdAvgCpk: true, kmEstimadosReales: true } },
           _count: { select: { reviews: true, orders: true } },
           reviews: { select: { rating: true }, take: 10 },
@@ -1498,7 +1509,7 @@ export class MarketplaceService {
     const listings = await this.prisma.distributorListing.findMany({
       where: { id: { in: ids }, isActive: true },
       include: {
-        distributor: { select: { id: true, name: true, profileImage: true } },
+        distributor: { select: { id: true, slug: true, name: true, profileImage: true } },
         catalog: { select: { terreno: true, reencauchable: true, cpkEstimado: true, crowdAvgCpk: true, kmEstimadosReales: true } },
         _count: { select: { reviews: true, orders: true } },
         reviews: { select: { rating: true }, take: 10 },
@@ -1554,7 +1565,7 @@ export class MarketplaceService {
         cobertura: { not: { equals: null } },
       },
       select: {
-        id: true, name: true, profileImage: true, colorMarca: true,
+        id: true, slug: true, name: true, profileImage: true, colorMarca: true,
         cobertura: true, telefono: true, ciudad: true,
         _count: { select: { listings: { where: { isActive: true } } } },
       },

@@ -15,6 +15,19 @@ import { Cache } from 'cache-manager';
 const DEFAULT_LOGO =
   'https://tireproimages.s3.us-east-1.amazonaws.com/companyResources/logoFull.png';
 
+// Generate a URL-safe slug from a company name. Mirrors the SQL backfill in
+// migration 20260428234500_add_distributor_slug so frontend and backend agree
+// on the canonical form.
+function slugifyName(name: string): string {
+  return name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // strip accents
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 const COMPANY_PUBLIC_SELECT = {
   id:           true,
   name:         true,
@@ -76,9 +89,23 @@ export class CompaniesService {
 
   async createCompany(dto: CreateCompanyDto) {
     const plan = (dto.plan as CompanyPlan) ?? CompanyPlan.pro;
+
+    // Generate a unique slug. If the base slug is taken, append -2, -3, ...
+    // until we find a free one. Distributors only need this for marketplace
+    // URLs but we slug everyone — non-distributors might publish later and
+    // generating up-front is cheaper than retrofitting.
+    const base = slugifyName(dto.name) || 'company';
+    let slug = base;
+    let suffix = 1;
+    while (await this.prisma.company.findUnique({ where: { slug }, select: { id: true } })) {
+      suffix += 1;
+      slug = `${base}-${suffix}`;
+    }
+
     const company = await this.prisma.company.create({
       data: {
         name:         dto.name,
+        slug,
         plan,
         profileImage: DEFAULT_LOGO,
         ...(dto.emailAtencion && { emailAtencion: dto.emailAtencion }),
