@@ -1061,6 +1061,21 @@ export class TireService {
 
   private async invalidateVehicleCache(vehicleId: string) {
     await this.cache.del(this.vehicleKey(vehicleId));
+
+    // Also clear the company-scoped vehicles list cache. dashboard/vehiculo
+    // renders Vehicle._count.tires from that response, and without this it
+    // would stay stale for the full TTL after every tire reassignment. We
+    // do an extra PK lookup to find the companyId — cheap (<1ms, indexed)
+    // and only runs on mutation paths, so the cost is invisible compared
+    // to the bug it prevents. Best-effort: a failure here is never worth
+    // failing the parent mutation over.
+    try {
+      const v = await this.prisma.vehicle.findUnique({
+        where:  { id: vehicleId },
+        select: { companyId: true },
+      });
+      if (v?.companyId) await this.cache.del(`vehicles:${v.companyId}`);
+    } catch { /* swallowed — cache invalidation is best-effort */ }
   }
 
   private resolveCurrentVida(eventos: any[]): VidaValue {

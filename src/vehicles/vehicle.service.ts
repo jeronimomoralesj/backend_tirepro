@@ -181,7 +181,13 @@ export class VehicleService {
       orderBy: { placa: 'asc' },
     });
 
-    await this.cache.set(this.vehicleKey(companyId), vehicles, 60 * 60 * 1000);
+    // Short TTL because every vehicle row carries _count.tires, which the
+    // dashboard renders as the live llantas-per-vehicle count. Tire moves
+    // happen across multiple services (tires, inventory-buckets, batch
+    // returns) and not every code path reaches over to invalidate the
+    // vehicle list cache. 60s is short enough that any miss is invisible
+    // to a user (one quick refresh) and long enough to absorb burst reads.
+    await this.cache.set(this.vehicleKey(companyId), vehicles, 60 * 1000);
     return vehicles;
   }
 

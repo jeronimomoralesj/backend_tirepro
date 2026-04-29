@@ -68,7 +68,14 @@ export class InventoryBucketsService {
     companyId:  string,
     vehicleIds: Array<string | null | undefined>,
   ): Promise<void> {
-    const keys: string[] = [this.tireCompanyKey(companyId), 'tires:all'];
+    const keys: string[] = [
+      this.tireCompanyKey(companyId),
+      'tires:all',
+      // Vehicle list carries _count.tires per vehicle on the dashboard.
+      // Bucket moves and batch-returns change that count whenever a tire
+      // gains or loses a vehicleId, so the list cache must drop too.
+      `vehicles:${companyId}`,
+    ];
 
     for (const vid of vehicleIds) {
       if (vid) {
