@@ -1568,12 +1568,53 @@ export class MarketplaceService {
         id: true, slug: true, name: true, profileImage: true, colorMarca: true,
         cobertura: true, telefono: true, ciudad: true,
         _count: { select: { listings: { where: { isActive: true } } } },
+        // Need each listing's dimension + tipo so we can compute the
+        // category set the distributor covers (tractomula, bus, suv, etc.).
+        // Filtering on isActive keeps inactive listings from inflating
+        // categories the distributor no longer sells.
+        listings: {
+          where: { isActive: true },
+          select: { dimension: true, tipo: true },
+        },
       },
     });
-    const result = distributors.filter((d) => {
+
+    const filtered = distributors.filter((d) => {
       const cob = d.cobertura as any;
       return Array.isArray(cob) && cob.length > 0 && cob.some((c: any) => c.lat && c.lng);
     });
+
+    // Categorize each distributor by what their listings cover. Categories
+    // come from rim diameter (the trailing R<n> token in dimensions) plus a
+    // reencauche flag, since that's the most reliable signal of vehicle
+    // class without a dedicated taxonomy column.
+    const result = filtered.map((d) => {
+      const cats = new Set<string>();
+      for (const l of d.listings ?? []) {
+        if (l.tipo === 'reencauche') cats.add('reencauche');
+        const dim = (l.dimension ?? '').toUpperCase();
+        const rimMatch = dim.match(/R\s*(\d{2}(?:\.\d)?)/);
+        const rim = rimMatch ? parseFloat(rimMatch[1]) : NaN;
+        if (Number.isFinite(rim)) {
+          // Heavy commercial truck/bus tires sit on 17.5"–24.5" rims. SUV
+          // and pickup tires sit on 16"–18" with wider sections (265+).
+          // Passenger cars use 13"–17" with sections under 245.
+          if (rim >= 17.5) cats.add('tractomula');
+          if (rim >= 17.5 && rim <= 22.5) cats.add('bus');
+          const sectionMatch = dim.match(/^(\d{3})\//);
+          const section = sectionMatch ? parseInt(sectionMatch[1], 10) : NaN;
+          if (rim >= 16 && rim <= 18 && Number.isFinite(section) && section >= 245) {
+            cats.add('suv');
+          }
+          if (rim >= 13 && rim <= 17 && Number.isFinite(section) && section < 245) {
+            cats.add('automovil');
+          }
+        }
+      }
+      const { listings: _omit, ...rest } = d;
+      return { ...rest, categories: [...cats].sort() };
+    });
+
     this.cache.set('distmap', result, this.MAP_TTL);
     return result;
   }
