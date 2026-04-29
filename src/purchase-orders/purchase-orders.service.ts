@@ -485,13 +485,12 @@ export class PurchaseOrdersService {
       throw new BadRequestException('decisions must be a non-empty array');
     }
 
-    // Validate up front. We only HARD-require a linked tire for the
-    // reencauchar decision (we need to physically move the tire into the
-    // reencauche bucket and snapshot its vida). For devolver and
-    // fin_de_vida the dist is just closing out the item — if the tire was
-    // deleted in the meantime (ON DELETE SET NULL nulls our FK), we let
-    // them finalize the item without the tire side-effects so the order
-    // doesn't get permanently stuck.
+    // Validate up front. Since the original tire might have been deleted
+    // post-bid (ON DELETE SET NULL on PurchaseOrderItem.tireId), every
+    // decision can run even without a linked tire — for reencauchar we
+    // create a placeholder tire entry so the reencauche bucket reflects
+    // the physical tire the dist actually has in hand; for devolver /
+    // fin_de_vida we close the item without per-tire side-effects.
     const itemsById = new Map(order.items.map((i) => [i.id, i] as const));
     for (const d of decisions) {
       const it = itemsById.get(d.itemId);
@@ -502,14 +501,12 @@ export class PurchaseOrdersService {
           `Item ${d.itemId} is in status "${it.status}" — debe estar recogida antes de decidir`,
         );
       }
-      if (d.decision === 'reencauchar' && (!it.tireId || !it.tire)) {
-        throw new BadRequestException(
-          `Item ${d.itemId} no tiene llanta vinculada — no se puede reencauchar. Marca como devolver o fin de vida.`,
-        );
-      }
     }
 
     const bucket = await this.buckets.getReencaucheBucket(order.companyId);
+
+    // Validate eje values against the EjeType enum so we can safely cast.
+    const VALID_EJES = new Set(['direccion', 'traccion', 'libre', 'remolque', 'repuesto']);
 
     // Apply each decision sequentially so tire side-effects (vida, bucket
     // moves) stay consistent. Throughput isn't a concern — a single order
@@ -517,11 +514,39 @@ export class PurchaseOrdersService {
     for (const d of decisions) {
       const it = itemsById.get(d.itemId)!;
       if (it.tipo !== 'reencauche') continue;
-      const tireId = it.tireId ?? null;
+      let tireId = it.tireId ?? null;
 
       if (d.decision === 'reencauchar') {
+        // If the tire link is gone (deleted post-bid), create a placeholder
+        // tire in the company's inventory so the physical tire the dist
+        // has in hand is tracked through the rest of the reencauche cycle.
+        // Identity comes from the bid item; placa is generated.
+        if (!tireId) {
+          const ejeRaw = (it.eje ?? '').toString().toLowerCase();
+          const eje = (VALID_EJES.has(ejeRaw) ? ejeRaw : 'libre') as any;
+          const placa = `RC-${it.id.slice(0, 8).toUpperCase()}`;
+          const placeholder = await this.prisma.tire.create({
+            data: {
+              companyId:          order.companyId,
+              placa,
+              marca:              it.marca || 'reencauche',
+              diseno:             it.modelo
+                                  ?? it.bandaOfrecidaModelo
+                                  ?? 'reencauche',
+              dimension:          it.dimension,
+              eje,
+              profundidadInicial: it.bandaOfrecidaProfundidad ?? 0,
+            },
+          });
+          tireId = placeholder.id;
+          await this.prisma.purchaseOrderItem.update({
+            where: { id: it.id },
+            data:  { tire: { connect: { id: tireId } } },
+          });
+        }
+
         // Tire → Reencauche bucket, item → aprobada with ETA.
-        await this.buckets.bulkMoveTiresToBucket([tireId!], bucket.id, order.companyId);
+        await this.buckets.bulkMoveTiresToBucket([tireId], bucket.id, order.companyId);
         const eta = d.estimatedDelivery ? new Date(d.estimatedDelivery) : null;
         await this.prisma.purchaseOrderItem.update({
           where: { id: it.id },
