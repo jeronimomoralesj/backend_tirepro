@@ -485,18 +485,27 @@ export class PurchaseOrdersService {
       throw new BadRequestException('decisions must be a non-empty array');
     }
 
+    // Validate up front. We only HARD-require a linked tire for the
+    // reencauchar decision (we need to physically move the tire into the
+    // reencauche bucket and snapshot its vida). For devolver and
+    // fin_de_vida the dist is just closing out the item — if the tire was
+    // deleted in the meantime (ON DELETE SET NULL nulls our FK), we let
+    // them finalize the item without the tire side-effects so the order
+    // doesn't get permanently stuck.
     const itemsById = new Map(order.items.map((i) => [i.id, i] as const));
     for (const d of decisions) {
       const it = itemsById.get(d.itemId);
       if (!it) throw new BadRequestException(`Item ${d.itemId} is not on this order`);
-      if (it.tipo !== 'reencauche') continue; // nueva items sit out the pickup decision
+      if (it.tipo !== 'reencauche') continue;
       if (it.status !== 'recogida_por_dist') {
         throw new BadRequestException(
           `Item ${d.itemId} is in status "${it.status}" — debe estar recogida antes de decidir`,
         );
       }
-      if (!it.tireId || !it.tire) {
-        throw new BadRequestException(`Item ${d.itemId} has no linked tire`);
+      if (d.decision === 'reencauchar' && (!it.tireId || !it.tire)) {
+        throw new BadRequestException(
+          `Item ${d.itemId} no tiene llanta vinculada — no se puede reencauchar. Marca como devolver o fin de vida.`,
+        );
       }
     }
 
@@ -508,11 +517,11 @@ export class PurchaseOrdersService {
     for (const d of decisions) {
       const it = itemsById.get(d.itemId)!;
       if (it.tipo !== 'reencauche') continue;
-      const tireId = it.tireId as string;
+      const tireId = it.tireId ?? null;
 
       if (d.decision === 'reencauchar') {
         // Tire → Reencauche bucket, item → aprobada with ETA.
-        await this.buckets.bulkMoveTiresToBucket([tireId], bucket.id, order.companyId);
+        await this.buckets.bulkMoveTiresToBucket([tireId!], bucket.id, order.companyId);
         const eta = d.estimatedDelivery ? new Date(d.estimatedDelivery) : null;
         await this.prisma.purchaseOrderItem.update({
           where: { id: it.id },
@@ -527,7 +536,11 @@ export class PurchaseOrdersService {
 
       if (d.decision === 'devolver') {
         // Tire is still usable, just not retreadable — back to Disponible.
-        await this.buckets.bulkMoveTiresToBucket([tireId], null, order.companyId);
+        // Skip the bucket move when the tire link is gone (ON DELETE SET NULL
+        // wiped it after a deletion); just close the item out.
+        if (tireId) {
+          await this.buckets.bulkMoveTiresToBucket([tireId], null, order.companyId);
+        }
         await this.prisma.purchaseOrderItem.update({
           where: { id: it.id },
           data: {
@@ -540,18 +553,24 @@ export class PurchaseOrdersService {
       }
 
       // decision === 'fin_de_vida'
-      await this.tires.updateVida(
-        tireId,
-        'fin',
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        d.desechos,
-        undefined,
-        'reencauche' as MotivoFinVida,
-        d.motivoRechazo?.trim(),
-      );
+      // When the tire is still linked we route through the standard vida
+      // endpoint so TireVidaSnapshot + analytics stay consistent. When the
+      // link is gone we just close the item — the desechos data isn't tied
+      // to a phantom tire, and the dist still gets to finalize the order.
+      if (tireId) {
+        await this.tires.updateVida(
+          tireId,
+          'fin',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          d.desechos,
+          undefined,
+          'reencauche' as MotivoFinVida,
+          d.motivoRechazo?.trim(),
+        );
+      }
       await this.prisma.purchaseOrderItem.update({
         where: { id: it.id },
         data: {
@@ -695,20 +714,21 @@ export class PurchaseOrdersService {
         `Cannot return an item in status "${item.status}"`,
       );
     }
-    if (!item.tireId) {
-      throw new BadRequestException('Reencauche item has no linked tire');
-    }
     if (!motivoRechazo?.trim()) {
       throw new BadRequestException('motivoRechazo is required');
     }
 
     // Tire leaves the Reencauche bucket and lands in Disponible (null bucket).
     // Vida stays exactly where it was — this path is explicitly "reusable".
-    await this.buckets.bulkMoveTiresToBucket(
-      [item.tireId],
-      null,
-      item.purchaseOrder.companyId,
-    );
+    // If the tire was deleted in the meantime (ON DELETE SET NULL wiped the
+    // FK) we just close the item out without the bucket move.
+    if (item.tireId) {
+      await this.buckets.bulkMoveTiresToBucket(
+        [item.tireId],
+        null,
+        item.purchaseOrder.companyId,
+      );
+    }
 
     const updated = await this.prisma.purchaseOrderItem.update({
       where: { id: itemId },
@@ -749,27 +769,28 @@ export class PurchaseOrdersService {
         `Cannot reject an item in status "${item.status}"`,
       );
     }
-    if (!item.tireId) {
-      throw new BadRequestException('Reencauche item has no linked tire');
-    }
     if (!motivoRechazo?.trim()) {
       throw new BadRequestException('motivoRechazo is required');
     }
 
     // Route the tire through the standard vida endpoint so TireVidaSnapshot
     // and all cached analytics stay consistent with manual fin-de-vida.
-    await this.tires.updateVida(
-      item.tireId,
-      'fin',
-      undefined,             // banda — n/a for fin
-      undefined,             // costo — n/a
-      undefined,             // profundidadInicial — n/a
-      undefined,             // proveedor — n/a
-      desechoData,
-      undefined,             // bandaMarca
-      'reencauche' as MotivoFinVida,
-      motivoRechazo.trim(),  // notasRetiro
-    );
+    // When the tire link is already gone we skip the vida transition (the
+    // tire it would update doesn't exist anymore) and just close the item.
+    if (item.tireId) {
+      await this.tires.updateVida(
+        item.tireId,
+        'fin',
+        undefined,             // banda — n/a for fin
+        undefined,             // costo — n/a
+        undefined,             // profundidadInicial — n/a
+        undefined,             // proveedor — n/a
+        desechoData,
+        undefined,             // bandaMarca
+        'reencauche' as MotivoFinVida,
+        motivoRechazo.trim(),  // notasRetiro
+      );
+    }
 
     const updated = await this.prisma.purchaseOrderItem.update({
       where: { id: itemId },
