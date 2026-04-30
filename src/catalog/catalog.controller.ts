@@ -87,9 +87,13 @@ export class CatalogController {
     if (opts.roles) {
       allowed = new Set(opts.roles);
     } else if (opts.requireAdmin) {
+      // Admin-tier catalog actions (subscribe SKUs, edit images, download
+      // stats) — marketplace_tracker is intentionally excluded here.
       allowed = new Set(['admin', 'catalogo_admin']);
     } else {
-      allowed = new Set(['admin', 'catalogo', 'catalogo_admin']);
+      // Read-tier catalog access — sales reps and the new marketplace
+      // tracker can browse + download SKU PDFs.
+      allowed = new Set(['admin', 'catalogo', 'catalogo_admin', 'marketplace_tracker']);
     }
     if (!role || !allowed.has(role)) {
       throw new ForbiddenException(

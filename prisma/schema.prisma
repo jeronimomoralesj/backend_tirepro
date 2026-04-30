@@ -28,11 +28,16 @@ enum UserRole {
   viewer
   technician
   // Distribuidor-only roles — see CatalogModule.
-  //   catalogo:       access to SKU catalog (search, edit images, download PDFs)
-  //   catalogo_admin: same + the downloads-stats dashboard
+  //   catalogo:            access to SKU catalog (search, edit images, download PDFs)
+  //   catalogo_admin:      same + the downloads-stats dashboard
+  //   marketplace_tracker: catálogo (sales-rep level, NOT admin) + the
+  //                         /dashboard/marketplace orders/tracking view.
+  //                         Lower trust than catalogo_admin; can't manage
+  //                         the catalog itself.
   // A distribuidor user with `admin` still has access to everything.
   catalogo
   catalogo_admin
+  marketplace_tracker
 }
 
 enum CompanyPlan {
