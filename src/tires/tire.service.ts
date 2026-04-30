@@ -1046,15 +1046,28 @@ export class TireService {
 
     const redis = (this.cache as any)?.store?.client;
     if (redis?.scanStream) {
-      // cache-manager-ioredis-yet exposes the underlying ioredis client here
+      // cache-manager-ioredis-yet exposes the underlying ioredis client here.
+      // Crucially, we collect every unlink promise the SCAN fires and AWAIT
+      // them before resolving — previously these were fire-and-forget, so
+      // invalidateCompanyCache returned while the page caches were still
+      // present in Redis. Dashboards re-fetched immediately after an
+      // inspection and got the stale page, which is the "takes time to
+      // update" symptom users were seeing.
       const pattern = `${base}:pg:*`;
       await new Promise<void>((resolve) => {
         const stream = redis.scanStream({ match: pattern, count: 200 });
+        const pending: Promise<unknown>[] = [];
         stream.on('data', (keys: string[]) => {
-          if (keys.length) redis.unlink(...keys).catch(() => {});
+          if (keys.length) pending.push(redis.unlink(...keys).catch(() => {}));
         });
-        stream.on('end',   () => resolve());
-        stream.on('error', () => resolve());
+        stream.on('end',   async () => {
+          await Promise.allSettled(pending);
+          resolve();
+        });
+        stream.on('error', async () => {
+          await Promise.allSettled(pending);
+          resolve();
+        });
       });
     }
   }
