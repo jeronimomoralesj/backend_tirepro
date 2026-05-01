@@ -194,6 +194,22 @@ export class PaymentsService {
     const signature = this.generateIntegritySignature(reference, amountInCents);
     const redirectUrl = `${input.redirectBaseUrl}/marketplace/order/${result.orders[0].id}?email=${encodeURIComponent(input.buyerEmail)}`;
 
+    // Build Wompi web-checkout URL — same host for sandbox and prod;
+    // the test/prod prefix on `public-key` is what tells Wompi which
+    // environment to charge against.
+    const checkoutParams = new URLSearchParams({
+      'public-key':              process.env.WOMPI_PUBLIC_KEY ?? '',
+      'currency':                'COP',
+      'amount-in-cents':         String(amountInCents),
+      'reference':               reference,
+      'signature:integrity':     signature,
+      'redirect-url':            redirectUrl,
+      'customer-data:email':     input.buyerEmail,
+      'customer-data:full-name': input.buyerName,
+      ...(input.buyerPhone ? { 'customer-data:phone-number': input.buyerPhone } : {}),
+    });
+    const checkoutUrl = `https://checkout.wompi.co/p/?${checkoutParams.toString()}`;
+
     return {
       paymentId: result.payment.id,
       reference,
@@ -202,9 +218,8 @@ export class PaymentsService {
       signature,
       publicKey: process.env.WOMPI_PUBLIC_KEY,
       redirectUrl,
+      checkoutUrl,
       orderIds: result.orders.map((o) => o.id),
-      // We don't return the firstOrderId separately — the frontend can
-      // pick whichever it wants from orderIds[].
     };
   }
 
