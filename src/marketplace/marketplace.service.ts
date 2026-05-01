@@ -829,13 +829,21 @@ export class MarketplaceService {
       }
     }
 
+    // Inventory-aware ranking — prepended to every sort branch. The
+    // `inventoryRank` column is a Postgres-generated `LEAST(cantidad, 50)`,
+    // so listings with ≥50 units all tie for the top tier and the
+    // user's chosen criterion (price / recency / relevance) acts as
+    // the tiebreaker among them. Listings with <50 units sub-rank by
+    // their actual count so a tire with 30 in stock still beats one
+    // with 5 — this is what the user means by "if there's a ton of
+    // tires for one then that one must be displayed first".
     let orderBy: any;
     switch (filters.sortBy) {
-      case 'price_asc': orderBy = { precioCop: 'asc' }; break;
-      case 'price_desc': orderBy = { precioCop: 'desc' }; break;
-      case 'newest': orderBy = { createdAt: 'desc' }; break;
-      // Default: relevance = image quality first, then newest
-      default: orderBy = [{ imageQualityScore: 'desc' }, { createdAt: 'desc' }];
+      case 'price_asc':  orderBy = [{ inventoryRank: 'desc' }, { precioCop: 'asc'  }]; break;
+      case 'price_desc': orderBy = [{ inventoryRank: 'desc' }, { precioCop: 'desc' }]; break;
+      case 'newest':     orderBy = [{ inventoryRank: 'desc' }, { createdAt: 'desc' }]; break;
+      // Default: stock first, then image quality, then newest.
+      default: orderBy = [{ inventoryRank: 'desc' }, { imageQualityScore: 'desc' }, { createdAt: 'desc' }];
     }
 
     const page = filters.page ?? 1;

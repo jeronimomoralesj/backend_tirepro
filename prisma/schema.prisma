@@ -1727,6 +1727,15 @@ model DistributorListing {
   incluyeIva  Boolean   @default(false)
 
   cantidadDisponible Int     @default(0)
+  // LEAST(cantidadDisponible, 50) — Postgres-managed STORED generated
+  // column. Used as the primary sort key in the marketplace listings
+  // query so a tire with deep stock outranks one that's nearly out,
+  // BUT after 50 units the difference doesn't matter (50 covers any
+  // reasonable single order). Application code never writes to this
+  // column — Postgres recomputes it on every cantidadDisponible
+  // change. Declared `Int?` here so Prisma omits it from INSERT
+  // payloads; in practice the DB always populates it.
+  inventoryRank      Int?
   tiempoEntrega      String?
 
   descripcion       String? @db.Text
@@ -1751,6 +1760,7 @@ model DistributorListing {
   @@index([isActive, createdAt])
   @@index([isActive, imageQualityScore, createdAt])
   @@index([isActive, precioCop])
+  @@index([isActive, inventoryRank])
   @@index([tipo, isActive])
   @@map("distributor_listings")
 }
