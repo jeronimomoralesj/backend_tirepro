@@ -78,11 +78,11 @@ export function wrapEmail(opts: EmailShellOptions): string {
 <meta name="x-apple-disable-message-reformatting" />
 <title>TirePro</title>
 </head>
-<body style="margin:0;padding:0;background:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:${BRAND.text};-webkit-font-smoothing:antialiased;">
-${opts.preheader ? `<div style="display:none;font-size:1px;color:#f5f5f7;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">${escapeHtml(opts.preheader)}</div>` : ''}
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f5f5f7;">
+<body style="margin:0;padding:0;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:${BRAND.text};-webkit-font-smoothing:antialiased;">
+${opts.preheader ? `<div style="display:none;font-size:1px;color:#ffffff;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">${escapeHtml(opts.preheader)}</div>` : ''}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
   <tr><td align="center" style="padding:24px 12px;">
-    <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px -12px rgba(10,24,58,0.18);">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;">
 
       <!-- LOGO HEADER -->
       <tr><td style="padding:24px 32px 20px;background:#ffffff;border-bottom:1px solid ${BRAND.hairline};">
@@ -194,9 +194,9 @@ export function emailProductCard(opts: {
   totalValue?: string;
 }): string {
   const img = opts.imageUrl
-    ? `<img src="${escapeAttr(opts.imageUrl)}" alt="" width="64" height="64" style="display:block;width:64px;height:64px;border-radius:10px;background:#F0F7FF;object-fit:contain;border:1px solid ${BRAND.hairline};" />`
-    : `<div style="width:64px;height:64px;border-radius:10px;background:#F0F7FF;border:1px solid ${BRAND.hairline};"></div>`;
-  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px;background:#FAFBFC;border:1px solid ${BRAND.hairline};border-radius:12px;">
+    ? `<img src="${escapeAttr(opts.imageUrl)}" alt="" width="64" height="64" style="display:block;width:64px;height:64px;border-radius:10px;background:#ffffff;object-fit:contain;border:1px solid ${BRAND.hairline};" />`
+    : `<div style="width:64px;height:64px;border-radius:10px;background:#ffffff;border:1px solid ${BRAND.hairline};"></div>`;
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px;background:#ffffff;border:1px solid ${BRAND.hairline};border-radius:12px;">
     <tr>
       <td width="80" style="padding:14px 0 14px 14px;vertical-align:middle;">${img}</td>
       <td style="padding:14px;vertical-align:middle;">
