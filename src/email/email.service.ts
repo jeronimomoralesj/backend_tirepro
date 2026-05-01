@@ -488,9 +488,12 @@ export class EmailService implements OnModuleInit {
     const trackUrl = this.buildOrderTrackingUrl(opts.orderId, opts.buyerEmail);
     const firstName = opts.buyerName.split(' ')[0] || 'hola';
     // Format the ETA in the buyer's locale so it reads as a real date
-    // ("12 de mayo de 2026") instead of an ISO blob.
+    // ("12 de mayo de 2026") instead of an ISO blob. The stored value
+    // is pinned at noon UTC so we format in UTC too — otherwise the
+    // server (UTC) and the buyer's browser (typically America/Bogota,
+    // UTC-5) would render different days for the same instant.
     const etaLabel = opts.etaDate
-      ? new Date(opts.etaDate).toLocaleDateString('es-CO', { day: 'numeric', month: 'long', year: 'numeric' })
+      ? new Date(opts.etaDate).toLocaleDateString('es-CO', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
       : null;
     const html = wrapEmail({
       accent: 'success',
