@@ -84,8 +84,28 @@ export class UsersController {
       }).catch(() => { /* company may have already been removed */ });
     }
 
+    // Welcome email is for FLEET users (the main TirePro experience —
+    // dashboards, inspections, CPK tracking). It's the wrong message
+    // for two cohorts so we suppress it for them:
+    //   1. Marketplace-only users — no companyId, just signed up to
+    //      buy tires. The order-confirmation flow already greets them.
+    //   2. Distribuidor-plan companies — they have a different
+    //      onboarding (catalog setup, storefront, pedidos pipeline).
     setTimeoutPromise(600).then(async () => {
       try {
+        let plan: string | null = null;
+        if (user.companyId) {
+          const company = await this.prisma.company.findUnique({
+            where: { id: user.companyId },
+            select: { plan: true },
+          });
+          plan = company?.plan ?? null;
+        }
+        // No companyId = marketplace-only buyer. Distribuidor plan is
+        // gated separately. Anything else (pro / plus / pre-existing
+        // plans) gets the welcome.
+        const shouldSendWelcome = !!user.companyId && plan !== 'distribuidor' && plan !== 'marketplace';
+        if (!shouldSendWelcome) return;
         if (user.preferredLanguage === 'en') {
           await this.emailService.sendWelcomeEmail(user.email, user.name);
         } else {

@@ -1307,37 +1307,31 @@ export class MarketplaceService {
       include: { listing: true },
     });
 
+    // Resolve cover image once for all downstream emails so they share
+    // the same hero shot the buyer just clicked on.
+    const listingImgs = Array.isArray((listing as any).imageUrls) ? (listing as any).imageUrls as string[] : [];
+    const listingCover = listingImgs.length > 0
+      ? (listingImgs[(listing as any).coverIndex ?? 0] ?? listingImgs[0])
+      : null;
+
     // Send confirmation email to buyer
     try {
-      const fmtCOP = (n: number) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n);
-      const trackingUrl = this.buildTrackingUrl(order.id, data.buyerEmail);
-      await this.email.sendEmail(data.buyerEmail, `Pedido confirmado — ${listing.marca} ${listing.modelo}`, `
-        <div style="font-family:system-ui;max-width:600px;margin:0 auto">
-          <div style="background:linear-gradient(135deg,#0A183A,#1E76B6);color:white;padding:30px;border-radius:12px 12px 0 0">
-            <h1 style="margin:0;font-size:20px">Pedido Confirmado</h1>
-            <p style="margin:4px 0 0;opacity:0.7;font-size:13px">TirePro Marketplace</p>
-          </div>
-          <div style="padding:24px;background:white;border:1px solid #e5e5e5;border-top:0;border-radius:0 0 12px 12px">
-            <p style="margin:0 0 16px;color:#333">Hola <strong>${data.buyerName}</strong>,</p>
-            <p style="margin:0 0 20px;color:#555;font-size:14px">Tu pedido ha sido recibido. El distribuidor se comunicara contigo para coordinar la entrega.</p>
-            <div style="background:#f5f5f7;padding:16px;border-radius:8px;margin-bottom:20px">
-              <p style="margin:0 0 8px;font-weight:700;color:#0A183A">${listing.marca} ${listing.modelo}</p>
-              <p style="margin:0 0 4px;font-size:13px;color:#666">${listing.dimension}</p>
-              <p style="margin:0 0 4px;font-size:13px;color:#666">Cantidad: ${data.quantity}</p>
-              <p style="margin:12px 0 0;font-size:18px;font-weight:800;color:#0A183A">${fmtCOP(totalCop)}</p>
-            </div>
-            <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Distribuidor:</strong> ${listing.distributor.name}</p>
-            <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Pedido:</strong> #${order.id.slice(0, 8).toUpperCase()}</p>
-            ${data.buyerAddress ? `<p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Entrega:</strong> ${data.buyerAddress}${data.buyerCity ? ', ' + data.buyerCity : ''}</p>` : ''}
-            <div style="margin:24px 0;text-align:center">
-              <a href="${trackingUrl}" style="display:inline-block;padding:12px 28px;border-radius:10px;background:#1E76B6;color:white;font-size:14px;font-weight:700;text-decoration:none">Seguir mi pedido</a>
-            </div>
-            <p style="margin:0 0 4px;font-size:11px;color:#999;text-align:center">O copia este enlace: <a href="${trackingUrl}" style="color:#1E76B6;word-break:break-all">${trackingUrl}</a></p>
-            <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
-            <p style="margin:0;font-size:12px;color:#999">Este email fue enviado por TirePro Marketplace — tirepro.com.co</p>
-          </div>
-        </div>
-      `);
+      await this.email.sendOrderConfirmation({
+        buyerEmail:      data.buyerEmail,
+        buyerName:       data.buyerName,
+        orderId:         order.id,
+        distributorName: listing.distributor.name,
+        listing: {
+          marca:     listing.marca,
+          modelo:    listing.modelo,
+          dimension: listing.dimension,
+          imageUrl:  listingCover,
+        },
+        quantity:     data.quantity,
+        totalCop:     totalCop,
+        buyerAddress: data.buyerAddress,
+        buyerCity:    data.buyerCity,
+      });
     } catch (err) {
       this.logger.warn(`Failed to send order confirmation: ${err}`);
     }
@@ -1346,27 +1340,21 @@ export class MarketplaceService {
     try {
       const distEmail = listing.distributor.emailAtencion;
       if (distEmail) {
-        const fmtCOP = (n: number) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n);
-        await this.email.sendEmail(distEmail, `Nuevo pedido — ${listing.marca} ${listing.modelo}`, `
-          <div style="font-family:system-ui;max-width:600px;margin:0 auto">
-            <div style="background:linear-gradient(135deg,#0A183A,#1E76B6);color:white;padding:30px;border-radius:12px 12px 0 0">
-              <h1 style="margin:0;font-size:20px">Nuevo Pedido del Marketplace</h1>
-            </div>
-            <div style="padding:24px;background:white;border:1px solid #e5e5e5;border-top:0;border-radius:0 0 12px 12px">
-              <div style="background:#f5f5f7;padding:16px;border-radius:8px;margin-bottom:16px">
-                <p style="margin:0 0 8px;font-weight:700;color:#0A183A">${listing.marca} ${listing.modelo} · ${listing.dimension}</p>
-                <p style="margin:0;font-size:13px;color:#666">Cantidad: ${data.quantity} · Total: ${fmtCOP(totalCop)}</p>
-              </div>
-              <p style="margin:0 0 8px;font-size:14px;font-weight:700;color:#0A183A">Datos del comprador:</p>
-              <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Nombre:</strong> ${data.buyerName}</p>
-              <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Email:</strong> ${data.buyerEmail}</p>
-              ${data.buyerPhone ? `<p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Telefono:</strong> ${data.buyerPhone}</p>` : ''}
-              ${data.buyerAddress ? `<p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Direccion:</strong> ${data.buyerAddress}${data.buyerCity ? ', ' + data.buyerCity : ''}</p>` : ''}
-              ${data.buyerCompany ? `<p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Empresa:</strong> ${data.buyerCompany}</p>` : ''}
-              ${data.notas ? `<p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Notas:</strong> ${data.notas}</p>` : ''}
-            </div>
-          </div>
-        `);
+        await this.email.sendOrderToDistributor({
+          distributorEmail: distEmail,
+          orderId:          order.id,
+          listing: {
+            marca:     listing.marca,
+            modelo:    listing.modelo,
+            dimension: listing.dimension,
+            imageUrl:  listingCover,
+          },
+          quantity:    data.quantity,
+          totalCop:    totalCop,
+          buyerName:   data.buyerName,
+          buyerPhone:  data.buyerPhone,
+          buyerCity:   data.buyerCity,
+        });
       }
     } catch (err) {
       this.logger.warn(`Failed to send distributor notification: ${err}`);
@@ -1506,125 +1494,69 @@ export class MarketplaceService {
       },
     });
 
-    // Send cancellation email to buyer
-    if (status === 'cancelado' && order.buyerEmail) {
-      this.logger.log(`Sending cancellation email to ${order.buyerEmail} for order ${orderId}, reason: ${cancelReason}`);
-      try {
-        const dist = await this.prisma.company.findUnique({ where: { id: distributorId }, select: { name: true } });
-        const fmtCOP = (n: number) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n);
-        const trackingUrl = this.buildTrackingUrl(orderId, order.buyerEmail);
-        await this.email.sendEmail(order.buyerEmail, `Pedido cancelado — ${order.listing.marca} ${order.listing.modelo}`, `
-          <div style="font-family:system-ui;max-width:600px;margin:0 auto">
-            <div style="background:linear-gradient(135deg,#991b1b,#ef4444);color:white;padding:30px;border-radius:12px 12px 0 0">
-              <h1 style="margin:0;font-size:20px">Pedido Cancelado</h1>
-              <p style="margin:4px 0 0;opacity:0.7;font-size:13px">TirePro Marketplace</p>
-            </div>
-            <div style="padding:24px;background:white;border:1px solid #e5e5e5;border-top:0;border-radius:0 0 12px 12px">
-              <p style="margin:0 0 16px;color:#333">Hola <strong>${order.buyerName}</strong>,</p>
-              <p style="margin:0 0 16px;color:#555;font-size:14px">Lamentamos informarte que tu pedido ha sido cancelado por el distribuidor.</p>
-              <div style="background:#fef2f2;padding:16px;border-radius:8px;margin-bottom:16px;border-left:4px solid #ef4444">
-                <p style="margin:0 0 4px;font-weight:700;color:#991b1b;font-size:13px">Motivo de cancelacion:</p>
-                <p style="margin:0;color:#7f1d1d;font-size:13px">${cancelReason ?? 'No especificado'}</p>
-              </div>
-              <div style="background:#f5f5f7;padding:16px;border-radius:8px;margin-bottom:16px">
-                <p style="margin:0 0 8px;font-weight:700;color:#0A183A">${order.listing.marca} ${order.listing.modelo}</p>
-                <p style="margin:0 0 4px;font-size:13px;color:#666">${order.listing.dimension} · Cantidad: ${order.quantity}</p>
-                <p style="margin:0;font-size:13px;color:#666">Total: ${fmtCOP(order.totalCop)}</p>
-              </div>
-              <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Distribuidor:</strong> ${dist?.name ?? 'Distribuidor'}</p>
-              <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Pedido:</strong> #${orderId.slice(0, 8).toUpperCase()}</p>
-              <div style="margin:18px 0;text-align:center">
-                <a href="${trackingUrl}" style="display:inline-block;padding:10px 24px;border-radius:8px;background:#0A183A;color:white;font-size:13px;font-weight:700;text-decoration:none">Ver pedido</a>
-              </div>
-              <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
-              <p style="margin:0 0 8px;font-size:14px;color:#333">Puedes buscar este producto con otros distribuidores en el marketplace:</p>
-              <a href="https://tirepro.com.co/marketplace" style="display:inline-block;padding:10px 24px;border-radius:8px;background:#1E76B6;color:white;font-size:13px;font-weight:700;text-decoration:none">Ver Marketplace</a>
-              <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
-              <p style="margin:0;font-size:12px;color:#999">TirePro Marketplace — tirepro.com.co</p>
-            </div>
-          </div>
-        `);
-        this.logger.log(`Cancellation email sent successfully to ${order.buyerEmail}`);
-      } catch (err) {
-        this.logger.error(`Failed to send cancellation email to ${order.buyerEmail}: ${err?.message ?? err}`);
-      }
-    }
+    // Buyer-facing status change email — one branch per template so
+    // the visual treatment matches the news (cancelled = danger,
+    // confirmed = brand, delivered = success, etc.). All paths flow
+    // through the shared shell in EmailService.
+    if (order.buyerEmail) {
+      const orderImgs = Array.isArray((order.listing as any).imageUrls) ? (order.listing as any).imageUrls as string[] : [];
+      const orderCover = orderImgs.length > 0
+        ? (orderImgs[(order.listing as any).coverIndex ?? 0] ?? orderImgs[0])
+        : null;
+      const dist = await this.prisma.company.findUnique({
+        where: { id: distributorId },
+        select: { name: true, telefono: true },
+      });
+      const distName  = dist?.name ?? 'El distribuidor';
+      const distPhone = dist?.telefono ?? null;
+      const listingPayload = {
+        marca:     order.listing.marca,
+        modelo:    order.listing.modelo,
+        dimension: order.listing.dimension,
+        imageUrl:  orderCover,
+      };
 
-    // Send confirmation email when status changes to confirmado
-    if (status === 'confirmado' && order.buyerEmail) {
       try {
-        const dist = await this.prisma.company.findUnique({ where: { id: distributorId }, select: { name: true, telefono: true } });
-        const trackingUrl = this.buildTrackingUrl(orderId, order.buyerEmail);
-        await this.email.sendEmail(order.buyerEmail, `Pedido confirmado — ${order.listing.marca} ${order.listing.modelo}`, `
-          <div style="font-family:system-ui;max-width:600px;margin:0 auto">
-            <div style="background:linear-gradient(135deg,#0A183A,#1E76B6);color:white;padding:30px;border-radius:12px 12px 0 0">
-              <h1 style="margin:0;font-size:20px">Pedido Confirmado por Distribuidor</h1>
-            </div>
-            <div style="padding:24px;background:white;border:1px solid #e5e5e5;border-top:0;border-radius:0 0 12px 12px">
-              <p style="margin:0 0 16px;color:#333">Hola <strong>${order.buyerName}</strong>,</p>
-              <p style="margin:0 0 16px;color:#555;font-size:14px">${dist?.name ?? 'El distribuidor'} ha confirmado tu pedido. Se comunicaran contigo para coordinar la entrega.</p>
-              <div style="background:#f0f7ff;padding:16px;border-radius:8px">
-                <p style="margin:0 0 4px;font-weight:700;color:#0A183A">${order.listing.marca} ${order.listing.modelo} · ${order.listing.dimension}</p>
-                <p style="margin:0;font-size:13px;color:#666">Pedido #${orderId.slice(0, 8).toUpperCase()}</p>
-                ${dist?.telefono ? `<p style="margin:8px 0 0;font-size:13px;color:#1E76B6;font-weight:700">Telefono: ${dist.telefono}</p>` : ''}
-              </div>
-              <div style="margin:20px 0 4px;text-align:center">
-                <a href="${trackingUrl}" style="display:inline-block;padding:12px 28px;border-radius:10px;background:#1E76B6;color:white;font-size:14px;font-weight:700;text-decoration:none">Seguir mi pedido</a>
-              </div>
-              <p style="margin:0;font-size:11px;color:#999;text-align:center">O copia: <a href="${trackingUrl}" style="color:#1E76B6;word-break:break-all">${trackingUrl}</a></p>
-            </div>
-          </div>
-        `);
-      } catch (err) { this.logger.warn(`Failed to send confirmation email: ${err}`); }
-    }
-
-    // Generic status-change email — covers entregado and any free-text
-    // status the dist may set ("en preparación", "listo para retirar"…).
-    // Skips the two statuses with bespoke templates above so we don't
-    // double-send.
-    if (
-      status !== 'cancelado' &&
-      status !== 'confirmado' &&
-      order.buyerEmail
-    ) {
-      try {
-        const dist = await this.prisma.company.findUnique({ where: { id: distributorId }, select: { name: true, telefono: true } });
-        const orderNumber = orderId.slice(0, 8).toUpperCase();
-        const isDelivered = status === 'entregado';
-        const headerBg = isDelivered
-          ? 'linear-gradient(135deg,#15803d,#22c55e)'
-          : 'linear-gradient(135deg,#0A183A,#1E76B6)';
-        const headline = isDelivered ? 'Pedido entregado' : 'Estado del pedido actualizado';
-        const intro = isDelivered
-          ? `${dist?.name ?? 'El distribuidor'} marcó tu pedido como entregado. ¡Gracias por tu compra!`
-          : `${dist?.name ?? 'El distribuidor'} actualizó el estado de tu pedido a <strong>${status}</strong>.`;
-        const trackingUrl = this.buildTrackingUrl(orderId, order.buyerEmail);
-        await this.email.sendEmail(order.buyerEmail, `Pedido #${orderNumber} — ${headline}`, `
-          <div style="font-family:system-ui;max-width:600px;margin:0 auto">
-            <div style="background:${headerBg};color:white;padding:30px;border-radius:12px 12px 0 0">
-              <h1 style="margin:0;font-size:20px">${headline}</h1>
-              <p style="margin:4px 0 0;opacity:0.85;font-size:13px">TirePro Marketplace</p>
-            </div>
-            <div style="padding:24px;background:white;border:1px solid #e5e5e5;border-top:0;border-radius:0 0 12px 12px">
-              <p style="margin:0 0 16px;color:#333">Hola <strong>${order.buyerName}</strong>,</p>
-              <p style="margin:0 0 16px;color:#555;font-size:14px">${intro}</p>
-              <div style="background:#f5f5f7;padding:16px;border-radius:8px;margin-bottom:16px">
-                <p style="margin:0 0 4px;font-weight:700;color:#0A183A">${order.listing.marca} ${order.listing.modelo}</p>
-                <p style="margin:0 0 4px;font-size:13px;color:#666">${order.listing.dimension} · Cantidad: ${order.quantity}</p>
-                <p style="margin:0;font-size:13px;color:#666">Pedido #${orderNumber}</p>
-              </div>
-              ${dist?.telefono ? `<p style="margin:8px 0 0;font-size:13px;color:#1E76B6;font-weight:700">Teléfono del distribuidor: ${dist.telefono}</p>` : ''}
-              <div style="margin:20px 0 4px;text-align:center">
-                <a href="${trackingUrl}" style="display:inline-block;padding:12px 28px;border-radius:10px;background:${isDelivered ? '#15803d' : '#1E76B6'};color:white;font-size:14px;font-weight:700;text-decoration:none">Seguir mi pedido</a>
-              </div>
-              <p style="margin:0;font-size:11px;color:#999;text-align:center">O copia: <a href="${trackingUrl}" style="color:#1E76B6;word-break:break-all">${trackingUrl}</a></p>
-              <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
-              <p style="margin:0;font-size:12px;color:#999">TirePro Marketplace — tirepro.com.co</p>
-            </div>
-          </div>
-        `);
-      } catch (err) {
-        this.logger.warn(`Failed to send status-change email: ${err}`);
+        if (status === 'cancelado') {
+          await this.email.sendOrderCancelled({
+            buyerEmail:      order.buyerEmail,
+            buyerName:       order.buyerName,
+            orderId,
+            distributorName: distName,
+            listing:         listingPayload,
+            quantity:        order.quantity,
+            totalCop:        order.totalCop,
+            cancelReason,
+          });
+        } else if (status === 'confirmado') {
+          await this.email.sendOrderConfirmedByDistributor({
+            buyerEmail:       order.buyerEmail,
+            buyerName:        order.buyerName,
+            orderId,
+            distributorName:  distName,
+            distributorPhone: distPhone,
+            listing:          listingPayload,
+            quantity:         order.quantity,
+            totalCop:         order.totalCop,
+          });
+        } else {
+          // entregado, en preparación, listo para retirar — anything
+          // outside the dedicated templates flows through the generic
+          // status-change email.
+          await this.email.sendOrderStatusChanged({
+            buyerEmail:       order.buyerEmail,
+            buyerName:        order.buyerName,
+            orderId,
+            newStatus:        status,
+            distributorName:  distName,
+            distributorPhone: distPhone,
+            listing:          listingPayload,
+            quantity:         order.quantity,
+            totalCop:         order.totalCop,
+          });
+        }
+      } catch (err: any) {
+        this.logger.warn(`Failed to send status-change email (${status}): ${err?.message ?? err}`);
       }
     }
 

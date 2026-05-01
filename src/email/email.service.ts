@@ -7,6 +7,23 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import {
+  wrapEmail,
+  emailButton,
+  emailLead,
+  emailText,
+  emailCallout,
+  emailKvList,
+  emailProductCard,
+  emailDivider,
+  emailLabel,
+  emailFallbackLink,
+  fmtCOP,
+} from './email-templates';
+
+const APP_URL = 'https://tirepro.com.co';
+const DASHBOARD_URL = `${APP_URL}/dashboard`;
+const MARKETPLACE_URL = `${APP_URL}/marketplace`;
 
 @Injectable()
 export class EmailService implements OnModuleInit {
@@ -136,650 +153,163 @@ export class EmailService implements OnModuleInit {
     }
   }
 
+  // ===========================================================================
+  // VERIFICATION (English) — kept for API parity; defaults to Spanish flow.
+  // ===========================================================================
+
   async sendWelcomeEmailWithVerification(email: string, name: string, verifyLink: string) {
-    const subject = "Verify your TirePro account";
-    const html = `
-      <div style="font-family: 'Inter', sans-serif; line-height: 1.6; color: #0A183A; max-width: 600px; margin: 0 auto; background-color: #f8f8f8; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #0A183A; border-top-left-radius: 12px; border-top-right-radius: 12px;">
-          <tr>
-            <td style="padding: 30px; text-align: center;">
-              <h1 style="color: #ffffff; font-size: 28px; margin: 0; padding: 0;">Welcome to TirePro!</h1>
-            </td>
-          </tr>
-        </table>
-
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; padding: 30px;">
-          <tr>
-            <td style="padding: 0 20px;">
-              <p style="font-size: 16px; margin-bottom: 20px;">Hello ${name},</p>
-              <p style="font-size: 16px; margin-bottom: 30px;">Thank you for joining the TirePro community! To activate your account and get started, please verify your email by clicking the button below:</p>
-
-              <table width="100%" cellpadding="0" cellspacing="0" border="0">
-                <tr>
-                  <td align="center" style="padding-bottom: 30px;">
-                    <table border="0" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td align="center" style="border-radius: 8px;" bgcolor="#348CCB">
-                          <a href="${verifyLink}" target="_blank" style="font-size: 18px; font-family: 'Inter', sans-serif; color: #ffffff; text-decoration: none; border-radius: 8px; background-color: #348CCB; padding: 15px 25px; border: 1px solid #1E76B6; display: inline-block; font-weight: bold;">
-                            Activate my account
-                          </a>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-
-              <p style="font-size: 13px; color: #6b7280; margin-top: 8px; word-break: break-all;">
-                Or paste this link into your browser: <a href="${verifyLink}" style="color: #1E76B6;">${verifyLink}</a>
-              </p>
-              <p style="font-size: 13px; color: #6b7280; margin-top: 16px;">
-                This link expires in 48 hours. After that, the account will be removed.
-              </p>
-              <p style="font-size: 14px; color: #173D68; margin-top: 20px;">If you didn't create an account, or if you received this email by mistake, please disregard it.</p>
-            </td>
-          </tr>
-        </table>
-
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #173D68; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
-          <tr>
-            <td style="padding: 20px; text-align: center;">
-              <p style="font-size: 12px; color: #ffffff; margin: 0;">
-                &copy; ${new Date().getFullYear()} TirePro. All rights reserved.
-              </p>
-            </td>
-          </tr>
-        </table>
-      </div>
-    `;
-
+    const subject = 'Verify your TirePro account';
+    const html = wrapEmail({
+      preheader: 'Confirm your email to activate your TirePro account.',
+      eyebrow: 'TirePro · Welcome',
+      title: `Welcome, ${name.split(' ')[0] || 'there'}.`,
+      subtitle: 'One quick step before you start: confirm this is your email address.',
+      body: [
+        emailLead("Tap the button below to verify your email and unlock your TirePro account."),
+        emailButton('Verify my email', verifyLink, { size: 'lg' }),
+        emailFallbackLink(verifyLink, 'Or paste this URL in your browser:'),
+        emailDivider(),
+        emailCallout({
+          tone: 'warning',
+          title: 'Heads up',
+          body: 'This link expires in 24 hours. If you didn\'t request this account, you can safely ignore this email.',
+        }),
+      ].join(''),
+    });
     await this.sendEmail(email, subject, html);
   }
+
+  // ===========================================================================
+  // VERIFICATION (Spanish) — primary flow.
+  // ===========================================================================
 
   async sendWelcomeEmailWithVerificationEs(email: string, name: string, verifyLink: string) {
-    const subject = "Verifica tu cuenta de TirePro";
-    const html = `
-      <div style="font-family: 'Inter', sans-serif; line-height: 1.6; color: #0A183A; max-width: 600px; margin: 0 auto; background-color: #f8f8f8; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #0A183A; border-top-left-radius: 12px; border-top-right-radius: 12px;">
-          <tr>
-            <td style="padding: 30px; text-align: center;">
-              <h1 style="color: #ffffff; font-size: 28px; margin: 0; padding: 0;">¡Bienvenido a TirePro!</h1>
-            </td>
-          </tr>
-        </table>
-
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; padding: 30px;">
-          <tr>
-            <td style="padding: 0 20px;">
-              <p style="font-size: 16px; margin-bottom: 20px;">Hola ${name},</p>
-              <p style="font-size: 16px; margin-bottom: 30px;">Gracias por crear tu cuenta en TirePro! Para activar tu cuenta por favor verifica tu correo dándole click al botón de abajo:</p>
-
-              <table width="100%" cellpadding="0" cellspacing="0" border="0">
-                <tr>
-                  <td align="center" style="padding-bottom: 30px;">
-                    <table border="0" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td align="center" style="border-radius: 8px;" bgcolor="#348CCB">
-                          <a href="${verifyLink}" target="_blank" style="font-size: 18px; font-family: 'Inter', sans-serif; color: #ffffff; text-decoration: none; border-radius: 8px; background-color: #348CCB; padding: 15px 25px; border: 1px solid #1E76B6; display: inline-block; font-weight: bold;">
-                            Activar mi cuenta
-                          </a>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-
-              <p style="font-size: 13px; color: #6b7280; margin-top: 8px; word-break: break-all;">
-                O pega este enlace en tu navegador: <a href="${verifyLink}" style="color: #1E76B6;">${verifyLink}</a>
-              </p>
-              <p style="font-size: 13px; color: #6b7280; margin-top: 16px;">
-                Este enlace expira en 48 horas. Si no lo activas, la cuenta será eliminada.
-              </p>
-              <p style="font-size: 14px; color: #173D68; margin-top: 20px;">Si tú no solicitaste crear una cuenta o si recibiste este correo por equivocación puedes ignorarlo.</p>
-            </td>
-          </tr>
-        </table>
-
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #173D68; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
-          <tr>
-            <td style="padding: 20px; text-align: center;">
-              <p style="font-size: 12px; color: #ffffff; margin: 0;">
-                &copy; ${new Date().getFullYear()} TirePro. Todos los derechos reservados.
-              </p>
-            </td>
-          </tr>
-        </table>
-      </div>
-    `;
-
+    const subject = 'Confirma tu correo en TirePro';
+    const firstName = name.split(' ')[0] || 'hola';
+    const html = wrapEmail({
+      preheader: 'Confirma tu correo para activar tu cuenta de TirePro.',
+      eyebrow: 'TirePro · Bienvenida',
+      title: `Hola, ${firstName}.`,
+      subtitle: 'Un paso rápido antes de empezar: confirma que este es tu correo.',
+      body: [
+        emailLead('Pulsa el botón para verificar tu correo y activar tu cuenta en TirePro.'),
+        emailButton('Confirmar mi correo', verifyLink, { size: 'lg' }),
+        emailFallbackLink(verifyLink, 'O pega este enlace en tu navegador:'),
+        emailDivider(),
+        emailCallout({
+          tone: 'warning',
+          title: 'Importante',
+          body: 'Este enlace expira en 24 horas. Si no creaste esta cuenta, puedes ignorar este correo sin problema.',
+        }),
+      ].join(''),
+    });
     await this.sendEmail(email, subject, html);
   }
 
-async sendWelcomeEmail(to: string, name: string) {
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Welcome to TirePro!</title>
-      <style>
-        body {
-          margin: 0;
-          padding: 0;
-          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-          background-color: #f5f5f5;
-          line-height: 1.6;
-        }
-        img{
-          height:20px;
-        }
-        .email-container {
-          max-width: 600px;
-          margin: 0 auto;
-          background-color: #ffffff;
-          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        .header {
-          padding: 20px 10px;
-          text-align: center;
-        }
-        .header h1 {
-          margin: 0;
-          font-size: 32px;
-          font-weight: 700;
-          text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-        }
-          .subtitle-header{
-            color: black;
-          }
-        .header .subtitle-header {
-          font-size: 16px;
-          opacity: 0.9;
-          font-weight: 300;
-        }
-        .welcome-icon {
-          font-size: 48px;
-          margin-bottom: 20px;
-          display: block;
-        }
-        .content {
-          padding: 40px 30px;
-          color: white;
-          background: #0A183A;
-        }
-        .greeting {
-          font-size: 24px;
-          margin-bottom: 20px;
-          font-weight: 600;
-        }
-        .main-message {
-          font-size: 16px;
-          margin-bottom: 30px;
-        }
-        .features {
-          background-color: #f8f9fa;
-          border-left: 4px solid #348CCB;
-          padding: 20px;
-          margin: 30px 0;
-        }
-        .features h3 {
-          color: #173D68;
-          margin-top: 0;
-          font-size: 18px;
-        }
-        .features ul {
-          margin: 15px 0;
-          padding-left: 20px;
-        }
-        .features li {
-          margin: 8px 0;
-          color: #555555;
-        }
-        .cta-button {
-          display: inline-block;
-          background: linear-gradient(135deg, #1E76B6 0%, #348CCB 100%);
-          color: white;
-          padding: 15px 30px;
-          text-decoration: none;
-          border-radius: 8px;
-          font-weight: 600;
-          margin: 20px 0;
-          box-shadow: 0 4px 8px rgba(30, 118, 182, 0.3);
-          transition: all 0.3s ease;
-        }
-        .cta-button:hover {
-          transform: translateY(-2px);
-          box-shadow: 0 6px 12px rgba(30, 118, 182, 0.4);
-        }
-        .support-section {
-          background-color: #f0f7ff;
-          padding: 25px;
-          border-radius: 8px;
-          margin: 30px 0;
-          border: 1px solid #e6f3ff;
-        }
-        .support-section h3 {
-          color: #0A183A;
-          margin-top: 0;
-          font-size: 18px;
-        }
-        .support-section p{
-          color:black;
-        }
-        .footer {
-          color: black;
-          padding: 30px 20px;
-          text-align: center;
-        }
-        .footer .company-name {
-          font-size: 24px;
-          font-weight: 700;
-          margin-bottom: 10px;
-          color: #348CCB;
-        }
-        .footer .contact-info {
-          font-size: 14px;
-          opacity: 0.8;
-          margin: 10px 0;
-        }
-        .social-links {
-          margin: 20px 0;
-        }
-        .social-links a {
-          color: #348CCB;
-          text-decoration: none;
-          margin: 0 10px;
-          font-size: 14px;
-        }
-        .divider {
-          height: 1px;
-          background: linear-gradient(90deg, transparent, #348CCB, transparent);
-          margin: 20px 0;
-        }
-        @media (max-width: 600px) {
-          .email-container {
-            margin: 0;
-            border-radius: 0;
-          }
-          .content {
-            padding: 30px 20px;
-          }
-          .header {
-            padding: 30px 20px;
-          }
-          .header h1 {
-            font-size: 28px;
-          }
-          .greeting {
-            font-size: 20px;
-          }
-        }
-      </style>
-    </head>
-    <body>
-      <div class="email-container">
-        <!-- Header -->
-        <div class="header">
-          <div class="welcome-icon"><img src="https://www.tirepro.com.co/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flogo_text.6327c77f.png&w=256&q=75"/></div>
-          <p class="subtitle-header">Your tire management platform</p>
-        </div>
+  // ===========================================================================
+  // POST-VERIFICATION WELCOME — call sites gate by user type to suppress
+  // for marketplace-only users (just buying tires) and for distribuidor
+  // accounts (different onboarding entirely). The Spanish version is the
+  // default; the English variant is kept for API parity but rarely sent.
+  // ===========================================================================
 
-        <!-- Main Content -->
-        <div class="content">
-          <div class="greeting">Hello ${name}!</div>
-
-          <div class="main-message">
-            <strong>Welcome to the TirePro family!</strong> We are very happy to have you here.
-          </div>
-
-          <p>We want your time here to be the best, so we prepared this message for you to get the most out of TirePro.</p>
-
-          <div class="features">
-            <h3>How to get the most out of TirePro:</h3>
-            <ul>
-              <li>📸 Perform frequent inspections, include photos and the three tire depths.</li>
-              <li>🔍 Search and analyze your historical purchases to know how your tires have performed.</li>
-              <li>📈 Check your analyst regularly so you don't miss any recommendations or alerts.</li>
-              <li>⚙️ Remember to add events like rotations, life changes, etc., to keep your fleet up to date.</li>
-              <li>🛠️ When your tire reaches its end, remember to add it to the platform so you can later analyze the main causes and how much money you are losing.</li>
-            </ul>
-          </div>
-
-          <div style="text-align: center;">
-            <a href="https://www.tirepro.com.co/login" class="cta-button">Log In</a>
-          </div>
-
-          <div class="divider"></div>
-
-          <div class="support-section">
-            <h3>🤝 Need help?</h3>
-            <p>We are ready to help you. If you have questions or need support, send us an email.</p>
-            <p><strong>Email:</strong> info@tirepro.com.co<br>
-          </div>
-        </div>
-
-        <!-- Footer -->
-        <div class="footer">
-          <div class="company-name"><img src= "https://www.tirepro.com.co/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flogo_text.6327c77f.png&w=256&q=75"/></div>
-          <div class="contact-info">
-            info@tirepro.com.co
-          </div>
-          <div class="social-links">
-            <a href="https://www.facebook.com/profile.php?id=61576764223742">Facebook</a>
-            <a href="https://www.instagram.com/tirepro.app/">Instagram</a>
-            <a href="https://www.linkedin.com/company/tirepros/">LinkedIn</a>
-          </div>
-          <div style="margin-top: 20px; font-size: 12px; opacity: 0.7;">
-            © 2025 TirePro.
-          </div>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
-
-  return this.sendEmail(to, 'Welcome to TirePro! 🚀', htmlContent);
-}
+  async sendWelcomeEmail(to: string, name: string) {
+    const firstName = name.split(' ')[0] || 'there';
+    const subject = `${firstName}, welcome to TirePro 🎉`;
+    const html = wrapEmail({
+      preheader: 'Your account is ready. Here\'s what to do first.',
+      eyebrow: 'Account activated',
+      title: `${firstName}, you're in.`,
+      subtitle: 'Your fleet, your tires, your data — all in one place.',
+      body: [
+        emailLead('Welcome to TirePro. Your account is verified and ready to use.'),
+        emailLabel('Where to start'),
+        emailText('• <strong>Add your fleet</strong> and run your first tire inspection.'),
+        emailText('• <strong>Track CPK and km</strong> to spot underperforming tires before they cost you.'),
+        emailText('• <strong>Connect with distributors</strong> for retreads and replacements without leaving the dashboard.'),
+        emailButton('Open my dashboard', DASHBOARD_URL, { size: 'lg' }),
+        emailDivider(),
+        emailText('Need a hand? Reply to this email — a real human reads every message.'),
+      ].join(''),
+    });
+    return this.sendEmail(to, subject, html);
+  }
 
   async sendWelcomeEmailEs(to: string, name: string) {
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>¡Bienvenido a TirePro!</title>
-      <style>
-        body {
-          margin: 0;
-          padding: 0;
-          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-          background-color: #f5f5f5;
-          line-height: 1.6;
-        }
-        img{
-        	height:20px;
-        }
-        .email-container {
-          max-width: 600px;
-          margin: 0 auto;
-          background-color: #ffffff;
-          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        .header {
-          padding: 20px 10px;
-          text-align: center;
-        }
-        .header h1 {
-          margin: 0;
-          font-size: 32px;
-          font-weight: 700;
-          text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-        }
-          .subtitle-header{
-            color: black;
-          }
-        .header .subtitle-header {
-          font-size: 16px;
-          opacity: 0.9;
-          font-weight: 300;
-        }
-        .welcome-icon {
-          font-size: 48px;
-          margin-bottom: 20px;
-          display: block;
-        }
-        .content {
-          padding: 40px 30px;
-          color: white;
-          background: #0A183A;
-        }
-        .greeting {
-          font-size: 24px;
-          margin-bottom: 20px;
-          font-weight: 600;
-        }
-        .main-message {
-          font-size: 16px;
-          margin-bottom: 30px;
-        }
-        .features {
-          background-color: #f8f9fa;
-          border-left: 4px solid #348CCB;
-          padding: 20px;
-          margin: 30px 0;
-        }
-        .features h3 {
-          color: #173D68;
-          margin-top: 0;
-          font-size: 18px;
-        }
-        .features ul {
-          margin: 15px 0;
-          padding-left: 20px;
-        }
-        .features li {
-          margin: 8px 0;
-          color: #555555;
-        }
-        .cta-button {
-          display: inline-block;
-          background: linear-gradient(135deg, #1E76B6 0%, #348CCB 100%);
-          color: white;
-          padding: 15px 30px;
-          text-decoration: none;
-          border-radius: 8px;
-          font-weight: 600;
-          margin: 20px 0;
-          box-shadow: 0 4px 8px rgba(30, 118, 182, 0.3);
-          transition: all 0.3s ease;
-        }
-        .cta-button:hover {
-          transform: translateY(-2px);
-          box-shadow: 0 6px 12px rgba(30, 118, 182, 0.4);
-        }
-        .support-section {
-          background-color: #f0f7ff;
-          padding: 25px;
-          border-radius: 8px;
-          margin: 30px 0;
-          border: 1px solid #e6f3ff;
-        }
-        .support-section h3 {
-          color: #0A183A;
-          margin-top: 0;
-          font-size: 18px;
-        }
-		.support-section p{
-        	color:black;
-        }
-        .footer {
-          color: black;
-          padding: 30px 20px;
-          text-align: center;
-        }
-        .footer .company-name {
-          font-size: 24px;
-          font-weight: 700;
-          margin-bottom: 10px;
-          color: #348CCB;
-        }
-        .footer .contact-info {
-          font-size: 14px;
-          opacity: 0.8;
-          margin: 10px 0;
-        }
-        .social-links {
-          margin: 20px 0;
-        }
-        .social-links a {
-          color: #348CCB;
-          text-decoration: none;
-          margin: 0 10px;
-          font-size: 14px;
-        }
-        .divider {
-          height: 1px;
-          background: linear-gradient(90deg, transparent, #348CCB, transparent);
-          margin: 20px 0;
-        }
-        @media (max-width: 600px) {
-          .email-container {
-            margin: 0;
-            border-radius: 0;
-          }
-          .content {
-            padding: 30px 20px;
-          }
-          .header {
-            padding: 30px 20px;
-          }
-          .header h1 {
-            font-size: 28px;
-          }
-          .greeting {
-            font-size: 20px;
-          }
-        }
-      </style>
-    </head>
-    <body>
-      <div class="email-container">
-        <!-- Header -->
-        <div class="header">
-          <div class="welcome-icon"><img src="https://www.tirepro.com.co/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flogo_full.44b4ba32.png&w=256&q=75"/></div>
-          <p class="subtitle-header">Tu plataforma para gestión de llantas</p>
-        </div>
-        
-        <!-- Main Content -->
-        <div class="content">
-          <div class="greeting">Hola ${name}!</div>
-          
-          <div class="main-message">
-            <strong>¡Bienvenido a la familia TirePro!</strong> Estamos encantados de tenerte aquí y de que hayas dado este paso hacia el ahorro.
-          </div>
-          
-          <p>Queremos que tu tiempo acá sea el mejor entonces preparamos este mensaje para que le saques los mejor a TirePro.</p>
-          
-          <div class="features">
-  <h3>Como sacarle provecho a TirePro:</h3>
-  <ul>
-    <li>📸 Haz inspecciones seguido, incluye fotos y las tres profundidades de las llantas.</li>
-    <li>🔍 Busca y analiza tus compras históricas para saber como se han comportado tus llantas.</li>
-    <li>📈 Revisa tu analista seguido para no perderte ninguna recomendación o alerta.</li>
-    <li>⚙️ Recuerda agregar eventos como rotaciones, cambios de vida, etc para asi mantener tu flota al dia.</li>
-    <li>🛠️ Cuando tu llanta llegue a su fin recuerda agregarlo a la plataforma para despues poder analizar los principales causales y cuanto dinero estas perdiendo.</li>
-  </ul>
-</div>
+    const firstName = name.split(' ')[0] || 'hola';
+    const subject = `${firstName}, bienvenido a TirePro 🎉`;
+    const html = wrapEmail({
+      preheader: 'Tu cuenta está lista. Esto es lo primero que puedes hacer.',
+      eyebrow: 'Cuenta activada',
+      title: `${firstName}, ya estás dentro.`,
+      subtitle: 'Tu flota, tus llantas, tus datos — todo en un solo lugar.',
+      body: [
+        emailLead('Bienvenido a TirePro. Tu cuenta quedó verificada y lista para usar.'),
+        emailLabel('Por dónde empezar'),
+        emailText('• <strong>Carga tus vehículos</strong> y haz la primera inspección de llantas.'),
+        emailText('• <strong>Sigue el CPK y los kilómetros</strong> para detectar llantas que rinden por debajo antes de que cueste plata.'),
+        emailText('• <strong>Conéctate con distribuidores</strong> para reencauches y reemplazos sin salir del dashboard.'),
+        emailButton('Ir a mi dashboard', DASHBOARD_URL, { size: 'lg' }),
+        emailDivider(),
+        emailText('¿Necesitas ayuda? Responde este correo — leemos cada mensaje.'),
+      ].join(''),
+    });
+    return this.sendEmail(to, subject, html);
+  }
 
-          
-          <div style="text-align: center;">
-            <a href="https://www.tirepro.com.co/login" class="cta-button">Ingresa</a>
-          </div>
-          
-          <div class="divider"></div>
-          
-          <div class="support-section">
-            <h3>🤝 ¿Necesitas ayuda?</h3>
-            <p>Estamos listo para ayudarte. Si tienes preguntas o necesitas soporte mandanos un correo o escríbenos por whatsapp</p>
-            <p><strong>Email:</strong> info@tirepro.com.co<br>
-            <p><strong>Whatsapp:</strong> +57 315 1349122<br>
-          </div>
-        </div>
-        
-        <!-- Footer -->
-        <div class="footer">
-          <div class="company-name"><img src= "https://www.tirepro.com.co/favicon.ico"/></div>
-          <div class="contact-info">
-            info@tirepro.com.co
-          </div>
-          <div class="social-links">
-            <a href="https://www.facebook.com/profile.php?id=61576764223742">Facebook</a>
-            <a href="https://www.instagram.com/tirepro.app/">Instagram</a>
-            <a href="https://www.linkedin.com/company/tirepros/">LinkedIn</a>
-          </div>
-          <div style="margin-top: 20px; font-size: 12px; opacity: 0.7;">
-            © 2025 TirePro.
-          </div>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
-  
-  return this.sendEmail(to, 'Bienvenido a TirePro! 🚀', htmlContent);
-}
+  // ===========================================================================
+  // PASSWORD RESET
+  // ===========================================================================
 
   async sendPasswordResetEmail(to: string, resetToken: string, userName?: string) {
-    // Production URL — never use localhost in emails even if FRONTEND_URL is misconfigured
-    const envUrl = process.env.FRONTEND_URL?.trim();
-    const baseUrl = (envUrl && !envUrl.includes('localhost') && !envUrl.includes('127.0.0.1'))
-      ? envUrl.replace(/\/$/, '')
-      : 'https://www.tirepro.com.co';
-    const resetLink = `${baseUrl}/reset-password?token=${resetToken}`;
-    const greeting = userName ? `Hola ${userName},` : 'Hola,';
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html lang="es">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Restablecer contraseña — TirePro</title>
-      </head>
-      <body style="margin:0;padding:0;background-color:#F1F5F9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#F1F5F9;padding:40px 20px;">
-          <tr><td align="center">
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:560px;background-color:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(10,24,58,0.06);">
-              <tr><td style="background:linear-gradient(135deg,#0A183A 0%,#173D68 50%,#1E76B6 100%);padding:32px 40px;text-align:left;">
-                <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.3px;">TirePro</h1>
-                <p style="margin:4px 0 0;color:#348CCB;font-size:12px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;">Gestion Inteligente de Llantas</p>
-              </td></tr>
-              <tr><td style="padding:40px;">
-                <h2 style="margin:0 0 16px;color:#0A183A;font-size:24px;font-weight:800;letter-spacing:-0.4px;">Restablecer tu contrasena</h2>
-                <p style="margin:0 0 12px;color:#475569;font-size:15px;line-height:1.6;">${greeting}</p>
-                <p style="margin:0 0 24px;color:#475569;font-size:15px;line-height:1.6;">Recibimos una solicitud para restablecer la contrasena de tu cuenta TirePro. Haz clic en el boton de abajo para crear una nueva contrasena:</p>
-                <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:0 auto 24px;"><tr><td align="center" style="border-radius:12px;background:linear-gradient(135deg,#1E76B6 0%,#173D68 100%);box-shadow:0 4px 12px rgba(30,118,182,0.25);">
-                  <a href="${resetLink}" target="_blank" style="display:inline-block;padding:14px 36px;color:#ffffff;text-decoration:none;font-size:15px;font-weight:700;border-radius:12px;">Restablecer contrasena &rarr;</a>
-                </td></tr></table>
-                <div style="margin-top:8px;padding:16px;background-color:#F0F7FF;border-left:3px solid #348CCB;border-radius:8px;">
-                  <p style="margin:0 0 6px;color:#0A183A;font-size:13px;font-weight:700;">Por tu seguridad:</p>
-                  <ul style="margin:0;padding-left:18px;color:#475569;font-size:12px;line-height:1.7;">
-                    <li>Este enlace expira en <strong>1 hora</strong></li>
-                    <li>Solo puede usarse <strong>una vez</strong></li>
-                    <li>Si no solicitaste este cambio, puedes ignorar este mensaje</li>
-                  </ul>
-                </div>
-                <p style="margin:24px 0 0;color:#94A3B8;font-size:12px;line-height:1.6;">Si el boton no funciona, copia y pega este enlace en tu navegador:<br/><a href="${resetLink}" style="color:#1E76B6;word-break:break-all;">${resetLink}</a></p>
-              </td></tr>
-              <tr><td style="padding:24px 40px;background-color:#F8FAFC;border-top:1px solid #E2E8F0;">
-                <p style="margin:0;color:#94A3B8;font-size:11px;line-height:1.6;text-align:center;">Este es un correo automatico, por favor no respondas directamente.<br/>&copy; ${new Date().getFullYear()} TirePro &middot; Gestion inteligente de llantas</p>
-              </td></tr>
-            </table>
-          </td></tr>
-        </table>
-      </body>
-      </html>
-    `;
-    return this.sendEmail(to, 'Restablecer tu contrasena de TirePro', htmlContent);
+    const subject = 'Restablecer tu contraseña en TirePro';
+    const resetUrl = `${APP_URL}/reset-password?token=${encodeURIComponent(resetToken)}`;
+    const greet = userName ? userName.split(' ')[0] : null;
+    const html = wrapEmail({
+      preheader: 'Solicitaste restablecer tu contraseña en TirePro.',
+      eyebrow: 'Seguridad de la cuenta',
+      title: greet ? `Hola, ${greet}.` : 'Restablece tu contraseña',
+      subtitle: 'Recibimos una solicitud para crear una contraseña nueva en tu cuenta.',
+      body: [
+        emailLead('Pulsa el botón para elegir una nueva contraseña. Si no fuiste tú quien solicitó este cambio, ignora este correo y tu contraseña actual seguirá funcionando.'),
+        emailButton('Restablecer contraseña', resetUrl, { size: 'lg' }),
+        emailFallbackLink(resetUrl, 'O pega este enlace en tu navegador:'),
+        emailDivider(),
+        emailCallout({
+          tone: 'warning',
+          title: 'Este enlace expira en 1 hora',
+          body: 'Por seguridad, el enlace solo funciona durante 60 minutos. Si caduca, puedes solicitar otro desde la pantalla de inicio de sesión.',
+        }),
+      ].join(''),
+    });
+    return this.sendEmail(to, subject, html);
   }
+
+  // ===========================================================================
+  // COMPANY INVITE
+  // ===========================================================================
 
   async sendCompanyInvite(to: string, companyName: string, inviteLink: string) {
-    const htmlContent = `
-      <h2>¡Te han invitado a unirte a ${companyName} en TirePro! 🚀</h2>
-      <p>Haz clic en el botón de abajo para aceptar la invitación:</p>
-      <a href="${inviteLink}" style="background-color:#28a745;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">
-        Unirme a ${companyName}
-      </a>
-      <p>Si no esperabas esta invitación, puedes ignorar este mensaje.</p>
-      <br/>
-      <p>Saludos,<br/><strong>Equipo TirePro</strong></p>
-    `;
-    return this.sendEmail(to, `Invitación a ${companyName} en TirePro`, htmlContent);
+    const subject = `Te invitaron a ${companyName} en TirePro`;
+    const html = wrapEmail({
+      preheader: `${companyName} quiere que te unas a su equipo en TirePro.`,
+      eyebrow: 'Invitación a equipo',
+      title: `Te invitaron a ${companyName}`,
+      subtitle: 'El administrador del equipo agregó tu correo como miembro.',
+      body: [
+        emailLead(`<strong>${companyName}</strong> te está invitando a unirte a su equipo en TirePro. Acepta la invitación para crear tu cuenta y empezar a colaborar con su flota.`),
+        emailButton('Aceptar invitación', inviteLink, { size: 'lg' }),
+        emailFallbackLink(inviteLink, 'O pega este enlace:'),
+        emailDivider(),
+        emailText('Si no esperabas esta invitación, puedes ignorar este correo. No se creará ninguna cuenta a tu nombre hasta que aceptes.'),
+      ].join(''),
+    });
+    return this.sendEmail(to, subject, html);
   }
 
-  // ── Purchase proposal notification ──────────────────────────────────────────
+  // ===========================================================================
+  // PURCHASE PROPOSAL — distributor-side notification of a new bid request.
+  // ===========================================================================
 
   async sendPurchaseProposalNotification(
     distributorEmail: string,
@@ -787,54 +317,31 @@ async sendWelcomeEmail(to: string, name: string) {
     itemSummary: string,
     urgency: string,
   ) {
-    const html = `
-      <div style="font-family: 'Inter', sans-serif; line-height: 1.6; color: #0A183A; max-width: 600px; margin: 0 auto; background-color: #f8f8f8; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #0A183A; border-top-left-radius: 12px; border-top-right-radius: 12px;">
-          <tr>
-            <td style="padding: 30px; text-align: center;">
-              <h1 style="color: #ffffff; font-size: 22px; margin: 0;">Nueva Solicitud de Compra</h1>
-            </td>
-          </tr>
-        </table>
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; padding: 30px;">
-          <tr>
-            <td style="padding: 24px;">
-              <p style="font-size: 16px; margin-bottom: 16px; color: #0A183A;">
-                <strong>${clientName}</strong> ha enviado una solicitud de compra.
-              </p>
-              <div style="background: #f0f7ff; border-left: 4px solid #1E76B6; padding: 16px; border-radius: 8px; margin-bottom: 16px;">
-                <p style="font-size: 14px; color: #173D68; margin: 0 0 8px 0;"><strong>Resumen:</strong> ${itemSummary}</p>
-                <p style="font-size: 14px; color: #173D68; margin: 0;"><strong>Urgencia:</strong> ${urgency}</p>
-              </div>
-              <p style="font-size: 14px; color: #64748b; margin-bottom: 24px;">
-                Ingresa a TirePro para revisar los detalles y enviar tu cotizacion.
-              </p>
-              <table width="100%" cellpadding="0" cellspacing="0" border="0">
-                <tr>
-                  <td align="center">
-                    <a href="https://tirepro.com.co/dashboard/pedidosDist" style="font-size: 16px; color: #ffffff; text-decoration: none; border-radius: 8px; background-color: #348CCB; padding: 14px 28px; border: 1px solid #1E76B6; display: inline-block; font-weight: bold;">
-                      Ver Solicitud
-                    </a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #173D68; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
-          <tr>
-            <td style="padding: 20px; text-align: center;">
-              <p style="font-size: 12px; color: #ffffff; margin: 0;">&copy; ${new Date().getFullYear()} TirePro. Todos los derechos reservados.</p>
-            </td>
-          </tr>
-        </table>
-      </div>
-    `;
-
-    return this.sendEmail(distributorEmail, 'Nueva Solicitud de Compra — TirePro', html);
+    const subject = `Nueva solicitud de compra de ${clientName}`;
+    const html = wrapEmail({
+      preheader: `${clientName} envió una solicitud de cotización.`,
+      eyebrow: 'Nueva solicitud',
+      title: 'Tienes una nueva solicitud de compra',
+      subtitle: `${clientName} pidió una cotización a través de TirePro.`,
+      body: [
+        emailLead(`<strong>${clientName}</strong> envió una solicitud y necesita una cotización tuya. Revisa los detalles en TirePro y responde con tu propuesta.`),
+        emailKvList([
+          { label: 'Resumen de la solicitud', value: itemSummary, bold: true },
+          { label: 'Urgencia',                value: urgency },
+        ]),
+        emailButton('Ver solicitud en TirePro', `${DASHBOARD_URL}/pedidosDist`, { size: 'lg' }),
+        emailDivider(),
+        emailText('Las cotizaciones se cierran rápido — entra y responde lo antes posible.'),
+      ].join(''),
+    });
+    return this.sendEmail(distributorEmail, subject, html);
   }
 
-  // ── Driver alert message (plain text for WhatsApp/SMS) ──────────────────────
+  // ===========================================================================
+  // DRIVER ALERT — kept as plain text for SMS/WhatsApp parity, plus an
+  // HTML wrapper for the email side. The `generateDriverAlertMessage`
+  // method below builds the plaintext body that both channels share.
+  // ===========================================================================
 
   generateDriverAlertMessage(
     vehiclePlaca: string,
@@ -861,63 +368,290 @@ async sendWelcomeEmail(to: string, name: string) {
     ].join('\n');
   }
 
-  // ── Driver alert email (wraps plain text in HTML template) ──────────────────
-
   async sendDriverAlertEmail(
     driverEmail: string,
     driverName: string,
     messageText: string,
   ) {
-    // Extract confirm link from message text
+    const subject = '⚠️ Alerta TirePro — Acción requerida';
     const linkMatch = messageText.match(/https?:\/\/[^\s]+/);
-    const confirmLink = linkMatch ? linkMatch[0] : 'https://tirepro.com.co';
+    const confirmLink = linkMatch ? linkMatch[0] : APP_URL;
 
-    // Escape HTML and convert newlines to <br>
-    const bodyHtml = messageText
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\n/g, '<br>');
+    // Pull the structured fields out of the plaintext body so we can
+    // render them as a clean key-value list instead of a wall of <pre>.
+    const placa    = messageText.match(/Vehículo:\s*(.+)/)?.[1]?.trim() ?? '—';
+    const tireLine = messageText.match(/Llanta:\s*(.+)/)?.[1]?.trim() ?? '—';
+    const issue    = messageText.match(/Problema:\s*(.+)/)?.[1]?.trim() ?? '—';
+    const actionMatch = messageText.match(/Acción requerida:\n([\s\S]+?)\n\n/);
+    const action   = actionMatch?.[1]?.trim() ?? '—';
 
-    const html = `
-      <div style="font-family: 'Inter', sans-serif; line-height: 1.6; color: #0A183A; max-width: 600px; margin: 0 auto; background-color: #f8f8f8; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #0A183A; border-top-left-radius: 12px; border-top-right-radius: 12px;">
-          <tr>
-            <td style="padding: 30px; text-align: center;">
-              <h1 style="color: #ffffff; font-size: 22px; margin: 0;">Alerta TirePro</h1>
-              <p style="color: rgba(255,255,255,0.6); font-size: 14px; margin: 8px 0 0 0;">Accion Requerida</p>
-            </td>
-          </tr>
-        </table>
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; padding: 30px;">
-          <tr>
-            <td style="padding: 24px;">
-              <p style="font-size: 16px; margin-bottom: 20px; color: #0A183A;">Hola <strong>${driverName}</strong>,</p>
-              <div style="background: #fffbeb; border-left: 4px solid #f97316; padding: 16px; border-radius: 8px; margin-bottom: 24px; font-size: 14px; color: #173D68; white-space: pre-line;">
-                ${bodyHtml}
-              </div>
-              <table width="100%" cellpadding="0" cellspacing="0" border="0">
-                <tr>
-                  <td align="center">
-                    <a href="${confirmLink}" style="font-size: 16px; color: #ffffff; text-decoration: none; border-radius: 8px; background-color: #22c55e; padding: 14px 28px; border: 1px solid #16a34a; display: inline-block; font-weight: bold;">
-                      Confirmar Accion
-                    </a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #173D68; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
-          <tr>
-            <td style="padding: 20px; text-align: center;">
-              <p style="font-size: 12px; color: #ffffff; margin: 0;">&copy; ${new Date().getFullYear()} TirePro. Todos los derechos reservados.</p>
-            </td>
-          </tr>
-        </table>
-      </div>
-    `;
+    const firstName = driverName.split(' ')[0] || 'conductor';
+    const html = wrapEmail({
+      accent: 'warning',
+      preheader: 'Una de tus llantas necesita atención inmediata.',
+      eyebrow: 'Alerta de inspección',
+      title: `${firstName}, hay una llanta que revisar`,
+      subtitle: 'Detectamos algo que necesita acción de tu parte.',
+      body: [
+        emailLead('Por favor revisa el detalle a continuación y confirma cuando hayas completado la acción.'),
+        emailKvList([
+          { label: 'Vehículo', value: placa, bold: true },
+          { label: 'Llanta',   value: tireLine },
+          { label: 'Problema', value: issue },
+        ]),
+        emailCallout({
+          tone: 'warning',
+          title: 'Acción requerida',
+          body: action.replace(/\n/g, '<br/>'),
+        }),
+        emailButton('Confirmar acción realizada', confirmLink, { color: 'success', size: 'lg' }),
+        emailDivider(),
+        emailText('Si tienes dudas, contacta a tu supervisor antes de hacer cambios.'),
+      ].join(''),
+    });
+    return this.sendEmail(driverEmail, subject, html);
+  }
 
-    return this.sendEmail(driverEmail, '⚠️ Alerta TirePro — Acción Requerida', html);
+  // ===========================================================================
+  // MARKETPLACE — order lifecycle emails. Centralised here so every
+  // status change flows through the same template, and the buyer's
+  // tracking link is appended automatically.
+  // ===========================================================================
+
+  /**
+   * Build the buyer-facing tracking URL. Used in every order email so
+   * the buyer always has a one-click path back to their order detail.
+   */
+  buildOrderTrackingUrl(orderId: string, buyerEmail: string): string {
+    return `${MARKETPLACE_URL}/order/${orderId}?email=${encodeURIComponent(buyerEmail)}`;
+  }
+
+  async sendOrderConfirmation(opts: {
+    buyerEmail: string;
+    buyerName: string;
+    orderId: string;
+    distributorName: string;
+    listing: { marca: string; modelo: string; dimension: string; imageUrl?: string | null };
+    quantity: number;
+    totalCop: number;
+    buyerAddress?: string | null;
+    buyerCity?: string | null;
+  }) {
+    const orderNo = opts.orderId.slice(0, 8).toUpperCase();
+    const trackUrl = this.buildOrderTrackingUrl(opts.orderId, opts.buyerEmail);
+    const firstName = opts.buyerName.split(' ')[0] || 'hola';
+    const html = wrapEmail({
+      preheader: `Tu pedido #${orderNo} fue recibido por ${opts.distributorName}.`,
+      eyebrow: 'Pedido recibido',
+      title: `${firstName}, recibimos tu pedido`,
+      subtitle: `${opts.distributorName} se comunicará contigo para coordinar la entrega.`,
+      body: [
+        emailLead('Gracias por tu compra. Aquí tienes el resumen de tu pedido:'),
+        emailProductCard({
+          imageUrl: opts.listing.imageUrl,
+          marca: opts.listing.marca,
+          modelo: opts.listing.modelo,
+          dimension: opts.listing.dimension,
+          quantity: opts.quantity,
+          totalLabel: 'Total',
+          totalValue: fmtCOP(opts.totalCop),
+        }),
+        emailKvList([
+          { label: 'Pedido',       value: `#${orderNo}` },
+          { label: 'Distribuidor', value: opts.distributorName },
+          ...(opts.buyerAddress || opts.buyerCity ? [{
+            label: 'Entrega',
+            value: [opts.buyerAddress, opts.buyerCity].filter(Boolean).join(', '),
+          }] : []),
+        ]),
+        emailButton('Seguir mi pedido', trackUrl, { size: 'lg' }),
+        emailFallbackLink(trackUrl),
+        emailDivider(),
+        emailText('Te avisaremos por correo cada vez que el estado del pedido cambie.'),
+      ].join(''),
+    });
+    return this.sendEmail(opts.buyerEmail, `Pedido recibido — ${opts.listing.marca} ${opts.listing.modelo}`, html);
+  }
+
+  async sendOrderConfirmedByDistributor(opts: {
+    buyerEmail: string;
+    buyerName: string;
+    orderId: string;
+    distributorName: string;
+    distributorPhone?: string | null;
+    listing: { marca: string; modelo: string; dimension: string; imageUrl?: string | null };
+    quantity: number;
+    totalCop: number;
+  }) {
+    const orderNo = opts.orderId.slice(0, 8).toUpperCase();
+    const trackUrl = this.buildOrderTrackingUrl(opts.orderId, opts.buyerEmail);
+    const firstName = opts.buyerName.split(' ')[0] || 'hola';
+    const html = wrapEmail({
+      accent: 'success',
+      preheader: `${opts.distributorName} confirmó tu pedido #${orderNo}.`,
+      eyebrow: 'Pedido confirmado',
+      title: `${firstName}, tu pedido fue confirmado`,
+      subtitle: `${opts.distributorName} aprobó el pedido y se comunicará contigo para coordinar la entrega.`,
+      body: [
+        emailLead('Excelentes noticias — el distribuidor ya tiene tu pedido en preparación.'),
+        emailProductCard({
+          imageUrl: opts.listing.imageUrl,
+          marca: opts.listing.marca,
+          modelo: opts.listing.modelo,
+          dimension: opts.listing.dimension,
+          quantity: opts.quantity,
+          totalLabel: 'Total',
+          totalValue: fmtCOP(opts.totalCop),
+        }),
+        emailKvList([
+          { label: 'Pedido', value: `#${orderNo}` },
+          ...(opts.distributorPhone ? [{ label: 'Teléfono distribuidor', value: opts.distributorPhone }] : []),
+        ]),
+        emailButton('Seguir mi pedido', trackUrl, { color: 'success', size: 'lg' }),
+        emailFallbackLink(trackUrl),
+      ].join(''),
+    });
+    return this.sendEmail(opts.buyerEmail, `Pedido confirmado — ${opts.listing.marca} ${opts.listing.modelo}`, html);
+  }
+
+  async sendOrderCancelled(opts: {
+    buyerEmail: string;
+    buyerName: string;
+    orderId: string;
+    distributorName: string;
+    listing: { marca: string; modelo: string; dimension: string; imageUrl?: string | null };
+    quantity: number;
+    totalCop: number;
+    cancelReason?: string | null;
+  }) {
+    const orderNo = opts.orderId.slice(0, 8).toUpperCase();
+    const trackUrl = this.buildOrderTrackingUrl(opts.orderId, opts.buyerEmail);
+    const firstName = opts.buyerName.split(' ')[0] || 'hola';
+    const html = wrapEmail({
+      accent: 'danger',
+      preheader: `Tu pedido #${orderNo} fue cancelado.`,
+      eyebrow: 'Pedido cancelado',
+      title: `${firstName}, tu pedido fue cancelado`,
+      subtitle: `${opts.distributorName} canceló este pedido. Esto es lo que sabemos.`,
+      body: [
+        emailLead('Lamentamos que tu pedido no se haya podido completar. Aquí tienes los detalles:'),
+        emailCallout({
+          tone: 'danger',
+          title: 'Motivo de cancelación',
+          body: opts.cancelReason ? opts.cancelReason : 'No fue especificado por el distribuidor.',
+        }),
+        emailProductCard({
+          imageUrl: opts.listing.imageUrl,
+          marca: opts.listing.marca,
+          modelo: opts.listing.modelo,
+          dimension: opts.listing.dimension,
+          quantity: opts.quantity,
+          totalLabel: 'Total',
+          totalValue: fmtCOP(opts.totalCop),
+        }),
+        emailKvList([
+          { label: 'Pedido',       value: `#${orderNo}` },
+          { label: 'Distribuidor', value: opts.distributorName },
+        ]),
+        emailButton('Ver detalle del pedido', trackUrl),
+        emailDivider(),
+        emailText('¿Quieres seguir buscando este producto? En el marketplace puedes comparar otros distribuidores que lo tengan disponible.'),
+        emailButton('Ir al Marketplace', MARKETPLACE_URL, { color: 'brand' }),
+      ].join(''),
+    });
+    return this.sendEmail(opts.buyerEmail, `Pedido cancelado — ${opts.listing.marca} ${opts.listing.modelo}`, html);
+  }
+
+  async sendOrderStatusChanged(opts: {
+    buyerEmail: string;
+    buyerName: string;
+    orderId: string;
+    newStatus: string;
+    distributorName: string;
+    distributorPhone?: string | null;
+    listing: { marca: string; modelo: string; dimension: string; imageUrl?: string | null };
+    quantity: number;
+    totalCop: number;
+  }) {
+    const orderNo = opts.orderId.slice(0, 8).toUpperCase();
+    const trackUrl = this.buildOrderTrackingUrl(opts.orderId, opts.buyerEmail);
+    const firstName = opts.buyerName.split(' ')[0] || 'hola';
+    const isDelivered = opts.newStatus === 'entregado';
+    const accent: 'success' | 'brand' = isDelivered ? 'success' : 'brand';
+    const eyebrow = isDelivered ? 'Pedido entregado' : 'Estado actualizado';
+    const title = isDelivered
+      ? `¡Tu pedido fue entregado, ${firstName}!`
+      : `${firstName}, tu pedido se actualizó`;
+    const subtitle = isDelivered
+      ? `${opts.distributorName} marcó tu pedido como entregado. ¡Gracias por tu compra!`
+      : `${opts.distributorName} actualizó el estado de tu pedido a "${opts.newStatus}".`;
+    const html = wrapEmail({
+      accent,
+      preheader: `Pedido #${orderNo} — ${opts.newStatus}.`,
+      eyebrow,
+      title,
+      subtitle,
+      body: [
+        emailLead(isDelivered
+          ? 'Esperamos que disfrutes tu compra. Si algo no salió como esperabas, responde este correo y te ayudamos.'
+          : 'Aquí tienes el detalle más reciente del pedido:'),
+        emailProductCard({
+          imageUrl: opts.listing.imageUrl,
+          marca: opts.listing.marca,
+          modelo: opts.listing.modelo,
+          dimension: opts.listing.dimension,
+          quantity: opts.quantity,
+          totalLabel: 'Total',
+          totalValue: fmtCOP(opts.totalCop),
+        }),
+        emailKvList([
+          { label: 'Pedido',         value: `#${orderNo}` },
+          { label: 'Estado actual',  value: opts.newStatus, bold: true },
+          ...(opts.distributorPhone ? [{ label: 'Teléfono distribuidor', value: opts.distributorPhone }] : []),
+        ]),
+        emailButton(isDelivered ? 'Ver mi pedido' : 'Seguir mi pedido', trackUrl, { color: accent, size: 'lg' }),
+        emailFallbackLink(trackUrl),
+      ].join(''),
+    });
+    return this.sendEmail(opts.buyerEmail, `Pedido #${orderNo} — ${eyebrow}`, html);
+  }
+
+  async sendOrderToDistributor(opts: {
+    distributorEmail: string;
+    orderId: string;
+    listing: { marca: string; modelo: string; dimension: string; imageUrl?: string | null };
+    quantity: number;
+    totalCop: number;
+    buyerName: string;
+    buyerPhone?: string | null;
+    buyerCity?: string | null;
+  }) {
+    const orderNo = opts.orderId.slice(0, 8).toUpperCase();
+    const html = wrapEmail({
+      preheader: `Nuevo pedido en el marketplace por ${fmtCOP(opts.totalCop)}.`,
+      eyebrow: 'Nuevo pedido',
+      title: 'Te llegó un pedido nuevo',
+      subtitle: `Cliente: ${opts.buyerName}${opts.buyerCity ? ` · ${opts.buyerCity}` : ''}`,
+      body: [
+        emailLead('Un cliente acaba de comprar uno de tus productos en el marketplace. Confirma o gestiona el pedido desde tu panel.'),
+        emailProductCard({
+          imageUrl: opts.listing.imageUrl,
+          marca: opts.listing.marca,
+          modelo: opts.listing.modelo,
+          dimension: opts.listing.dimension,
+          quantity: opts.quantity,
+          totalLabel: 'Total',
+          totalValue: fmtCOP(opts.totalCop),
+        }),
+        emailKvList([
+          { label: 'Pedido',       value: `#${orderNo}` },
+          { label: 'Comprador',    value: opts.buyerName },
+          ...(opts.buyerPhone ? [{ label: 'Teléfono', value: opts.buyerPhone }] : []),
+          ...(opts.buyerCity  ? [{ label: 'Ciudad',   value: opts.buyerCity  }] : []),
+        ]),
+        emailButton('Ver pedido en mi panel', `${DASHBOARD_URL}/marketplace/pedidos`, { size: 'lg' }),
+      ].join(''),
+    });
+    return this.sendEmail(opts.distributorEmail, `Nuevo pedido — ${opts.listing.marca} ${opts.listing.modelo}`, html);
   }
 }
