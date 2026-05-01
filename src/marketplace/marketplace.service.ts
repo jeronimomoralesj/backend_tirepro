@@ -1126,12 +1126,34 @@ export class MarketplaceService {
         cobertura: true, tipoEntrega: true, colorMarca: true,
         promoBannerImage: true, promoBannerTitle: true,
         promoBannerSubtitle: true, promoBannerHref: true,
+        pinnedListingId: true,
         _count: { select: { listings: { where: { isActive: true } } } },
       },
     });
     if (!company) throw new NotFoundException('Distributor not found');
-    this.cache.set(cacheKey, company, this.PROFILE_TTL);
-    return company;
+
+    // Resolve the pinned listing (if any) so the storefront can render
+    // a featured-product card alongside the banner without a second
+    // round trip. Null-safe — if the pin points at a deleted/inactive
+    // listing or another distributor's listing, we just return null.
+    let pinnedListing: {
+      id: string; marca: string; modelo: string; dimension: string;
+      precioCop: number; precioPromo: number | null; promoHasta: Date | null;
+      imageUrls: any; coverIndex: number;
+    } | null = null;
+    if (company.pinnedListingId) {
+      pinnedListing = await this.prisma.distributorListing.findFirst({
+        where: { id: company.pinnedListingId, distributorId: company.id, isActive: true },
+        select: {
+          id: true, marca: true, modelo: true, dimension: true,
+          precioCop: true, precioPromo: true, promoHasta: true,
+          imageUrls: true, coverIndex: true,
+        },
+      });
+    }
+    const out = { ...company, pinnedListing };
+    this.cache.set(cacheKey, out, this.PROFILE_TTL);
+    return out;
   }
 
   async updateDistributorProfile(distributorId: string, data: Partial<{
@@ -1146,6 +1168,11 @@ export class MarketplaceService {
     promoBannerTitle: string | null;
     promoBannerSubtitle: string | null;
     promoBannerHref: string | null;
+    // Loose ref to one of the dist's own listings — the storefront
+    // resolves it server-side, so passing an ID for a listing that
+    // doesn't exist (or belongs to someone else) just hides the
+    // pinned card without erroring on save.
+    pinnedListingId: string | null;
   }>) {
     const result = await this.prisma.company.update({ where: { id: distributorId }, data });
     this.cache.invalidate(`distprofile:${distributorId}`);

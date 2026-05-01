@@ -321,6 +321,13 @@ model Company {
   promoBannerSubtitle String?
   promoBannerHref     String? // click-through URL (a /marketplace/product/<id> or external link)
 
+  // Optional pinned product alongside the banner — id of one of the
+  // distributor's own DistributorListings. Stored as a loose string
+  // (no FK) so deleting/archiving the listing doesn't require a
+  // schema-level cascade; the storefront just falls back to "banner
+  // only" if the lookup misses.
+  pinnedListingId String?
+
   // Agent automation configuration
   agentSettings Json @default("{\"agentEnabled\":false,\"alertMode\":\"display_only\",\"purchaseMode\":\"manual\"}")
 
