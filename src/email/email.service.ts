@@ -65,16 +65,57 @@ export class EmailService implements OnModuleInit {
     );
   }
 
+  /**
+   * Strip an HTML body down to a plain-text equivalent. Spam filters
+   * (Gmail's especially) heavily penalise HTML-only emails — having a
+   * matching `text/plain` part is one of the cheapest deliverability
+   * wins available to a transactional sender.
+   */
+  private htmlToPlainText(html: string): string {
+    return html
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<\/?(p|div|tr|td|h[1-6]|li|br)[^>]*>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .trim();
+  }
+
   async sendEmail(to: string, subject: string, htmlContent: string) {
     if (!this.transporter) {
       throw new InternalServerErrorException('Email service not initialized');
     }
 
-    const mailOptions = {
-      from: `"TirePro Support" <${this.fromAddress}>`,
+    // Deliverability helpers — avoid the spam folder:
+    //  1. multipart/alternative with a real text/plain body. HTML-only
+    //     mail is the single biggest "this is spam" signal Gmail uses.
+    //  2. Reply-To pointing at a real, monitored inbox. The from address
+    //     can be a generic noreply but RFC 5322 wants a deliverable
+    //     reply path or filters get suspicious.
+    //  3. List-Unsubscribe header (RFC 2369). Even on transactional
+    //     mail, having one signals "legit sender" to Gmail/Outlook.
+    //  4. Message-ID host pinned to the sender domain so it lines up
+    //     with SPF/DKIM rather than nodemailer's default `@localhost`.
+    const fromDomain = (this.fromAddress.split('@')[1] ?? 'tirepro.com.co').trim();
+    const mailOptions: nodemailer.SendMailOptions = {
+      from: `"TirePro" <${this.fromAddress}>`,
       to,
+      replyTo: 'info@tirepro.com.co',
       subject,
       html: htmlContent,
+      text: this.htmlToPlainText(htmlContent),
+      messageId: `<${Date.now()}-${Math.random().toString(36).slice(2)}@${fromDomain}>`,
+      headers: {
+        'List-Unsubscribe': '<mailto:info@tirepro.com.co?subject=unsubscribe>',
+        'X-Mailer': 'TirePro',
+      },
     };
 
     try {
