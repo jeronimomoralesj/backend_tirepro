@@ -68,8 +68,7 @@ export interface EmailShellOptions {
 
 export function wrapEmail(opts: EmailShellOptions): string {
   const accent = opts.accent ?? 'brand';
-  const gradient = ACCENT_GRADIENTS[accent];
-  const fallback = ACCENT_FALLBACK[accent];
+  const accentColor = ACCENT_FALLBACK[accent];
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -81,38 +80,44 @@ export function wrapEmail(opts: EmailShellOptions): string {
 <body style="margin:0;padding:0;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:${BRAND.text};-webkit-font-smoothing:antialiased;">
 ${opts.preheader ? `<div style="display:none;font-size:1px;color:#ffffff;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">${escapeHtml(opts.preheader)}</div>` : ''}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
-  <tr><td align="center" style="padding:24px 12px;">
-    <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;">
+  <tr><td align="center" style="padding:24px 12px;background:#ffffff;">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background:#ffffff;">
 
       <!-- LOGO HEADER -->
-      <tr><td style="padding:24px 32px 20px;background:#ffffff;border-bottom:1px solid ${BRAND.hairline};">
+      <tr><td style="padding:8px 32px 24px;background:#ffffff;">
         <a href="${SITE_URL}" style="text-decoration:none;display:inline-block;">
           <img src="${LOGO_URL}" alt="TirePro" height="28" style="display:block;height:28px;width:auto;border:0;outline:none;" />
         </a>
       </td></tr>
 
-      <!-- HERO BAND -->
-      <tr><td style="padding:36px 32px;background:${fallback};background-image:${gradient};color:#ffffff;">
-        ${opts.eyebrow ? `<p style="margin:0 0 8px;font-size:11px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.85);">${escapeHtml(opts.eyebrow)}</p>` : ''}
-        <h1 style="margin:0;font-size:24px;font-weight:900;line-height:1.2;color:#ffffff;">${escapeHtml(opts.title)}</h1>
-        ${opts.subtitle ? `<p style="margin:10px 0 0;font-size:14px;line-height:1.55;color:rgba(255,255,255,0.92);">${escapeHtml(opts.subtitle)}</p>` : ''}
+      <!-- HERO — kept minimal: a thin colored accent line + typography
+           on a fully white background. Replaces the old gradient band
+           per "all-white background on every email" — accent stays
+           only as a 3px top line and as the eyebrow text color so the
+           email type (success / warning / danger) is still legible. -->
+      <tr><td style="padding:0 32px;background:#ffffff;">
+        <div style="height:3px;width:48px;background:${accentColor};margin-bottom:18px;"></div>
+        ${opts.eyebrow ? `<p style="margin:0 0 10px;font-size:11px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:${accentColor};">${escapeHtml(opts.eyebrow)}</p>` : ''}
+        <h1 style="margin:0;font-size:26px;font-weight:900;line-height:1.2;color:${BRAND.navy};">${escapeHtml(opts.title)}</h1>
+        ${opts.subtitle ? `<p style="margin:12px 0 0;font-size:14px;line-height:1.55;color:${BRAND.muted};">${escapeHtml(opts.subtitle)}</p>` : ''}
       </td></tr>
 
       <!-- BODY -->
-      <tr><td style="padding:32px;background:#ffffff;color:${BRAND.text};font-size:14px;line-height:1.6;">
+      <tr><td style="padding:28px 32px 32px;background:#ffffff;color:${BRAND.text};font-size:14px;line-height:1.6;">
         ${opts.body}
       </td></tr>
 
-      <!-- FOOTER -->
-      <tr><td style="padding:24px 32px;background:${BRAND.navy};color:rgba(255,255,255,0.72);font-size:12px;line-height:1.55;text-align:center;">
-        <p style="margin:0 0 6px;font-weight:800;color:#ffffff;letter-spacing:1px;">TirePro</p>
-        <p style="margin:0 0 8px;">La plataforma de llantas para Colombia</p>
+      <!-- FOOTER — also white now. Hairline divider keeps it visually
+           separated from the body without introducing a dark band. -->
+      <tr><td style="padding:24px 32px;background:#ffffff;color:${BRAND.muted};font-size:12px;line-height:1.55;text-align:center;border-top:1px solid ${BRAND.hairline};">
+        <p style="margin:0 0 6px;font-weight:800;color:${BRAND.navy};letter-spacing:1px;">TirePro</p>
+        <p style="margin:0 0 8px;color:${BRAND.muted};">La plataforma de llantas para Colombia</p>
         <p style="margin:0 0 12px;">
-          <a href="${SITE_URL}" style="color:rgba(255,255,255,0.85);text-decoration:none;font-weight:700;">tirepro.com.co</a>
-          <span style="opacity:0.4;margin:0 6px;">·</span>
-          <a href="mailto:info@tirepro.com.co" style="color:rgba(255,255,255,0.85);text-decoration:none;">info@tirepro.com.co</a>
+          <a href="${SITE_URL}" style="color:${BRAND.blue};text-decoration:none;font-weight:700;">tirepro.com.co</a>
+          <span style="color:${BRAND.hairline};margin:0 6px;">·</span>
+          <a href="mailto:info@tirepro.com.co" style="color:${BRAND.blue};text-decoration:none;">info@tirepro.com.co</a>
         </p>
-        <p style="margin:0;font-size:10px;color:rgba(255,255,255,0.4);">Bogotá, Colombia</p>
+        <p style="margin:0;font-size:10px;color:${BRAND.muted};">Bogotá, Colombia</p>
       </td></tr>
     </table>
   </td></tr>
