@@ -1802,12 +1802,18 @@ model MarketplaceOrder {
   returnStatus      String? // pendiente | aprobada | rechazada
   returnResolvedAt  DateTime?
 
-  // Append-only audit log of status changes — `[{status, at, note?}]`.
+  // Append-only audit log of status changes — `[{status, at, note?, eta?}]`.
   // Powers the buyer-facing tracking page's vertical timeline so the
   // user sees "pedido recibido el 1 May, confirmado el 2 May, …".
   // Seeded with a "pendiente" event on createOrder; appended on every
   // updateOrderStatus call.
   statusHistory Json?
+
+  // Distributor-promised delivery date. Set when the dist confirms the
+  // order; can be revised by setting it again on a later status update.
+  // Surfaced both in the dist's pedidos card and on the buyer's
+  // tracking page hero callout.
+  etaDate DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

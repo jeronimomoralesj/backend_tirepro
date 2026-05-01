@@ -482,18 +482,35 @@ export class EmailService implements OnModuleInit {
     listing: { marca: string; modelo: string; dimension: string; imageUrl?: string | null };
     quantity: number;
     totalCop: number;
+    etaDate?: Date | string | null;
   }) {
     const orderNo = opts.orderId.slice(0, 8).toUpperCase();
     const trackUrl = this.buildOrderTrackingUrl(opts.orderId, opts.buyerEmail);
     const firstName = opts.buyerName.split(' ')[0] || 'hola';
+    // Format the ETA in the buyer's locale so it reads as a real date
+    // ("12 de mayo de 2026") instead of an ISO blob.
+    const etaLabel = opts.etaDate
+      ? new Date(opts.etaDate).toLocaleDateString('es-CO', { day: 'numeric', month: 'long', year: 'numeric' })
+      : null;
     const html = wrapEmail({
       accent: 'success',
-      preheader: `${opts.distributorName} confirmó tu pedido #${orderNo}.`,
+      preheader: etaLabel
+        ? `${opts.distributorName} confirmó tu pedido #${orderNo} · entrega estimada ${etaLabel}.`
+        : `${opts.distributorName} confirmó tu pedido #${orderNo}.`,
       eyebrow: 'Pedido confirmado',
       title: `${firstName}, tu pedido fue confirmado`,
-      subtitle: `${opts.distributorName} aprobó el pedido y se comunicará contigo para coordinar la entrega.`,
+      subtitle: etaLabel
+        ? `${opts.distributorName} aprobó el pedido. Entrega estimada: ${etaLabel}.`
+        : `${opts.distributorName} aprobó el pedido y se comunicará contigo para coordinar la entrega.`,
       body: [
         emailLead('Excelentes noticias — el distribuidor ya tiene tu pedido en preparación.'),
+        ...(etaLabel
+          ? [emailCallout({
+              tone: 'success',
+              title: 'Entrega estimada',
+              body: `<strong>${etaLabel}</strong>`,
+            })]
+          : []),
         emailProductCard({
           imageUrl: opts.listing.imageUrl,
           marca: opts.listing.marca,
@@ -505,6 +522,7 @@ export class EmailService implements OnModuleInit {
         }),
         emailKvList([
           { label: 'Pedido', value: `#${orderNo}` },
+          ...(etaLabel ? [{ label: 'Entrega estimada', value: etaLabel, bold: true }] : []),
           ...(opts.distributorPhone ? [{ label: 'Teléfono distribuidor', value: opts.distributorPhone }] : []),
         ]),
         emailButton('Seguir mi pedido', trackUrl, { color: 'success', size: 'lg' }),

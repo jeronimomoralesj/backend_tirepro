@@ -1463,7 +1463,13 @@ export class MarketplaceService {
     });
   }
 
-  async updateOrderStatus(orderId: string, distributorId: string, status: string, cancelReason?: string) {
+  async updateOrderStatus(
+    orderId: string,
+    distributorId: string,
+    status: string,
+    cancelReason?: string,
+    etaDateInput?: string | null,
+  ) {
     const order = await this.prisma.marketplaceOrder.findUnique({
       where: { id: orderId },
       include: { listing: { select: { marca: true, modelo: true, dimension: true } } },
@@ -1471,10 +1477,28 @@ export class MarketplaceService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.distributorId !== distributorId) throw new BadRequestException('Not your order');
 
+    // Parse ETA. Empty string / null clears the field; valid date sets
+    // it; invalid input is rejected with a 400 so the dist sees the
+    // problem instead of silently storing nothing.
+    let etaUpdate: Date | null | undefined;
+    if (etaDateInput === null || etaDateInput === '') {
+      etaUpdate = null;
+    } else if (typeof etaDateInput === 'string') {
+      const parsed = new Date(etaDateInput);
+      if (Number.isNaN(parsed.getTime())) {
+        throw new BadRequestException('Invalid etaDate');
+      }
+      etaUpdate = parsed;
+    } else {
+      etaUpdate = undefined; // not touched
+    }
+
     // Append to the audit log. Existing entries (or null for legacy
     // pre-statusHistory orders) flow through unchanged; we just push
-    // the new event onto the end.
-    const prevHistory: Array<{ status: string; at: string; note?: string }> =
+    // the new event onto the end. ETA, when supplied, rides on the
+    // event so the buyer's timeline can show "Confirmado · entrega
+    // estimada 12 May" inline.
+    const prevHistory: Array<{ status: string; at: string; note?: string; eta?: string | null }> =
       Array.isArray((order as any).statusHistory) ? (order as any).statusHistory : [];
     const nextHistory = [
       ...prevHistory,
@@ -1482,6 +1506,7 @@ export class MarketplaceService {
         status,
         at: new Date().toISOString(),
         ...(cancelReason ? { note: cancelReason } : {}),
+        ...(etaUpdate instanceof Date ? { eta: etaUpdate.toISOString() } : {}),
       },
     ];
 
@@ -1490,6 +1515,7 @@ export class MarketplaceService {
       data: {
         status,
         statusHistory: nextHistory as any,
+        ...(etaUpdate !== undefined ? { etaDate: etaUpdate } : {}),
         ...(cancelReason ? { notas: `[CANCELADO] ${cancelReason}${order.notas ? ` | Original: ${order.notas}` : ''}` } : {}),
       },
     });
@@ -1529,6 +1555,10 @@ export class MarketplaceService {
             cancelReason,
           });
         } else if (status === 'confirmado') {
+          // Resolve the ETA the dist just set (if any) — `updated.etaDate`
+          // is the freshest source; falls back to the order's previous
+          // value if the dist re-confirmed without a date.
+          const etaForEmail = (updated as any).etaDate ?? (order as any).etaDate ?? null;
           await this.email.sendOrderConfirmedByDistributor({
             buyerEmail:       order.buyerEmail,
             buyerName:        order.buyerName,
@@ -1538,6 +1568,7 @@ export class MarketplaceService {
             listing:          listingPayload,
             quantity:         order.quantity,
             totalCop:         order.totalCop,
+            etaDate:          etaForEmail,
           });
         } else {
           // entregado, en preparación, listo para retirar — anything

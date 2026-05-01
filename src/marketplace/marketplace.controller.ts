@@ -313,9 +313,9 @@ export class MarketplaceController {
   @UseGuards(JwtAuthGuard)
   updateOrderStatus(
     @Param('id') id: string,
-    @Body() body: { distributorId: string; status: string; cancelReason?: string },
+    @Body() body: { distributorId: string; status: string; cancelReason?: string; etaDate?: string | null },
   ) {
-    return this.svc.updateOrderStatus(id, body.distributorId, body.status, body.cancelReason);
+    return this.svc.updateOrderStatus(id, body.distributorId, body.status, body.cancelReason, body.etaDate);
   }
 
   // Buyer requests a return on a delivered/shipped order
