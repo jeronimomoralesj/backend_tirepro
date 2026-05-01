@@ -1802,6 +1802,13 @@ model MarketplaceOrder {
   returnStatus      String? // pendiente | aprobada | rechazada
   returnResolvedAt  DateTime?
 
+  // Append-only audit log of status changes — `[{status, at, note?}]`.
+  // Powers the buyer-facing tracking page's vertical timeline so the
+  // user sees "pedido recibido el 1 May, confirmado el 2 May, …".
+  // Seeded with a "pendiente" event on createOrder; appended on every
+  // updateOrderStatus call.
+  statusHistory Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

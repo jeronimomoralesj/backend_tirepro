@@ -1285,6 +1285,7 @@ export class MarketplaceService {
 
     const totalCop = listing.precioCop * data.quantity;
 
+    const now = new Date().toISOString();
     const order = await this.prisma.marketplaceOrder.create({
       data: {
         listingId: data.listingId,
@@ -1299,6 +1300,9 @@ export class MarketplaceService {
         buyerCity: data.buyerCity ?? null,
         buyerCompany: data.buyerCompany ?? null,
         notas: data.notas ?? null,
+        // Seed the audit log with the initial pendiente event so the
+        // tracking timeline always has at least one entry to render.
+        statusHistory: [{ status: 'pendiente', at: now }] as any,
       },
       include: { listing: true },
     });
@@ -1479,9 +1483,27 @@ export class MarketplaceService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.distributorId !== distributorId) throw new BadRequestException('Not your order');
 
+    // Append to the audit log. Existing entries (or null for legacy
+    // pre-statusHistory orders) flow through unchanged; we just push
+    // the new event onto the end.
+    const prevHistory: Array<{ status: string; at: string; note?: string }> =
+      Array.isArray((order as any).statusHistory) ? (order as any).statusHistory : [];
+    const nextHistory = [
+      ...prevHistory,
+      {
+        status,
+        at: new Date().toISOString(),
+        ...(cancelReason ? { note: cancelReason } : {}),
+      },
+    ];
+
     const updated = await this.prisma.marketplaceOrder.update({
       where: { id: orderId },
-      data: { status, ...(cancelReason ? { notas: `[CANCELADO] ${cancelReason}${order.notas ? ` | Original: ${order.notas}` : ''}` } : {}) },
+      data: {
+        status,
+        statusHistory: nextHistory as any,
+        ...(cancelReason ? { notas: `[CANCELADO] ${cancelReason}${order.notas ? ` | Original: ${order.notas}` : ''}` } : {}),
+      },
     });
 
     // Send cancellation email to buyer
