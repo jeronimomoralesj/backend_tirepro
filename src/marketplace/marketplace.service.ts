@@ -1455,6 +1455,51 @@ export class MarketplaceService {
       } catch (err) { this.logger.warn(`Failed to send confirmation email: ${err}`); }
     }
 
+    // Generic status-change email — covers entregado and any free-text
+    // status the dist may set ("en preparación", "listo para retirar"…).
+    // Skips the two statuses with bespoke templates above so we don't
+    // double-send.
+    if (
+      status !== 'cancelado' &&
+      status !== 'confirmado' &&
+      order.buyerEmail
+    ) {
+      try {
+        const dist = await this.prisma.company.findUnique({ where: { id: distributorId }, select: { name: true, telefono: true } });
+        const orderNumber = orderId.slice(0, 8).toUpperCase();
+        const isDelivered = status === 'entregado';
+        const headerBg = isDelivered
+          ? 'linear-gradient(135deg,#15803d,#22c55e)'
+          : 'linear-gradient(135deg,#0A183A,#1E76B6)';
+        const headline = isDelivered ? 'Pedido entregado' : 'Estado del pedido actualizado';
+        const intro = isDelivered
+          ? `${dist?.name ?? 'El distribuidor'} marcó tu pedido como entregado. ¡Gracias por tu compra!`
+          : `${dist?.name ?? 'El distribuidor'} actualizó el estado de tu pedido a <strong>${status}</strong>.`;
+        await this.email.sendEmail(order.buyerEmail, `Pedido #${orderNumber} — ${headline}`, `
+          <div style="font-family:system-ui;max-width:600px;margin:0 auto">
+            <div style="background:${headerBg};color:white;padding:30px;border-radius:12px 12px 0 0">
+              <h1 style="margin:0;font-size:20px">${headline}</h1>
+              <p style="margin:4px 0 0;opacity:0.85;font-size:13px">TirePro Marketplace</p>
+            </div>
+            <div style="padding:24px;background:white;border:1px solid #e5e5e5;border-top:0;border-radius:0 0 12px 12px">
+              <p style="margin:0 0 16px;color:#333">Hola <strong>${order.buyerName}</strong>,</p>
+              <p style="margin:0 0 16px;color:#555;font-size:14px">${intro}</p>
+              <div style="background:#f5f5f7;padding:16px;border-radius:8px;margin-bottom:16px">
+                <p style="margin:0 0 4px;font-weight:700;color:#0A183A">${order.listing.marca} ${order.listing.modelo}</p>
+                <p style="margin:0 0 4px;font-size:13px;color:#666">${order.listing.dimension} · Cantidad: ${order.quantity}</p>
+                <p style="margin:0;font-size:13px;color:#666">Pedido #${orderNumber}</p>
+              </div>
+              ${dist?.telefono ? `<p style="margin:8px 0 0;font-size:13px;color:#1E76B6;font-weight:700">Teléfono del distribuidor: ${dist.telefono}</p>` : ''}
+              <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
+              <p style="margin:0;font-size:12px;color:#999">TirePro Marketplace — tirepro.com.co</p>
+            </div>
+          </div>
+        `);
+      } catch (err) {
+        this.logger.warn(`Failed to send status-change email: ${err}`);
+      }
+    }
+
     return updated;
   }
 
