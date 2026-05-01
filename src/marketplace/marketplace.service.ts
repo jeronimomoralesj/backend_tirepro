@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { BidRequestStatus, BidResponseStatus } from '@prisma/client';
+import { BidRequestStatus, BidResponseStatus, Prisma } from '@prisma/client';
 import { EmailService } from '../email/email.service';
 import { normalizeDimension } from '../common/normalize-dimension';
 
@@ -902,12 +902,42 @@ export class MarketplaceService {
     // the one-shot normalization migration.
     data.dimension = normalizeDimension(data.dimension);
 
-    // Auto-link to catalog by marca+modelo+dimension
+    // Auto-link to catalog by marca+modelo+dimension. If nothing matches,
+    // auto-create a master catalog SKU so the new marketplace listing
+    // shows up in the distributor's /dashboard/catalogoSku list right
+    // away (one of the user-facing requirements: "tires created in
+    // marketplace get immediately added to the catalog of the company").
     if (!data.catalogId && data.marca && data.modelo && data.dimension) {
       const catalog = await this.prisma.tireMasterCatalog.findFirst({
         where: { marca: { equals: data.marca, mode: 'insensitive' }, modelo: { equals: data.modelo, mode: 'insensitive' }, dimension: data.dimension },
       });
-      if (catalog) data.catalogId = catalog.id;
+      if (catalog) {
+        data.catalogId = catalog.id;
+      } else {
+        const skuRef = this.makeAutoSkuRef(data.marca, data.modelo, data.dimension);
+        try {
+          const created = await this.prisma.tireMasterCatalog.create({
+            data: {
+              marca:     data.marca,
+              modelo:    data.modelo,
+              dimension: data.dimension,
+              skuRef,
+              fuente:    'distribuidor',
+            },
+          });
+          data.catalogId = created.id;
+        } catch (e) {
+          // Race: another distributor created the same combo between our
+          // findFirst and create. Re-look up by skuRef and reuse — both
+          // distributors end up subscribed to the same master SKU.
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+            const fallback = await this.prisma.tireMasterCatalog.findUnique({ where: { skuRef } });
+            if (fallback) data.catalogId = fallback.id;
+          } else {
+            throw e;
+          }
+        }
+      }
     }
     // If catalogId provided, enrich from catalog. If the supplied id doesn't
     // exist (stale frontend cache, manual paste, etc.) drop it so Prisma
@@ -946,8 +976,36 @@ export class MarketplaceService {
         imageQualityScore,
       },
     });
+
+    // Subscribe the distributor to the master catalog SKU so the product
+    // appears in their /dashboard/catalogoSku immediately. Idempotent
+    // upsert keeps re-creates of the same listing safe.
+    if (data.catalogId) {
+      await this.prisma.catalogSubscription.upsert({
+        where:  { catalogId_companyId: { catalogId: data.catalogId, companyId: data.distributorId } },
+        update: {},
+        create: { catalogId: data.catalogId, companyId: data.distributorId },
+      }).catch(() => { /* non-fatal: listing exists, sub will heal on next create */ });
+    }
+
     this.invalidateListingCaches();
     return result;
+  }
+
+  /**
+   * Build a deterministic master-catalog skuRef for marketplace
+   * auto-creates. Deterministic by marca+modelo+dimension (not by
+   * distributor) so two distributors selling the same physical SKU
+   * collapse to one master row, and both end up subscribed to it.
+   */
+  private makeAutoSkuRef(marca: string, modelo: string, dimension: string) {
+    const slug = (s: string) =>
+      s.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 24);
+    return `MKT-${slug(marca)}-${slug(modelo)}-${slug(dimension)}`.slice(0, 80);
   }
 
   private invalidateListingCaches() {
