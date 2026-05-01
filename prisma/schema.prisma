@@ -193,27 +193,27 @@ enum MotivoFinVida {
 // =============================================================================
 
 model User {
-  id                String    @id @default(uuid())
-  name              String
-  email             String    @unique
-  password          String
-  companyId         String?
-  role              UserRole  @default(admin)
-  puntos            Int       @default(0)
-  isVerified        Boolean   @default(false)
-  verificationToken String?
+  id                         String    @id @default(uuid())
+  name                       String
+  email                      String    @unique
+  password                   String
+  companyId                  String?
+  role                       UserRole  @default(admin)
+  puntos                     Int       @default(0)
+  isVerified                 Boolean   @default(false)
+  verificationToken          String?
   // 48-hour TTL on the verification token. The auth-cleanup cron deletes
   // users where isVerified=false AND createdAt < now-48h AND their
   // company is also unverified, so this column lets the verify endpoint
   // refuse expired clicks without scheduling them for deletion mid-flow.
   verificationTokenExpiresAt DateTime?
   // When the user actually clicked the verification link. Audit only.
-  emailVerifiedAt   DateTime?
+  emailVerifiedAt            DateTime?
   // Password reset
-  resetToken        String?
-  resetTokenExpiry  DateTime?
-  preferredLanguage String    @default("es")
-  userPlan          String    @default("free") // "free" | "plus" — for users without a company
+  resetToken                 String?
+  resetTokenExpiry           DateTime?
+  preferredLanguage          String    @default("es")
+  userPlan                   String    @default("free") // "free" | "plus" — for users without a company
 
   // Notification preferences — how this user wants to receive alerts
   notifChannel String? // 'email' | 'whatsapp' | 'none'  (null = not configured)
@@ -354,6 +354,10 @@ model Company {
   bidResponses      BidResponse[]        @relation("BidResponses")
   listings          DistributorListing[] @relation("DistributorListings")
   marketplaceOrders MarketplaceOrder[]   @relation("MarketplaceOrders")
+
+  // Payments
+  paymentAccount  DistributorPaymentAccount?
+  receivedPayouts Payout[]                   @relation("DistributorPayouts")
 
   // Catalog — per-distributor SKU photos + per-download events
   catalogImages        CatalogImage[]
@@ -617,6 +621,11 @@ model Tire {
   recommendations TireRecommendation[]
   historyEntries  VehicleTireHistory[]
   orderItems      PurchaseOrderItem[]  @relation("PurchaseOrderItems")
+  // Partial unique index on (vehicleId, posicion) where vehicleId IS NOT
+  // NULL AND posicion > 0 — declared via raw SQL in
+  // prisma/migrations/20260427011129_tire_unique_position_per_vehicle/
+  // because Prisma's @@unique can't express partial filters. Prevents
+  // two tires from sitting on the same wheel position via a race.
 
   @@index([companyId])
   @@index([vehicleId])
@@ -628,11 +637,6 @@ model Tire {
   @@index([dimension, marca]) // cross-fleet benchmark queries
   @@index([companyId, inventoryBucketId])
   @@index([companyId, inventoryEnteredAt])
-  // Partial unique index on (vehicleId, posicion) where vehicleId IS NOT
-  // NULL AND posicion > 0 — declared via raw SQL in
-  // prisma/migrations/20260427011129_tire_unique_position_per_vehicle/
-  // because Prisma's @@unique can't express partial filters. Prevents
-  // two tires from sitting on the same wheel position via a race.
 }
 
 // =============================================================================
@@ -1472,10 +1476,10 @@ model TireMasterCatalog {
   // Retread info
   reencauchable   Boolean @default(false)
   vidasReencauche Int     @default(0) // max number of retreads — TirePro
-                                       // computes the real average from
-                                       // fleet data, so distribuidor admins
-                                       // can't edit this (only TirePro
-                                       // admins via blog/admin).
+  // computes the real average from
+  // fleet data, so distribuidor admins
+  // can't edit this (only TirePro
+  // admins via blog/admin).
   tipoBanda       String? // retread band type / model for this SKU
 
   // Financial
@@ -1597,19 +1601,19 @@ model CatalogDownload {
 // catalog_images) so size limits, MIME whitelist, and the "one per combo"
 // uniqueness can be enforced at the schema level.
 model CatalogVideo {
-  id          String   @id @default(uuid())
-  catalogId   String
-  companyId   String   // owning distributor — same tenant scoping as images
-  url         String
+  id           String   @id @default(uuid())
+  catalogId    String
+  companyId    String // owning distributor — same tenant scoping as images
+  url          String
   originalName String?
-  mimeType    String?
-  sizeBytes   Int?
-  createdAt   DateTime @default(now())
+  mimeType     String?
+  sizeBytes    Int?
+  createdAt    DateTime @default(now())
 
   catalog TireMasterCatalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
   company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
-  @@unique([catalogId, companyId])   // one video max per dist/SKU pair
+  @@unique([catalogId, companyId]) // one video max per dist/SKU pair
   @@index([companyId])
   @@map("catalog_videos")
 }
@@ -1801,8 +1805,10 @@ model MarketplaceOrder {
   status String  @default("pendiente") // pendiente | confirmado | enviado | entregado | cancelado
   notas  String? @db.Text
 
-  // Payment
-  paymentId     String?
+  // Legacy Wompi scaffolding fields — superseded by the FK to Payment
+  // below. paymentStatus stays for now since the buyer-tracking UI
+  // still surfaces it; we'll migrate that to read off Payment in a
+  // follow-up.
   paymentStatus String? // approved | declined | error | voided | pending
   totalWithIva  Float?
 
@@ -1825,16 +1831,28 @@ model MarketplaceOrder {
   // tracking page hero callout.
   etaDate DateTime?
 
+  // Payment ↔ order link. Several orders (cart with items from
+  // different distributors) can share one Payment. paymentId is
+  // populated the moment we hand off to Wompi; payoutId stays null
+  // until TirePro admin marks the dist's net as transferred.
+  paymentId String?
+  payoutId  String?
+  feeCop    Float? // TirePro's commission on this order's gross
+  netCop    Float? // amount payable to dist for this order (= totalCop - feeCop)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   listing     DistributorListing @relation(fields: [listingId], references: [id])
   distributor Company            @relation("MarketplaceOrders", fields: [distributorId], references: [id])
   user        User?              @relation(fields: [userId], references: [id])
+  payment     Payment?           @relation(fields: [paymentId], references: [id])
+  payout      Payout?            @relation(fields: [payoutId], references: [id])
 
   @@index([distributorId, status])
   @@index([userId])
   @@index([buyerEmail])
+  @@index([payoutId])
   @@index([createdAt])
   @@index([listingId])
   @@map("marketplace_orders")
@@ -1960,4 +1978,107 @@ model TeamKpi {
   @@index([companyId, periodStart])
   @@index([companyId, userId, metric, periodStart])
   @@map("team_kpis")
+}
+
+// =============================================================================
+// MARKETPLACE PAYMENTS — Wompi-backed checkout + manual ledger payouts.
+// =============================================================================
+// Money flow:
+//   Buyer pays via Wompi → settles into TirePro Bancolombia Empresas
+//     account daily (Wompi handles that automatically).
+//   We record one `Payment` row per buyer transaction, even if the cart
+//     covers multiple distributors. Per-order amounts (totalCop, feeCop,
+//     netCop) live on `MarketplaceOrder` so we know how much of the gross
+//     belongs to each dist.
+//   Once the order reaches `entregado` + 3 days hold, eligible orders
+//     are aggregated into a `Payout` per dist. TirePro admin sees the
+//     payout queue, transfers manually from Bancolombia Empresas, and
+//     marks the row `released` with the bank reference number.
+// =============================================================================
+
+model DistributorPaymentAccount {
+  id        String @id @default(uuid())
+  companyId String @unique
+
+  // Holder identity (matches the bank account legal owner)
+  holderName     String
+  documentType   String // "NIT" | "CC"
+  documentNumber String
+
+  // Bank routing
+  bankName      String // "Bancolombia", "Davivienda", "BBVA", ...
+  accountType   String // "ahorros" | "corriente"
+  accountNumber String
+
+  // Notification email for comprobantes (defaults to companyEmail at usage time)
+  notificationEmail String?
+
+  // Validation flags — set manually by TirePro admin after a first
+  // successful test transfer or doc check.
+  verifiedAt DateTime?
+  notes      String?   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  payouts Payout[]
+
+  @@map("distributor_payment_accounts")
+}
+
+model Payment {
+  id String @id @default(uuid())
+
+  // Wompi side
+  wompiTransactionId String? @unique // populated after Wompi creates the txn
+  wompiReference     String  @unique // we generate (one per checkout); lookup key
+  paymentMethod      String? // "CARD" | "PSE" | "NEQUI" | ...
+
+  // pending | approved | declined | voided | error
+  status String @default("pending")
+
+  // Money breakdown
+  grossCop Float // total the buyer paid
+  feeCop   Float // TirePro commission across all included orders
+  netCop   Float // sum payable to distributors (= grossCop - feeCop)
+
+  buyerEmail String
+
+  paidAt         DateTime?
+  rawWebhookData Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders MarketplaceOrder[]
+
+  @@map("marketplace_payments")
+}
+
+model Payout {
+  id            String @id @default(uuid())
+  distributorId String
+  bankAccountId String
+
+  // sum of net amounts for the orders included in this payout
+  amountCop Float
+
+  // pending_release | released | failed
+  status String @default("pending_release")
+
+  releasedAt          DateTime?
+  releasedByUserId    String?
+  bankReferenceNumber String? // comprobante / número de transferencia
+  notes               String?   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  distributor Company                   @relation("DistributorPayouts", fields: [distributorId], references: [id])
+  bankAccount DistributorPaymentAccount @relation(fields: [bankAccountId], references: [id])
+  orders      MarketplaceOrder[]
+
+  @@index([distributorId, status])
+  @@map("marketplace_payouts")
 }
