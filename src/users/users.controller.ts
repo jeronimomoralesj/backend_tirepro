@@ -224,6 +224,26 @@ export class UsersController {
     return this.usersService.removePlate(userId, plate);
   }
 
+  // Generic update endpoint — used by /dashboard/ajustes (admin) to change
+  // a teammate's role inline. Service-side validation rejects unknown
+  // role strings against the Prisma UserRole enum, so the surface area
+  // is the typed `Partial<{ name, role, puntos, preferredLanguage }>`
+  // and nothing else can leak through.
+  @Patch(':id')
+  @UseGuards(JwtAuthGuard)
+  async updateUser(
+    @Param('id') userId: string,
+    @Body()
+    body: Partial<{
+      name: string;
+      role: string;
+      puntos: number;
+      preferredLanguage: string;
+    }>,
+  ) {
+    return this.usersService.updateUser(userId, body);
+  }
+
   // ===========================================================================
   // Delete
   // ===========================================================================
