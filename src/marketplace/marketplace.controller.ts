@@ -293,6 +293,22 @@ export class MarketplaceController {
     return this.svc.getDistributorOrders(distributorId);
   }
 
+  /**
+   * Public-but-gated order tracking lookup. The frontend tracking page
+   * (/marketplace/order/<id>) hits this. Returns order details only
+   * when the provided email matches the order's buyerEmail (case- and
+   * whitespace-insensitive). No JWT required — the tokenized email
+   * serves as the bearer for guest checkouts; logged-in users supply
+   * their own email and the same equality check applies.
+   */
+  @Get('orders/:id/track')
+  trackOrder(
+    @Param('id') id: string,
+    @Query('email') email: string,
+  ) {
+    return this.svc.trackOrder(id, email);
+  }
+
   @Patch('orders/:id/status')
   @UseGuards(JwtAuthGuard)
   updateOrderStatus(

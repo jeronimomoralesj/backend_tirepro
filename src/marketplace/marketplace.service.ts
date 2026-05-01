@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { BidRequestStatus, BidResponseStatus, Prisma } from '@prisma/client';
 import { EmailService } from '../email/email.service';
@@ -1306,6 +1306,7 @@ export class MarketplaceService {
     // Send confirmation email to buyer
     try {
       const fmtCOP = (n: number) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n);
+      const trackingUrl = this.buildTrackingUrl(order.id, data.buyerEmail);
       await this.email.sendEmail(data.buyerEmail, `Pedido confirmado — ${listing.marca} ${listing.modelo}`, `
         <div style="font-family:system-ui;max-width:600px;margin:0 auto">
           <div style="background:linear-gradient(135deg,#0A183A,#1E76B6);color:white;padding:30px;border-radius:12px 12px 0 0">
@@ -1324,6 +1325,10 @@ export class MarketplaceService {
             <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Distribuidor:</strong> ${listing.distributor.name}</p>
             <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Pedido:</strong> #${order.id.slice(0, 8).toUpperCase()}</p>
             ${data.buyerAddress ? `<p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Entrega:</strong> ${data.buyerAddress}${data.buyerCity ? ', ' + data.buyerCity : ''}</p>` : ''}
+            <div style="margin:24px 0;text-align:center">
+              <a href="${trackingUrl}" style="display:inline-block;padding:12px 28px;border-radius:10px;background:#1E76B6;color:white;font-size:14px;font-weight:700;text-decoration:none">Seguir mi pedido</a>
+            </div>
+            <p style="margin:0 0 4px;font-size:11px;color:#999;text-align:center">O copia este enlace: <a href="${trackingUrl}" style="color:#1E76B6;word-break:break-all">${trackingUrl}</a></p>
             <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
             <p style="margin:0;font-size:12px;color:#999">Este email fue enviado por TirePro Marketplace — tirepro.com.co</p>
           </div>
@@ -1366,6 +1371,50 @@ export class MarketplaceService {
     this.cache.invalidate(`product:${data.listingId}`);
     this.cache.invalidate('recs:');
     return order;
+  }
+
+  /**
+   * Email-gated order detail lookup. Used by the public tracking page
+   * — anyone with the order id + the buyer's email gets the full
+   * payload, anyone else gets a 403 (kept distinct from "order doesn't
+   * exist" so we don't leak the existence of unrelated orders).
+   */
+  async trackOrder(orderId: string, providedEmail: string) {
+    if (!orderId) throw new BadRequestException('orderId is required');
+    if (!providedEmail || !providedEmail.trim()) {
+      throw new BadRequestException('email is required');
+    }
+    const order = await this.prisma.marketplaceOrder.findUnique({
+      where: { id: orderId },
+      include: {
+        listing: {
+          select: {
+            id: true, marca: true, modelo: true, dimension: true,
+            imageUrls: true, coverIndex: true,
+          },
+        },
+        distributor: {
+          select: { id: true, name: true, slug: true, profileImage: true, telefono: true, ciudad: true },
+        },
+      },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const norm = (e: string) => e.trim().toLowerCase();
+    if (norm(order.buyerEmail) !== norm(providedEmail)) {
+      throw new ForbiddenException('Email does not match this order');
+    }
+    return order;
+  }
+
+  /**
+   * Public tracking-page URL the buyer clicks from any order email.
+   * Pinned at the prod marketplace host because emails get archived
+   * and forwarded — env-derived URLs go stale fast in transactional
+   * mail. Email is URL-encoded so + / spaces survive transit.
+   */
+  private buildTrackingUrl(orderId: string, buyerEmail: string): string {
+    return `https://www.tirepro.com.co/marketplace/order/${orderId}?email=${encodeURIComponent(buyerEmail)}`;
   }
 
   async getDistributorOrders(distributorId: string) {
@@ -1441,6 +1490,7 @@ export class MarketplaceService {
       try {
         const dist = await this.prisma.company.findUnique({ where: { id: distributorId }, select: { name: true } });
         const fmtCOP = (n: number) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n);
+        const trackingUrl = this.buildTrackingUrl(orderId, order.buyerEmail);
         await this.email.sendEmail(order.buyerEmail, `Pedido cancelado — ${order.listing.marca} ${order.listing.modelo}`, `
           <div style="font-family:system-ui;max-width:600px;margin:0 auto">
             <div style="background:linear-gradient(135deg,#991b1b,#ef4444);color:white;padding:30px;border-radius:12px 12px 0 0">
@@ -1461,6 +1511,9 @@ export class MarketplaceService {
               </div>
               <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Distribuidor:</strong> ${dist?.name ?? 'Distribuidor'}</p>
               <p style="margin:0 0 4px;font-size:13px;color:#666"><strong>Pedido:</strong> #${orderId.slice(0, 8).toUpperCase()}</p>
+              <div style="margin:18px 0;text-align:center">
+                <a href="${trackingUrl}" style="display:inline-block;padding:10px 24px;border-radius:8px;background:#0A183A;color:white;font-size:13px;font-weight:700;text-decoration:none">Ver pedido</a>
+              </div>
               <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
               <p style="margin:0 0 8px;font-size:14px;color:#333">Puedes buscar este producto con otros distribuidores en el marketplace:</p>
               <a href="https://tirepro.com.co/marketplace" style="display:inline-block;padding:10px 24px;border-radius:8px;background:#1E76B6;color:white;font-size:13px;font-weight:700;text-decoration:none">Ver Marketplace</a>
@@ -1479,6 +1532,7 @@ export class MarketplaceService {
     if (status === 'confirmado' && order.buyerEmail) {
       try {
         const dist = await this.prisma.company.findUnique({ where: { id: distributorId }, select: { name: true, telefono: true } });
+        const trackingUrl = this.buildTrackingUrl(orderId, order.buyerEmail);
         await this.email.sendEmail(order.buyerEmail, `Pedido confirmado — ${order.listing.marca} ${order.listing.modelo}`, `
           <div style="font-family:system-ui;max-width:600px;margin:0 auto">
             <div style="background:linear-gradient(135deg,#0A183A,#1E76B6);color:white;padding:30px;border-radius:12px 12px 0 0">
@@ -1492,6 +1546,10 @@ export class MarketplaceService {
                 <p style="margin:0;font-size:13px;color:#666">Pedido #${orderId.slice(0, 8).toUpperCase()}</p>
                 ${dist?.telefono ? `<p style="margin:8px 0 0;font-size:13px;color:#1E76B6;font-weight:700">Telefono: ${dist.telefono}</p>` : ''}
               </div>
+              <div style="margin:20px 0 4px;text-align:center">
+                <a href="${trackingUrl}" style="display:inline-block;padding:12px 28px;border-radius:10px;background:#1E76B6;color:white;font-size:14px;font-weight:700;text-decoration:none">Seguir mi pedido</a>
+              </div>
+              <p style="margin:0;font-size:11px;color:#999;text-align:center">O copia: <a href="${trackingUrl}" style="color:#1E76B6;word-break:break-all">${trackingUrl}</a></p>
             </div>
           </div>
         `);
@@ -1518,6 +1576,7 @@ export class MarketplaceService {
         const intro = isDelivered
           ? `${dist?.name ?? 'El distribuidor'} marcó tu pedido como entregado. ¡Gracias por tu compra!`
           : `${dist?.name ?? 'El distribuidor'} actualizó el estado de tu pedido a <strong>${status}</strong>.`;
+        const trackingUrl = this.buildTrackingUrl(orderId, order.buyerEmail);
         await this.email.sendEmail(order.buyerEmail, `Pedido #${orderNumber} — ${headline}`, `
           <div style="font-family:system-ui;max-width:600px;margin:0 auto">
             <div style="background:${headerBg};color:white;padding:30px;border-radius:12px 12px 0 0">
@@ -1533,6 +1592,10 @@ export class MarketplaceService {
                 <p style="margin:0;font-size:13px;color:#666">Pedido #${orderNumber}</p>
               </div>
               ${dist?.telefono ? `<p style="margin:8px 0 0;font-size:13px;color:#1E76B6;font-weight:700">Teléfono del distribuidor: ${dist.telefono}</p>` : ''}
+              <div style="margin:20px 0 4px;text-align:center">
+                <a href="${trackingUrl}" style="display:inline-block;padding:12px 28px;border-radius:10px;background:${isDelivered ? '#15803d' : '#1E76B6'};color:white;font-size:14px;font-weight:700;text-decoration:none">Seguir mi pedido</a>
+              </div>
+              <p style="margin:0;font-size:11px;color:#999;text-align:center">O copia: <a href="${trackingUrl}" style="color:#1E76B6;word-break:break-all">${trackingUrl}</a></p>
               <hr style="border:none;border-top:1px solid #eee;margin:20px 0"/>
               <p style="margin:0;font-size:12px;color:#999">TirePro Marketplace — tirepro.com.co</p>
             </div>
