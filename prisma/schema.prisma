@@ -313,6 +313,14 @@ model Company {
   tipoEntrega   String? // "domicilio" | "recogida" | "ambos"
   colorMarca    String? // hex color for map pins and branding
 
+  // Promotional hero banner the distributor pins to their public
+  // storefront — used to highlight a featured tire, a seasonal promo,
+  // or a campaign. Edited from /dashboard/marketplace/perfil.
+  promoBannerImage    String?
+  promoBannerTitle    String?
+  promoBannerSubtitle String?
+  promoBannerHref     String? // click-through URL (a /marketplace/product/<id> or external link)
+
   // Agent automation configuration
   agentSettings Json @default("{\"agentEnabled\":false,\"alertMode\":\"display_only\",\"purchaseMode\":\"manual\"}")
 

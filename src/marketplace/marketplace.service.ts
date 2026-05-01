@@ -1124,6 +1124,8 @@ export class MarketplaceService {
         emailAtencion: true, telefono: true, descripcion: true,
         bannerImage: true, direccion: true, ciudad: true, sitioWeb: true,
         cobertura: true, tipoEntrega: true, colorMarca: true,
+        promoBannerImage: true, promoBannerTitle: true,
+        promoBannerSubtitle: true, promoBannerHref: true,
         _count: { select: { listings: { where: { isActive: true } } } },
       },
     });
@@ -1136,6 +1138,14 @@ export class MarketplaceService {
     telefono: string; descripcion: string; bannerImage: string;
     direccion: string; ciudad: string; sitioWeb: string; emailAtencion: string;
     cobertura: any[]; tipoEntrega: string; colorMarca: string;
+    profileImage: string;
+    // Pinned promo banner — edited from /dashboard/marketplace/perfil
+    // and rendered on /marketplace/distributor/<slug>. Nullable so the
+    // dist can clear any single field independently.
+    promoBannerImage: string | null;
+    promoBannerTitle: string | null;
+    promoBannerSubtitle: string | null;
+    promoBannerHref: string | null;
   }>) {
     const result = await this.prisma.company.update({ where: { id: distributorId }, data });
     this.cache.invalidate(`distprofile:${distributorId}`);
