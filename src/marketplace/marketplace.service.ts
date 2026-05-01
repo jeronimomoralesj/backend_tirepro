@@ -1175,7 +1175,13 @@ export class MarketplaceService {
     pinnedListingId: string | null;
   }>) {
     const result = await this.prisma.company.update({ where: { id: distributorId }, data });
+    // The profile cache is keyed by whatever the caller passed in
+    // (UUID OR slug). Invalidating only by UUID leaves the slug-keyed
+    // entry alive for the full TTL — which is exactly the path the
+    // public storefront uses, so saved changes wouldn't show up there
+    // for up to 5 minutes. Drop both keys.
     this.cache.invalidate(`distprofile:${distributorId}`);
+    if (result.slug) this.cache.invalidate(`distprofile:${result.slug}`);
     this.cache.invalidate('distmap');
     return result;
   }
