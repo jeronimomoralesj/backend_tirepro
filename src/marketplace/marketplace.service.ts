@@ -856,21 +856,35 @@ export class MarketplaceService {
       }
     }
 
-    // Inventory-aware ranking — prepended to every sort branch. The
-    // `inventoryRank` column is a Postgres-generated `LEAST(cantidad, 50)`,
-    // so listings with ≥50 units all tie for the top tier and the
-    // user's chosen criterion (price / recency / relevance) acts as
-    // the tiebreaker among them. Listings with <50 units sub-rank by
-    // their actual count so a tire with 30 in stock still beats one
-    // with 5 — this is what the user means by "if there's a ton of
-    // tires for one then that one must be displayed first".
+    // Sort behavior:
+    //   • Default (relevance): inventoryRank-led so deep-stock listings
+    //     dominate the first page, with image-quality + recency as
+    //     tiebreakers. inventoryRank is a Postgres-generated
+    //     LEAST(cantidad, 50), so anything with ≥50 units ties at the
+    //     top tier and the secondary keys decide order among them.
+    //   • Explicit user-chosen sort (price_asc, price_desc, newest):
+    //     respect the user's intent strictly. Inventory rank is removed
+    //     from the primary key — otherwise "menor precio" only sorts
+    //     by price WITHIN each stock tier, which produced the
+    //     "100k → 200k → 150k" zigzag the user complained about
+    //     (low-price low-stock listings dropped below high-price
+    //     high-stock ones).
+    //
+    //     `id: 'asc'` is appended as a stable tiebreaker so two
+    //     listings with the same price don't swap between requests
+    //     — without it pagination can show the same listing twice
+    //     (or skip one) when ordering ties exist.
     let orderBy: any;
     switch (filters.sortBy) {
-      case 'price_asc':  orderBy = [{ inventoryRank: 'desc' }, { precioCop: 'asc'  }]; break;
-      case 'price_desc': orderBy = [{ inventoryRank: 'desc' }, { precioCop: 'desc' }]; break;
-      case 'newest':     orderBy = [{ inventoryRank: 'desc' }, { createdAt: 'desc' }]; break;
-      // Default: stock first, then image quality, then newest.
-      default: orderBy = [{ inventoryRank: 'desc' }, { imageQualityScore: 'desc' }, { createdAt: 'desc' }];
+      case 'price_asc':  orderBy = [{ precioCop: 'asc'  }, { id: 'asc' }]; break;
+      case 'price_desc': orderBy = [{ precioCop: 'desc' }, { id: 'asc' }]; break;
+      case 'newest':     orderBy = [{ createdAt: 'desc' }, { id: 'asc' }]; break;
+      default: orderBy = [
+        { inventoryRank:     'desc' },
+        { imageQualityScore: 'desc' },
+        { createdAt:         'desc' },
+        { id:                'asc'  },
+      ];
     }
 
     const page = filters.page ?? 1;
