@@ -219,6 +219,42 @@ export class MarketplaceController {
     return this.svc.bulkCreateListings(body.distributorId, body.items);
   }
 
+  /**
+   * Preview which of this distributor's listings match a given
+   * marca + modelo-substring. The frontend uses this to show "you're
+   * about to update X listings" before the user confirms.
+   */
+  @Post('listings/preview-by-banda')
+  @UseGuards(JwtAuthGuard)
+  previewListingsByBanda(@Body() body: {
+    distributorId: string;
+    marca: string;
+    modeloContains: string;
+  }) {
+    return this.svc.previewListingsByBanda(
+      body.distributorId,
+      body.marca,
+      body.modeloContains,
+    );
+  }
+
+  /**
+   * Apply image-set + description update to every listing matching
+   * marca + modelo-substring under one distributor. Saves the dist
+   * from manually editing every dimension variant of the same banda.
+   */
+  @Patch('listings/bulk-by-banda')
+  @UseGuards(JwtAuthGuard)
+  bulkUpdateByBanda(@Body() body: {
+    distributorId: string;
+    marca: string;
+    modeloContains: string;
+    imageUrls?: string[];
+    descripcion?: string;
+  }) {
+    return this.svc.bulkUpdateByBanda(body);
+  }
+
   @Patch('listings/:id')
   @UseGuards(JwtAuthGuard)
   updateListing(

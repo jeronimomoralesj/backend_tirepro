@@ -1017,6 +1017,96 @@ export class MarketplaceService {
   }
 
   /**
+   * Preview which listings will be affected by a bulk-by-banda
+   * update. Returns the lightweight list (id, marca, modelo,
+   * dimension) so the UI can show a "you're about to update X
+   * listings" confirmation before committing.
+   */
+  async previewListingsByBanda(
+    distributorId: string,
+    marca: string,
+    modeloContains: string,
+  ) {
+    if (!distributorId) throw new BadRequestException('distributorId is required');
+    if (!marca?.trim()) throw new BadRequestException('marca is required');
+    if (!modeloContains?.trim()) throw new BadRequestException('modeloContains is required');
+    return this.prisma.distributorListing.findMany({
+      where: {
+        distributorId,
+        marca:  { equals:   marca.trim(),          mode: 'insensitive' },
+        modelo: { contains: modeloContains.trim(), mode: 'insensitive' },
+      },
+      select: { id: true, marca: true, modelo: true, dimension: true, isActive: true },
+      orderBy: [{ dimension: 'asc' }],
+    });
+  }
+
+  /**
+   * Apply images + description in bulk to every listing under a
+   * distributor matching marca + modelo-substring. Useful when a
+   * distributor has the same banda (e.g. "ATX") in 10 different
+   * dimensions and wants to push the same hero photos + copy to all
+   * of them at once.
+   *
+   * Empty/undefined values are no-ops on the field — passing only
+   * `imageUrls` updates just images and leaves the description
+   * untouched, and vice versa.
+   */
+  async bulkUpdateByBanda(input: {
+    distributorId: string;
+    marca: string;
+    modeloContains: string;
+    imageUrls?: string[];
+    descripcion?: string;
+  }) {
+    if (!input.distributorId) throw new BadRequestException('distributorId is required');
+    if (!input.marca?.trim()) throw new BadRequestException('marca is required');
+    if (!input.modeloContains?.trim()) throw new BadRequestException('modeloContains is required');
+    if ((input.imageUrls === undefined || input.imageUrls.length === 0) &&
+        (input.descripcion === undefined || input.descripcion === null)) {
+      throw new BadRequestException('Pasa imageUrls o descripcion para aplicar');
+    }
+
+    const matching = await this.prisma.distributorListing.findMany({
+      where: {
+        distributorId: input.distributorId,
+        marca:  { equals:   input.marca.trim(),          mode: 'insensitive' },
+        modelo: { contains: input.modeloContains.trim(), mode: 'insensitive' },
+      },
+      select: { id: true },
+    });
+    if (matching.length === 0) {
+      return { updated: 0, ids: [] };
+    }
+
+    // Trim image array to the 5-image cap that single-create + edit
+    // already enforce, so this endpoint can't sneak in oversized arrays.
+    const imageUrls = Array.isArray(input.imageUrls)
+      ? input.imageUrls.slice(0, 5)
+      : undefined;
+
+    const data: any = {};
+    if (imageUrls) {
+      data.imageUrls  = imageUrls;
+      data.coverIndex = 0;
+    }
+    if (typeof input.descripcion === 'string') {
+      data.descripcion = input.descripcion.trim() || null;
+    }
+
+    const ids = matching.map((m) => m.id);
+    await this.prisma.distributorListing.updateMany({
+      where: { id: { in: ids } },
+      data,
+    });
+    this.invalidateListingCaches();
+    // Per-listing product:<id> cache lives in the marketplace cache;
+    // wipe entries en bloc.
+    for (const id of ids) this.cache.invalidate(`product:${id}`);
+    return { updated: ids.length, ids };
+  }
+
+  /**
    * Spreadsheet bulk-upload. Each row goes through the regular
    * createListing pipeline so catalog auto-create + dist subscription
    * happen consistently. Errors don't fail the batch — we collect
