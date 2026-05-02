@@ -447,9 +447,31 @@ export class MarketplaceController {
   @UseGuards(JwtAuthGuard)
   updateOrderStatus(
     @Param('id') id: string,
-    @Body() body: { distributorId: string; status: string; cancelReason?: string; etaDate?: string | null },
+    @Body() body: {
+      distributorId: string;
+      status: string;
+      cancelReason?: string;
+      etaDate?: string | null;
+      /** Free-form note attached to this status entry — visible to the buyer */
+      note?: string;
+    },
   ) {
-    return this.svc.updateOrderStatus(id, body.distributorId, body.status, body.cancelReason, body.etaDate);
+    return this.svc.updateOrderStatus(
+      id, body.distributorId, body.status, body.cancelReason, body.etaDate, body.note,
+    );
+  }
+
+  /**
+   * Buyer submits a delivery survey (rating + optional comment).
+   * Email-gated: the submitter's email must match the order's buyerEmail.
+   * Idempotent — repeated submissions update the prior survey in place.
+   */
+  @Post('orders/:id/survey')
+  submitOrderSurvey(
+    @Param('id') id: string,
+    @Body() body: { email: string; rating: number; comment?: string },
+  ) {
+    return this.svc.submitOrderSurvey(id, body.email, body.rating, body.comment);
   }
 
   // Buyer requests a return on a delivered/shipped order

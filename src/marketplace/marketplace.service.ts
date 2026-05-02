@@ -1593,6 +1593,10 @@ export class MarketplaceService {
         distributor: {
           select: { id: true, name: true, slug: true, profileImage: true, telefono: true, ciudad: true },
         },
+        // Include the survey (if any) so the tracking page can decide
+        // between rendering the form vs the thank-you state without a
+        // second round-trip.
+        survey: { select: { id: true, rating: true, comment: true, createdAt: true } },
       },
     });
     if (!order) throw new NotFoundException('Order not found');
@@ -1674,6 +1678,15 @@ export class MarketplaceService {
     status: string,
     cancelReason?: string,
     etaDateInput?: string | null,
+    /**
+     * Free-form note from the distributor — visible to the buyer on
+     * the order tracking page next to the matching status entry.
+     * Different from cancelReason in two ways: (a) applies to any
+     * status, not just cancelado; (b) doesn't get prepended onto
+     * the order.notas legacy field. Stored on the statusHistory
+     * entry as `note`.
+     */
+    note?: string,
   ) {
     const order = await this.prisma.marketplaceOrder.findUnique({
       where: { id: orderId },
@@ -1705,12 +1718,17 @@ export class MarketplaceService {
     // estimada 12 May" inline.
     const prevHistory: Array<{ status: string; at: string; note?: string; eta?: string | null }> =
       Array.isArray((order as any).statusHistory) ? (order as any).statusHistory : [];
+    // Resolve the note that rides on this history entry. Cancelled
+    // updates default to the cancelReason (legacy contract); any other
+    // status falls back to the explicit `note` arg. The frontend
+    // surfaces this string on the buyer-facing tracking timeline.
+    const resolvedNote = (cancelReason ?? note ?? '').trim() || undefined;
     const nextHistory = [
       ...prevHistory,
       {
         status,
         at: new Date().toISOString(),
-        ...(cancelReason ? { note: cancelReason } : {}),
+        ...(resolvedNote ? { note: resolvedNote } : {}),
         ...(etaUpdate instanceof Date ? { eta: etaUpdate.toISOString() } : {}),
       },
     ];
@@ -2081,5 +2099,56 @@ export class MarketplaceService {
     if (expired.length > 0) {
       this.logger.log(`Closed ${expired.length} expired bid requests`);
     }
+  }
+
+  // ===========================================================================
+  // ORDER SURVEY — buyer's post-delivery rating
+  // ===========================================================================
+
+  /**
+   * Email-gated survey submission. The submitter's `email` must match
+   * the order's `buyerEmail` (case- and whitespace-insensitive). One
+   * survey per order — DB enforces UNIQUE on orderId so a duplicate
+   * POST returns the existing record instead of creating a second.
+   */
+  async submitOrderSurvey(
+    orderId: string,
+    email: string,
+    rating: number,
+    comment: string | undefined,
+  ) {
+    if (!orderId) throw new BadRequestException('orderId required');
+    if (!email?.trim()) throw new BadRequestException('email required');
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      throw new BadRequestException('rating must be an integer 1–5');
+    }
+    const order = await this.prisma.marketplaceOrder.findUnique({
+      where: { id: orderId },
+      select: { id: true, buyerEmail: true, userId: true, status: true },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    if ((order.buyerEmail ?? '').trim().toLowerCase() !== email.trim().toLowerCase()) {
+      throw new ForbiddenException('Email does not match the order');
+    }
+    // Only allow surveys after the buyer has actually received the
+    // order. Soliciting feedback before delivery doesn't make sense
+    // and lets a curious buyer rate before the experience is complete.
+    if (order.status !== 'entregado') {
+      throw new BadRequestException('La encuesta solo está disponible una vez el pedido esté entregado.');
+    }
+    const cleanComment = (comment ?? '').trim().slice(0, 1000) || null;
+    // Upsert keeps idempotency: a re-submission updates the previous
+    // row in place rather than throwing on the unique constraint.
+    return this.prisma.orderSurvey.upsert({
+      where:  { orderId },
+      create: {
+        orderId,
+        rating,
+        comment: cleanComment,
+        userId:     order.userId ?? null,
+        buyerEmail: order.buyerEmail ?? null,
+      },
+      update: { rating, comment: cleanComment },
+    });
   }
 }

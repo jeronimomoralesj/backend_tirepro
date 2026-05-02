@@ -240,6 +240,7 @@ model User {
   inspecciones      Inspeccion[] // inspections this user performed
   reviews           DistributorReview[]
   marketplaceOrders MarketplaceOrder[]
+  orderSurveys      OrderSurvey[]      @relation("UserOrderSurveys")
   loginLogs         UserLoginLog[]
   teamKpis          TeamKpi[]
   catalogDownloads  CatalogDownload[]
@@ -1851,6 +1852,9 @@ model MarketplaceOrder {
   user        User?              @relation(fields: [userId], references: [id])
   payment     Payment?           @relation(fields: [paymentId], references: [id])
   payout      Payout?            @relation(fields: [payoutId], references: [id])
+  // Post-delivery survey — at most one per order (UNIQUE on orderId).
+  // Created by the buyer's tracking page once status hits 'entregado'.
+  survey      OrderSurvey?
 
   @@index([distributorId, status])
   @@index([userId])
@@ -2131,4 +2135,35 @@ model MarketplaceView {
   @@index([targetId, createdAt])
   @@index([distributorId, createdAt])
   @@map("marketplace_views")
+}
+
+// =============================================================================
+// ORDER SURVEY — buyer's post-delivery rating of the order experience
+// One survey per order (UNIQUE on orderId). Triggered by the frontend
+// tracking page when the order's status flips to "entregado". Email-
+// gated at the API: the submitter must supply the same buyerEmail
+// stored on the order, which is the bearer for guest checkouts and
+// the simple equality check for logged-in users.
+//
+// `userId` is populated when a logged-in user submits, so we can
+// surface a buyer's review history later if needed; null for guest
+// surveys (still keyed by orderId).
+// =============================================================================
+model OrderSurvey {
+  id      String  @id @default(uuid())
+  orderId String  @unique
+  rating  Int     // 1–5 stars
+  comment String? @db.Text
+
+  // Optional reviewer identity
+  userId     String?
+  buyerEmail String?
+
+  createdAt DateTime @default(now())
+
+  order MarketplaceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user  User?            @relation("UserOrderSurveys", fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("order_surveys")
 }
