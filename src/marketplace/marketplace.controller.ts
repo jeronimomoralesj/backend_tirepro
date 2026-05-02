@@ -193,6 +193,32 @@ export class MarketplaceController {
     return this.svc.createListing(body);
   }
 
+  /**
+   * Bulk-create listings from a parsed spreadsheet. Each row goes
+   * through the same createListing path used for single creates, so
+   * catalog SKUs auto-mint and the distributor auto-subscribes per
+   * row. Errors per row don't fail the batch — we collect them and
+   * return a summary so the UI can surface what didn't go through.
+   */
+  @Post('listings/bulk')
+  @UseGuards(JwtAuthGuard)
+  bulkCreateListings(@Body() body: {
+    distributorId: string;
+    items: Array<{
+      marca: string;
+      modelo: string;
+      dimension: string;
+      eje?: string;
+      tipo?: string;
+      precioCop: number;
+      cantidadDisponible?: number;
+      descripcion?: string;
+      tiempoEntrega?: string;
+    }>;
+  }) {
+    return this.svc.bulkCreateListings(body.distributorId, body.items);
+  }
+
   @Patch('listings/:id')
   @UseGuards(JwtAuthGuard)
   updateListing(

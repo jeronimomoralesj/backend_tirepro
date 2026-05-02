@@ -1016,6 +1016,72 @@ export class MarketplaceService {
     return `MKT-${slug(marca)}-${slug(modelo)}-${slug(dimension)}`.slice(0, 80);
   }
 
+  /**
+   * Spreadsheet bulk-upload. Each row goes through the regular
+   * createListing pipeline so catalog auto-create + dist subscription
+   * happen consistently. Errors don't fail the batch — we collect
+   * them and return a structured summary the UI can surface.
+   */
+  async bulkCreateListings(distributorId: string, items: Array<{
+    marca: string;
+    modelo: string;
+    dimension: string;
+    eje?: string;
+    tipo?: string;
+    precioCop: number;
+    cantidadDisponible?: number;
+    descripcion?: string;
+    tiempoEntrega?: string;
+  }>) {
+    if (!distributorId) throw new BadRequestException('distributorId is required');
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new BadRequestException('items array is required');
+    }
+    if (items.length > 500) {
+      throw new BadRequestException('Máximo 500 productos por carga');
+    }
+
+    const created: string[] = [];
+    const errors: Array<{ row: number; reason: string; identifier?: string }> = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const row = items[i];
+      const idLabel = `${row.marca ?? '?'} ${row.modelo ?? '?'} ${row.dimension ?? '?'}`.trim();
+      try {
+        if (!row.marca?.trim() || !row.modelo?.trim() || !row.dimension?.trim()) {
+          errors.push({ row: i + 1, reason: 'marca, modelo y dimensión son obligatorios', identifier: idLabel });
+          continue;
+        }
+        if (typeof row.precioCop !== 'number' || row.precioCop <= 0) {
+          errors.push({ row: i + 1, reason: 'Precio inválido', identifier: idLabel });
+          continue;
+        }
+        const listing = await this.createListing({
+          distributorId,
+          marca:              row.marca.trim(),
+          modelo:             row.modelo.trim(),
+          dimension:          row.dimension.trim(),
+          eje:                row.eje?.trim() || undefined,
+          tipo:               row.tipo?.trim() || 'nueva',
+          precioCop:          Math.round(row.precioCop),
+          cantidadDisponible: typeof row.cantidadDisponible === 'number' ? row.cantidadDisponible : 0,
+          tiempoEntrega:      row.tiempoEntrega?.trim() || undefined,
+          descripcion:        row.descripcion?.trim() || undefined,
+        });
+        created.push(listing.id);
+      } catch (e: any) {
+        this.logger.warn(`bulk row ${i + 1} (${idLabel}) failed: ${e?.message ?? e}`);
+        errors.push({
+          row: i + 1,
+          reason: (e?.message?.toString() ?? 'Error desconocido').slice(0, 200),
+          identifier: idLabel,
+        });
+      }
+    }
+
+    return { created: created.length, errors, createdIds: created };
+  }
+
   private invalidateListingCaches() {
     this.cache.invalidate('listings:');
     this.cache.invalidate('filters');
