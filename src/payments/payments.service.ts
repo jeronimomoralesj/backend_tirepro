@@ -9,6 +9,33 @@ import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 
+/**
+ * Collects + dedupes the distributor's notification recipients. The
+ * primary email goes first so it leads the queue, then any extras
+ * the dist has added on /perfil. Case-insensitive dedup means
+ * "Foo@x.com" and "foo@x.com" only get one email. Empty / falsy
+ * entries drop out — extras live in a Postgres array and may carry
+ * empty strings depending on UI input handling.
+ */
+function collectDistEmails(
+  primary: string | null | undefined,
+  extras: string[] | null | undefined,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (raw: string | null | undefined) => {
+    const t = (raw ?? '').trim();
+    if (!t) return;
+    const key = t.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(t);
+  };
+  push(primary);
+  for (const e of extras ?? []) push(e);
+  return out;
+}
+
 // =============================================================================
 // MARKETPLACE PAYMENTS — money flow
 // =============================================================================
@@ -296,7 +323,10 @@ export class PaymentsService {
   private async advanceOrdersToPendiente(paymentId: string) {
     const orders = await this.prisma.marketplaceOrder.findMany({
       where: { paymentId, status: 'pago_pendiente' },
-      include: { listing: { select: { marca: true, modelo: true, dimension: true, imageUrls: true, coverIndex: true } }, distributor: { select: { name: true, emailAtencion: true } } },
+      include: {
+        listing:     { select: { marca: true, modelo: true, dimension: true, imageUrls: true, coverIndex: true } },
+        distributor: { select: { name: true, emailAtencion: true, emailsAtencion: true } },
+      },
     });
     for (const order of orders) {
       const prevHistory = Array.isArray((order as any).statusHistory) ? (order as any).statusHistory : [];
@@ -307,24 +337,36 @@ export class PaymentsService {
           statusHistory: [...prevHistory, { status: 'pendiente', at: new Date().toISOString(), note: 'Pago aprobado' }] as any,
         },
       });
-      // Notify the dist that a new (paid) order has landed.
-      try {
-        if (order.distributor.emailAtencion) {
-          const imgs = Array.isArray((order.listing as any).imageUrls) ? (order.listing as any).imageUrls as string[] : [];
-          const cover = imgs.length > 0 ? (imgs[(order.listing as any).coverIndex ?? 0] ?? imgs[0]) : null;
-          await this.email.sendOrderToDistributor({
-            distributorEmail: order.distributor.emailAtencion,
-            orderId:          order.id,
-            listing: { marca: order.listing.marca, modelo: order.listing.modelo, dimension: order.listing.dimension, imageUrl: cover },
-            quantity:    order.quantity,
-            totalCop:    order.totalCop,
-            buyerName:   order.buyerName,
-            buyerPhone:  order.buyerPhone,
-            buyerCity:   order.buyerCity,
-          });
+      // Notify the dist that a new (paid) order has landed. Fans out
+      // to every email on the distributor's notification list:
+      //   - emailAtencion  (the primary public contact email)
+      //   - emailsAtencion (additional recipients, up to 2 in the UI)
+      // Deduped case-insensitively at send time so a typo or repeat
+      // doesn't double-send. Each send is its own try-catch — one
+      // bad address shouldn't drop the others.
+      const recipients = collectDistEmails(
+        order.distributor.emailAtencion,
+        order.distributor.emailsAtencion,
+      );
+      if (recipients.length > 0) {
+        const imgs = Array.isArray((order.listing as any).imageUrls) ? (order.listing as any).imageUrls as string[] : [];
+        const cover = imgs.length > 0 ? (imgs[(order.listing as any).coverIndex ?? 0] ?? imgs[0]) : null;
+        for (const to of recipients) {
+          try {
+            await this.email.sendOrderToDistributor({
+              distributorEmail: to,
+              orderId:          order.id,
+              listing: { marca: order.listing.marca, modelo: order.listing.modelo, dimension: order.listing.dimension, imageUrl: cover },
+              quantity:    order.quantity,
+              totalCop:    order.totalCop,
+              buyerName:   order.buyerName,
+              buyerPhone:  order.buyerPhone,
+              buyerCity:   order.buyerCity,
+            });
+          } catch (err: any) {
+            this.logger.warn(`Failed to notify distributor (${to}) of new order ${order.id}: ${err?.message ?? err}`);
+          }
         }
-      } catch (err: any) {
-        this.logger.warn(`Failed to notify distributor of new order ${order.id}: ${err?.message ?? err}`);
       }
     }
   }

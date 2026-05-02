@@ -304,6 +304,14 @@ model Company {
 
   // Distributor-only fields
   emailAtencion String?
+  // Additional notification recipients — order-placed emails fan out
+  // to `emailAtencion` PLUS every entry here (deduped, case-insensitive).
+  // Caps at 2 extras in the UI so the total comes to 3 emails per
+  // distributor (primary + 2 additional). Stored as a Postgres TEXT[]
+  // — the dedup happens at send time, not at write time, so a typo
+  // doesn't stick around and a freshly-edited list takes effect on
+  // the next order without a separate sync job.
+  emailsAtencion String[] @default([])
   telefono      String?
   descripcion   String? @db.Text
   bannerImage   String?

@@ -1326,7 +1326,8 @@ export class MarketplaceService {
       where,
       select: {
         id: true, slug: true, name: true, profileImage: true, plan: true,
-        emailAtencion: true, telefono: true, descripcion: true,
+        emailAtencion: true, emailsAtencion: true,
+        telefono: true, descripcion: true,
         bannerImage: true, direccion: true, ciudad: true, sitioWeb: true,
         cobertura: true, tipoEntrega: true, colorMarca: true,
         promoBannerImage: true, promoBannerTitle: true,
@@ -1364,6 +1365,11 @@ export class MarketplaceService {
   async updateDistributorProfile(distributorId: string, data: Partial<{
     telefono: string; descripcion: string; bannerImage: string;
     direccion: string; ciudad: string; sitioWeb: string; emailAtencion: string;
+    /** Up to 2 additional notification recipients (UI cap; the column
+     *  is unbounded). Order-placed emails fan out to emailAtencion
+     *  PLUS every entry here, deduped at send time. Empty strings
+     *  are stripped here so they don't show up as ghost recipients. */
+    emailsAtencion: string[];
     cobertura: any[]; tipoEntrega: string; colorMarca: string;
     profileImage: string;
     // Pinned promo banner — edited from /dashboard/marketplace/perfil
@@ -1379,6 +1385,24 @@ export class MarketplaceService {
     // pinned card without erroring on save.
     pinnedListingId: string | null;
   }>) {
+    // Sanitise emailsAtencion before persisting: trim, drop empties,
+    // case-insensitive dedup, cap at 5 (UI uses 2 but defending the
+    // column from a hand-crafted POST). Skip the field entirely
+    // when it isn't present so a partial-update doesn't accidentally
+    // overwrite a populated array with [].
+    if (Array.isArray(data.emailsAtencion)) {
+      const seen = new Set<string>();
+      const cleaned: string[] = [];
+      for (const e of data.emailsAtencion) {
+        const t = (e ?? '').trim();
+        if (!t) continue;
+        const key = t.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        cleaned.push(t);
+      }
+      data.emailsAtencion = cleaned.slice(0, 5);
+    }
     const result = await this.prisma.company.update({ where: { id: distributorId }, data });
     // The profile cache is keyed by whatever the caller passed in
     // (UUID OR slug). Invalidating only by UUID leaves the slug-keyed

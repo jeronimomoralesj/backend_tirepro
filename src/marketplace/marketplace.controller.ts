@@ -230,7 +230,9 @@ export class MarketplaceController {
     @Param('id') id: string,
     @Body() body: Partial<{
       telefono: string; descripcion: string; bannerImage: string;
-      direccion: string; ciudad: string; sitioWeb: string; emailAtencion: string;
+      direccion: string; ciudad: string; sitioWeb: string;
+      emailAtencion: string;
+      emailsAtencion: string[];
     }>,
   ) {
     return this.svc.updateDistributorProfile(id, body);
