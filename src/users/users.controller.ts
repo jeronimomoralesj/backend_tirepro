@@ -8,11 +8,14 @@ import {
   Param,
   Delete,
   BadRequestException,
+  ForbiddenException,
+  NotFoundException,
   HttpCode,
   HttpStatus,
   UseGuards,
   UsePipes,
   ValidationPipe,
+  Req,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UsersService } from './users.service';
@@ -38,6 +41,39 @@ export class UsersController {
   @UseGuards(JwtAuthGuard)
   getAllUsers() {
     return this.usersService.getAllUsers();
+  }
+
+  /**
+   * Fresh user record for the JWT bearer. The frontend uses this to
+   * self-heal stale `localStorage.user` blobs — if a user is promoted
+   * (e.g. admin → marketplace_tracker) without re-logging in, the
+   * sidebar + RouteGuard would otherwise keep rendering the old role
+   * until the next login. Sidebar/RouteGuard call this on mount and
+   * refresh the local cache, so the fix takes effect on the next
+   * navigation instead of requiring a logout.
+   *
+   * Authoritative read straight off the DB — never trust the JWT
+   * claim for role/plan, since both can change after the token was
+   * minted.
+   */
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  async me(@Req() req: any) {
+    const userId = req?.user?.userId;
+    if (!userId) throw new ForbiddenException('Auth required');
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true, email: true, name: true, role: true,
+        companyId: true,
+        userPlan: true,
+        company: {
+          select: { id: true, name: true, plan: true, profileImage: true },
+        },
+      },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    return user;
   }
 
   @Get('verify')
