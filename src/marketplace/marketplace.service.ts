@@ -795,6 +795,15 @@ export class MarketplaceService {
             dimension: { contains: v, mode: 'insensitive' as const },
           })),
           { distributor: { name: { contains: t, mode: 'insensitive' as const } } },
+          // Listings reference a master catalog SKU — check there too
+          // so a banda the dist hasn't denormalized into their listing
+          // (or that drifted after a catalog edit) still matches.
+          { catalog: { marca:  { contains: t, mode: 'insensitive' as const } } },
+          { catalog: { modelo: { contains: t, mode: 'insensitive' as const } } },
+          ...dimVariants.map((v) => ({
+            catalog: { dimension: { contains: v, mode: 'insensitive' as const } },
+          })),
+          { catalog: { skuRef:  { contains: t, mode: 'insensitive' as const } } },
         ];
 
         // Skip Levenshtein for purely numeric tokens — "225" is meant
