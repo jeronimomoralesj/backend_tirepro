@@ -770,41 +770,56 @@ export class MarketplaceService {
     }
     if (filters.search) {
       const raw = filters.search.trim();
-      // Build dimension variants so users can type "295/80r22.5",
-      // "295/80R22.5", "295/80 R22.5" or "295 80 R22 5" and still match
-      // however we happen to store the value.
-      const compact = raw.replace(/\s+/g, '').toUpperCase();
-      const withSpaceR = compact.replace(/R/, ' R');
-      const noSpaceR   = compact.replace(/\s+R/i, 'R');
-      const dimensionVariants = Array.from(new Set([raw, compact, withSpaceR, noSpaceR]));
+      // Tokenize. A multi-token query like "CT8 225" or "Continental
+      // HDR 295" only makes sense as AND-of-tokens — no single field
+      // would ever match the whole string, so the previous OR-on-raw
+      // returned nothing. We split, build a per-token OR across every
+      // searchable field, then AND the tokens together.
+      const tokens = raw.split(/\s+/).filter(Boolean);
 
-      const dimensionOr = dimensionVariants.map((v) => ({
-        dimension: { contains: v, mode: 'insensitive' as const },
-      }));
+      // Per-token OR clause: marca / modelo / dimension (with the same
+      // dimension variants we used to compute on the whole string) /
+      // distributor name. Alphabetic tokens of length ≥3 also get
+      // fuzzy-expanded against the live brand + model lists so typos
+      // ("michellin" → "Michelin") still hit.
+      const buildTokenOr = async (t: string) => {
+        const compact    = t.replace(/\s+/g, '').toUpperCase();
+        const withSpaceR = compact.replace(/R/, ' R');
+        const noSpaceR   = compact.replace(/\s+R/i, 'R');
+        const dimVariants = Array.from(new Set([t, compact, withSpaceR, noSpaceR]));
 
-      // Fuzzy brand + model matching — Levenshtein over every distinct
-      // marca/modelo currently on sale. Handles:
-      //   • brand typos: "techseled" → "Techshield", "michellin" → "Michelin"
-      //   • model typos: "hdr3" → "HDR2", "xtrail" → "X-Trail"
-      //
-      // Run in parallel so we add ~50-100ms total, not 2× that.
-      const [fuzzyBrands, fuzzyModels] = await Promise.all([
-        this.fuzzyMatchBrands(raw),
-        this.fuzzyMatchModels(raw),
-      ]);
+        const orClauses: any[] = [
+          { marca:  { contains: t, mode: 'insensitive' as const } },
+          { modelo: { contains: t, mode: 'insensitive' as const } },
+          ...dimVariants.map((v) => ({
+            dimension: { contains: v, mode: 'insensitive' as const },
+          })),
+          { distributor: { name: { contains: t, mode: 'insensitive' as const } } },
+        ];
 
-      where.OR = [
-        { marca:  { contains: raw, mode: 'insensitive' } },
-        ...(fuzzyBrands.length > 0
-          ? fuzzyBrands.map((b) => ({ marca: { equals: b, mode: 'insensitive' as const } }))
-          : []),
-        { modelo: { contains: raw, mode: 'insensitive' } },
-        ...(fuzzyModels.length > 0
-          ? fuzzyModels.map((m) => ({ modelo: { equals: m, mode: 'insensitive' as const } }))
-          : []),
-        ...dimensionOr,
-        { distributor: { name: { contains: raw, mode: 'insensitive' } } },
-      ];
+        // Skip Levenshtein for purely numeric tokens — "225" is meant
+        // to be a literal dimension fragment, not a fuzzy brand match.
+        if (/[a-z]/i.test(t) && t.length >= 3) {
+          const [fb, fm] = await Promise.all([
+            this.fuzzyMatchBrands(t),
+            this.fuzzyMatchModels(t),
+          ]);
+          for (const b of fb) orClauses.push({ marca:  { equals: b, mode: 'insensitive' as const } });
+          for (const m of fm) orClauses.push({ modelo: { equals: m, mode: 'insensitive' as const } });
+        }
+
+        return { OR: orClauses };
+      };
+
+      const tokenAnd = await Promise.all(tokens.map(buildTokenOr));
+
+      if (tokenAnd.length === 1) {
+        // Single token → keep using `where.OR` so the rim-sizes branch
+        // below can still merge cleanly the way it always has.
+        where.OR = tokenAnd[0].OR;
+      } else if (tokenAnd.length > 1) {
+        where.AND = tokenAnd;
+      }
     }
     // Category filter — comma-separated list of rim sizes (e.g. "17.5,19.5,22.5").
     // Matches dimensions that contain "R<rim>" (case-insensitive). The
@@ -819,8 +834,11 @@ export class MarketplaceService {
         const rimOr = rims.map((r) => ({
           dimension: { contains: `R${r}`, mode: 'insensitive' as const },
         }));
-        // If a search is also active, AND the two OR groups together.
-        if (where.OR) {
+        // Three combine cases now that the search branch may produce
+        // either `where.OR` (single token) or `where.AND` (multi-token):
+        if (where.AND) {
+          (where.AND as any[]).push({ OR: rimOr });
+        } else if (where.OR) {
           where.AND = [{ OR: where.OR }, { OR: rimOr }];
           delete where.OR;
         } else {
