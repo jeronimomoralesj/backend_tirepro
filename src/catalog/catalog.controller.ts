@@ -473,6 +473,55 @@ export class CatalogController {
     res.send(buf);
   }
 
+  /**
+   * Preview which of this distributor's subscribed catalog SKUs match
+   * a given marca + modelo-substring. The frontend uses this so the
+   * dist admin can confirm "you're about to update the ficha técnica
+   * for X SKUs" before applying.
+   *
+   * MUST be declared before `dist/:id` — same routing reason as
+   * `dist/asset-proxy`. Otherwise `:id` swallows the path.
+   */
+  @Post('dist/preview-by-banda')
+  @UseGuards(JwtAuthGuard)
+  async distPreviewByBanda(
+    @Req() req: any,
+    @Body() body: { marca: string; modeloContains: string },
+  ) {
+    const { companyId } = await this.requireDistributor(req, { roles: ['admin'] });
+    return this.catalogService.distPreviewByBanda(
+      companyId,
+      body?.marca,
+      body?.modeloContains,
+    );
+  }
+
+  /**
+   * Apply a ficha-técnica update to every subscribed catalog SKU
+   * matching marca + modelo-substring. Reuses distUpdate per row so
+   * the same field whitelist + cache invalidation applies. Identity
+   * fields (marca/modelo/dimension/skuRef/anchoMm/perfil/rin) are
+   * stripped server-side to keep per-dimension uniqueness intact.
+   */
+  @Patch('dist/bulk-by-banda')
+  @UseGuards(JwtAuthGuard)
+  async distBulkUpdateByBanda(
+    @Req() req: any,
+    @Body() body: {
+      marca: string;
+      modeloContains: string;
+      data: Record<string, unknown>;
+    },
+  ) {
+    const { companyId } = await this.requireDistributor(req, { roles: ['admin'] });
+    return this.catalogService.distBulkUpdateByBanda(
+      companyId,
+      body?.marca,
+      body?.modeloContains,
+      (body?.data ?? {}) as Record<string, any>,
+    );
+  }
+
   @Get('dist/:id')
   @UseGuards(JwtAuthGuard)
   async distGet(@Req() req: any, @Param('id') id: string) {

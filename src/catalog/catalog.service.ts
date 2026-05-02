@@ -604,6 +604,90 @@ export class CatalogService {
     }
   }
 
+  /**
+   * Preview which subscribed master-catalog SKUs match a marca +
+   * modelo-substring under one distributor. Powers the "Editar ficha
+   * por banda" modal — same pattern as the listings bulk-by-banda
+   * but for the technical-sheet fields on TireMasterCatalog instead
+   * of the dist-side DistributorListing.
+   */
+  async distPreviewByBanda(
+    companyId: string,
+    marca: string,
+    modeloContains: string,
+  ) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    if (!marca?.trim()) throw new BadRequestException('marca is required');
+    if (!modeloContains?.trim()) throw new BadRequestException('modeloContains is required');
+    const subs = await this.prisma.catalogSubscription.findMany({
+      where: { companyId },
+      select: {
+        catalog: {
+          select: { id: true, marca: true, modelo: true, dimension: true, skuRef: true },
+        },
+      },
+    });
+    const m = marca.trim().toLowerCase();
+    const md = modeloContains.trim().toLowerCase();
+    return subs
+      .map((s) => s.catalog)
+      .filter((c): c is NonNullable<typeof c> => !!c)
+      .filter((c) =>
+        c.marca?.toLowerCase() === m &&
+        c.modelo?.toLowerCase().includes(md),
+      )
+      .sort((a, b) => (a.dimension ?? '').localeCompare(b.dimension ?? ''));
+  }
+
+  /**
+   * Apply the same ficha-técnica fields to every subscribed SKU
+   * matching marca + modelo-substring. Reuses the per-SKU update path
+   * so the same field whitelist + cache invalidation rules apply. The
+   * dist can only update SKUs they're subscribed to (enforced by
+   * requireSubscription inside distUpdate).
+   *
+   * Identity fields (marca, modelo, dimension, skuRef, anchoMm,
+   * perfil, rin) are stripped from the payload regardless of what
+   * the caller sends — those are unique per-dimension and would
+   * corrupt the catalog if mass-overwritten.
+   */
+  async distBulkUpdateByBanda(
+    companyId: string,
+    marca: string,
+    modeloContains: string,
+    data: Record<string, any>,
+  ) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    if (!marca?.trim()) throw new BadRequestException('marca is required');
+    if (!modeloContains?.trim()) throw new BadRequestException('modeloContains is required');
+
+    // Strip per-dimension identity fields so a bulk update can't
+    // accidentally overwrite the unique skuRef / dimension / etc. of
+    // every variant in the banda.
+    const safeData = { ...(data ?? {}) };
+    for (const k of ['marca', 'modelo', 'dimension', 'skuRef', 'anchoMm', 'perfil', 'rin']) {
+      delete safeData[k];
+    }
+    if (Object.keys(safeData).length === 0) {
+      throw new BadRequestException('Pasa al menos un campo de ficha técnica para aplicar');
+    }
+
+    const matches = await this.distPreviewByBanda(companyId, marca, modeloContains);
+    if (matches.length === 0) return { updated: 0, ids: [] };
+
+    const updated: string[] = [];
+    const errors: Array<{ id: string; reason: string }> = [];
+    for (const m of matches) {
+      try {
+        await this.distUpdate(m.id, companyId, safeData);
+        updated.push(m.id);
+      } catch (e: any) {
+        errors.push({ id: m.id, reason: e?.message?.slice(0, 200) ?? 'Error' });
+      }
+    }
+    return { updated: updated.length, ids: updated, errors };
+  }
+
   async adminList(params: { query?: string; marca?: string; dimension?: string; categoria?: string; page: number; pageSize: number }) {
     const where: any = {};
     if (params.marca) where.marca = { equals: params.marca, mode: 'insensitive' };
