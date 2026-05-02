@@ -10,17 +10,24 @@ import {
   UseGuards,
   BadRequestException,
 } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { PaymentsService } from './payments.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @Controller('payments')
 export class PaymentsController {
-  constructor(private readonly svc: PaymentsService) {}
+  constructor(
+    private readonly svc: PaymentsService,
+    private readonly jwt: JwtService,
+  ) {}
 
   // ===========================================================================
   // BUYER CHECKOUT — create orders + payment, hand back Wompi widget config.
   // Public endpoint: guest checkout is allowed; if there's a JWT we read
-  // the userId off it.
+  // the userId off it so the order shows up under "Mis pedidos" in the
+  // buyer's profile (was previously dropped — req.user was undefined
+  // here because the route had no guard, so userId silently saved as
+  // null even for logged-in buyers).
   // ===========================================================================
 
   @Post('wompi/checkout')
@@ -39,9 +46,31 @@ export class PaymentsController {
     if (!body.redirectBaseUrl?.startsWith('http')) {
       throw new BadRequestException('redirectBaseUrl required');
     }
+
+    // Optional auth: try to decode the Bearer token if present, but
+    // don't reject the call if it's missing or invalid — guest
+    // checkout still has to work. Any verification failure (bad
+    // signature, expired) silently falls back to null userId.
+    let userId: string | undefined;
+    const authHeader: string | undefined = req?.headers?.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const payload = await this.jwt.verifyAsync(authHeader.slice(7));
+        // The JWT strategy uses `sub` for the user id. Match that
+        // here — pulling from `payload.sub`, not `payload.userId` or
+        // `payload.id`, so this stays consistent with the rest of
+        // the auth surface.
+        if (payload?.sub && typeof payload.sub === 'string') {
+          userId = payload.sub;
+        }
+      } catch {
+        /* invalid / expired token — proceed as guest */
+      }
+    }
+
     return this.svc.createCheckout({
       ...body,
-      userId: req?.user?.id,
+      userId,
     });
   }
 
