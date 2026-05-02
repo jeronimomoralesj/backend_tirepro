@@ -973,6 +973,45 @@ export class CatalogService {
       }),
     ]);
 
+    // Image fallback: for any SKU the dist hasn't uploaded per-catalog
+    // images for, surface the cover from their matching marketplace
+    // listing instead. Saves the dist from re-uploading the same
+    // photos twice (once on /dashboard/marketplace/productos, once on
+    // /dashboard/catalogoSku). The synthetic image id starts with
+    // `listing-cover:` so the catalog image-management UI knows not
+    // to attempt a DELETE — there's no real CatalogImage row behind it.
+    const itemsWithoutImage = items.filter((s) => !s.images || s.images.length === 0);
+    if (itemsWithoutImage.length > 0) {
+      const catalogIds = itemsWithoutImage.map((s) => s.id);
+      const listings = await this.prisma.distributorListing.findMany({
+        where: {
+          distributorId: params.companyId,
+          catalogId:     { in: catalogIds },
+          isActive:      true,
+        },
+        select: { catalogId: true, imageUrls: true, coverIndex: true, updatedAt: true },
+        orderBy: { updatedAt: 'desc' }, // freshest cover wins for duplicates
+      });
+      const coverByCatalogId = new Map<string, string>();
+      for (const l of listings) {
+        if (!l.catalogId || coverByCatalogId.has(l.catalogId)) continue;
+        const arr: unknown = l.imageUrls;
+        const list = Array.isArray(arr) ? arr.filter((u): u is string => typeof u === 'string' && u.length > 0) : [];
+        if (list.length === 0) continue;
+        const cover = list[l.coverIndex ?? 0] ?? list[0];
+        coverByCatalogId.set(l.catalogId, cover);
+      }
+      for (const s of itemsWithoutImage) {
+        const url = coverByCatalogId.get(s.id);
+        if (!url) continue;
+        // Cast through unknown — Prisma's generated CatalogImage shape
+        // has more fields than we synthesise, but the frontend only
+        // reads { id, url, coverIndex } so the contract stays valid.
+        (s as unknown as { images: Array<{ id: string; url: string; coverIndex: number }> })
+          .images = [{ id: `listing-cover:${s.id}`, url, coverIndex: 0 }];
+      }
+    }
+
     return { total, page, pageSize, items };
   }
 
@@ -1003,6 +1042,36 @@ export class CatalogService {
       videos: Array<Record<string, unknown>>;
       subscriptions: Array<{ createdAt: Date }>;
     };
+    // Same image-fallback rule as distSearch but surfacing every
+    // marketplace image (not just the cover) so the gallery feels
+    // populated. Synthetic ids `listing-image:<idx>` so the
+    // dist-image-delete UI can identify them and skip the API call.
+    let images = (rest as any).images as Array<{ id: string; url: string; coverIndex: number }>;
+    if (!images || images.length === 0) {
+      const listing = await this.prisma.distributorListing.findFirst({
+        where: { distributorId: companyId, catalogId, isActive: true },
+        orderBy: { updatedAt: 'desc' },
+        select: { imageUrls: true, coverIndex: true },
+      });
+      if (listing) {
+        const arr: unknown = listing.imageUrls;
+        const urls = Array.isArray(arr) ? arr.filter((u): u is string => typeof u === 'string' && u.length > 0) : [];
+        if (urls.length > 0) {
+          // Reorder so the listing's cover is first — same convention
+          // the frontend expects (`images[0]` is the cover).
+          const coverIdx = listing.coverIndex ?? 0;
+          const ordered = coverIdx > 0 && coverIdx < urls.length
+            ? [urls[coverIdx], ...urls.filter((_, i) => i !== coverIdx)]
+            : urls;
+          images = ordered.map((url, i) => ({
+            id:         `listing-image:${i}`,
+            url,
+            coverIndex: i,
+          }));
+          (rest as any).images = images;
+        }
+      }
+    }
     return {
       ...rest,
       video:      videos?.[0] ?? null,

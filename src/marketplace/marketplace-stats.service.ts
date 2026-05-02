@@ -338,6 +338,32 @@ export class MarketplaceStatsService {
   // doesn't exist we silently no-op (don't 404 a tracking call —
   // it's a public endpoint and we don't want to leak listing IDs).
   // ---------------------------------------------------------------------------
+  // Filtered out before persistence so the dist's "vistas" number
+  // means "real humans + AI/search assistants browsing the page",
+  // not "every crawler that hits a URL". Lowercase substring match
+  // is enough — UAs are wildly inconsistent and any bot serious
+  // enough to spoof its UA would also spoof a different one.
+  //
+  // Note: GPTBot / ClaudeBot / PerplexityBot are intentionally NOT
+  // here. We DO want their visits counted because that's what
+  // proves a dist's storefront is being cited by AI engines —
+  // that's a signal the dist will care about. The list below is
+  // pure crawl-budget-burning noise (search-engine indexers,
+  // SEO scanners, link checkers).
+  private readonly BOT_UA_FRAGMENTS = [
+    'googlebot', 'bingbot', 'yandexbot', 'duckduckbot', 'slurp',
+    'baiduspider', 'sogou', 'exabot',
+    'ahrefsbot', 'semrushbot', 'mj12bot', 'dotbot', 'blexbot',
+    'screaming frog', 'pingdom', 'lighthouse', 'pagespeed', 'gtmetrix',
+    'headlesschrome', 'phantomjs', 'puppeteer', 'playwright',
+    'curl/', 'wget/', 'python-requests', 'go-http-client', 'okhttp',
+  ];
+  private isBotUserAgent(ua: string | null | undefined): boolean {
+    if (!ua) return true; // No UA at all is itself suspicious.
+    const lower = ua.toLowerCase();
+    return this.BOT_UA_FRAGMENTS.some((f) => lower.includes(f));
+  }
+
   async recordView(input: {
     targetType: 'product' | 'distributor';
     targetId: string;
@@ -351,6 +377,10 @@ export class MarketplaceStatsService {
     const { targetType, targetId } = input;
     if (targetType !== 'product' && targetType !== 'distributor') return;
     if (!targetId) return;
+    // Drop bot/crawler hits before they touch the DB. Distributor's
+    // analytics card has to mean something — if a curl hits the page
+    // it shouldn't show up as a "view".
+    if (this.isBotUserAgent(input.userAgent)) return;
 
     let distributorId: string | null = null;
     if (targetType === 'product') {
