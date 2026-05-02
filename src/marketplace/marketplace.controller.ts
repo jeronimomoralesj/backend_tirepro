@@ -1,9 +1,11 @@
 import {
   Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards,
-  UseInterceptors, UploadedFile, Headers, Header,
+  UseInterceptors, UploadedFile, Headers, Header, Req, ForbiddenException,
+  HttpCode,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MarketplaceService } from './marketplace.service';
+import { MarketplaceStatsService } from './marketplace-stats.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminPasswordGuard } from '../auth/guards/admin-password.guard';
 import { S3Service } from '../companies/s3.service';
@@ -14,10 +16,80 @@ import { WompiService } from './wompi.service';
 export class MarketplaceController {
   constructor(
     private readonly svc: MarketplaceService,
+    private readonly stats: MarketplaceStatsService,
     private readonly s3: S3Service,
     private readonly plateLookup: PlateLookupService,
     private readonly wompi: WompiService,
   ) {}
+
+  // ===========================================================================
+  // VIEW TRACKING + DISTRIBUTOR STATS
+  // ===========================================================================
+
+  /**
+   * Public, fire-and-forget view tracking endpoint. Browser posts to
+   * a Next.js Vercel route handler that enriches the body with geo
+   * (x-vercel-ip-* headers) and forwards here. We persist the row
+   * and return 204 — no data echoed back. Never errors out: a write
+   * failure just drops the event silently so the browser never sees
+   * a 500 on what's effectively analytics.
+   */
+  @Post('track/view')
+  @HttpCode(204)
+  async trackView(
+    @Req() req: any,
+    @Body() body: {
+      targetType?: 'product' | 'distributor';
+      targetId?: string;
+      country?: string | null;
+      region?: string | null;
+      city?: string | null;
+    },
+  ): Promise<void> {
+    const targetType = body?.targetType;
+    const targetId   = body?.targetId;
+    if (!targetType || !targetId) return;
+    const ip = (req.headers?.['x-forwarded-for'] as string | undefined)
+      ?.split(',')[0]?.trim()
+      ?? req.ip
+      ?? null;
+    const userAgent = (req.headers?.['user-agent'] as string | undefined) ?? null;
+    // userId may be present if the request came from a logged-in user;
+    // we don't require auth, so anonymous visitors track too. The
+    // frontend forwards the JWT's userId in the body when available.
+    await this.stats.recordView({
+      targetType, targetId,
+      ip, userAgent,
+      country: body?.country ?? null,
+      region:  body?.region  ?? null,
+      city:    body?.city    ?? null,
+    });
+  }
+
+  /** Distributor stats overview. Auth → companyId from JWT.
+   *  ?days=30 controls the windowed metrics (top products, top viewed). */
+  @Get('dist/stats/overview')
+  @UseGuards(JwtAuthGuard)
+  async distStatsOverview(@Req() req: any, @Query('days') days?: string) {
+    const companyId = req.user?.companyId;
+    if (!companyId) throw new ForbiddenException('Auth required');
+    const n = days ? Math.max(1, Math.min(365, parseInt(days, 10) || 30)) : 30;
+    return this.stats.overview(companyId, n);
+  }
+
+  /** Per-product detail — views over time, geo breakdown, conversion. */
+  @Get('dist/stats/product/:listingId')
+  @UseGuards(JwtAuthGuard)
+  async distStatsProduct(
+    @Req() req: any,
+    @Param('listingId') listingId: string,
+    @Query('days') days?: string,
+  ) {
+    const companyId = req.user?.companyId;
+    if (!companyId) throw new ForbiddenException('Auth required');
+    const n = days ? Math.max(1, Math.min(365, parseInt(days, 10) || 30)) : 30;
+    return this.stats.productDetail(companyId, listingId, n);
+  }
 
   // ===========================================================================
   // BID REQUESTS — Pro company

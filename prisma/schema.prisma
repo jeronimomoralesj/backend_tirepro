@@ -359,6 +359,9 @@ model Company {
   paymentAccount  DistributorPaymentAccount?
   receivedPayouts Payout[]                   @relation("DistributorPayouts")
 
+  // Marketplace analytics — view events for storefront + product pages
+  marketplaceViews MarketplaceView[] @relation("MarketplaceViews")
+
   // Catalog — per-distributor SKU photos + per-download events
   catalogImages        CatalogImage[]
   catalogDownloads     CatalogDownload[]
@@ -2081,4 +2084,51 @@ model Payout {
 
   @@index([distributorId, status])
   @@map("marketplace_payouts")
+}
+
+// =============================================================================
+// MARKETPLACE VIEW EVENTS
+// One row per page-view of either a distributor storefront page or a
+// product listing page. Powers the distributor stats dashboard:
+//   - profile-page view counts over time
+//   - per-product view counts + geographic breakdown
+//   - top-viewed products
+//
+// Geo (country / region / city) is best-effort, populated by the
+// frontend route handler reading Vercel edge geo headers (x-vercel-ip-*).
+// Will be null on local dev or non-Vercel deploys.
+//
+// Polymorphic by `targetType`:
+//   - 'product'     → targetId = DistributorListing.id, distributorId
+//                     denormalised from that listing's distributorId.
+//   - 'distributor' → targetId = Company.id, distributorId = same.
+//
+// distributorId is denormalised so the dashboard can do a single
+// indexed scan ("all views for my company in the last 30 days") without
+// needing to join through DistributorListing every time.
+// =============================================================================
+model MarketplaceView {
+  id            String   @id @default(uuid())
+  targetType    String   // 'product' | 'distributor'
+  targetId      String
+  distributorId String
+
+  // Visitor context — best-effort
+  userId    String?
+  ip        String?
+  userAgent String?
+
+  // Geo from edge headers
+  country String? // ISO-2 ("CO", "US", …)
+  region  String?
+  city    String?
+
+  createdAt DateTime @default(now())
+
+  distributor Company @relation("MarketplaceViews", fields: [distributorId], references: [id])
+
+  @@index([distributorId, targetType, createdAt])
+  @@index([targetId, createdAt])
+  @@index([distributorId, createdAt])
+  @@map("marketplace_views")
 }

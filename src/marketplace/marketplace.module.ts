@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { MarketplaceController } from './marketplace.controller';
 import { MarketplaceService } from './marketplace.service';
+import { MarketplaceStatsService } from './marketplace-stats.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { S3Service } from '../companies/s3.service';
 import { ConfigModule } from '@nestjs/config';
@@ -12,7 +13,7 @@ import { AuthModule } from '../auth/auth.module';
 @Module({
   imports: [PrismaModule, ConfigModule, forwardRef(() => AuthModule)],
   controllers: [MarketplaceController],
-  providers: [MarketplaceService, S3Service, EmailService, PlateLookupService, WompiService],
-  exports: [MarketplaceService],
+  providers: [MarketplaceService, MarketplaceStatsService, S3Service, EmailService, PlateLookupService, WompiService],
+  exports: [MarketplaceService, MarketplaceStatsService],
 })
 export class MarketplaceModule {}
