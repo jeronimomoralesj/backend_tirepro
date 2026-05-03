@@ -6,6 +6,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MarketplaceService } from './marketplace.service';
 import { MarketplaceStatsService } from './marketplace-stats.service';
+import { RetailSourceService } from './retail-source.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminPasswordGuard } from '../auth/guards/admin-password.guard';
 import { S3Service } from '../companies/s3.service';
@@ -17,6 +18,7 @@ export class MarketplaceController {
   constructor(
     private readonly svc: MarketplaceService,
     private readonly stats: MarketplaceStatsService,
+    private readonly retail: RetailSourceService,
     private readonly s3: S3Service,
     private readonly plateLookup: PlateLookupService,
     private readonly wompi: WompiService,
@@ -474,6 +476,60 @@ export class MarketplaceController {
     @Body() body: { email: string; rating: number; comment?: string },
   ) {
     return this.svc.submitOrderSurvey(id, body.email, body.rating, body.comment);
+  }
+
+  // ===========================================================================
+  // RETAIL SOURCE — distributor pastes a public retailer product page,
+  // we scrape price + per-store stock daily, buyers can pick up there.
+  // ===========================================================================
+
+  /** Distributor view: full source + every point (incl. zero-stock).
+   *  Returns null when no source is connected to this listing yet. */
+  @Get('listings/:id/retail-source')
+  @UseGuards(JwtAuthGuard)
+  async getRetailSource(@Req() req: any, @Param('id') id: string) {
+    const companyId = req.user?.companyId;
+    if (!companyId) throw new ForbiddenException('Auth required');
+    return this.retail.getForDist(id, companyId);
+  }
+
+  /** Connect or replace the retailer URL. Triggers an immediate
+   *  scrape so the dist sees the parsed result inline. */
+  @Post('listings/:id/retail-source')
+  @UseGuards(JwtAuthGuard)
+  async upsertRetailSource(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() body: { url: string; priceHtmlSnippet?: string; stockHtmlSnippet?: string },
+  ) {
+    const companyId = req.user?.companyId;
+    if (!companyId) throw new ForbiddenException('Auth required');
+    return this.retail.upsertForDist(id, companyId, body);
+  }
+
+  /** Manual re-scrape from the dist UI. */
+  @Post('listings/:id/retail-source/refresh')
+  @UseGuards(JwtAuthGuard)
+  async refreshRetailSource(@Req() req: any, @Param('id') id: string) {
+    const companyId = req.user?.companyId;
+    if (!companyId) throw new ForbiddenException('Auth required');
+    return this.retail.refreshForDist(id, companyId);
+  }
+
+  @Delete('listings/:id/retail-source')
+  @UseGuards(JwtAuthGuard)
+  async deleteRetailSource(@Req() req: any, @Param('id') id: string) {
+    const companyId = req.user?.companyId;
+    if (!companyId) throw new ForbiddenException('Auth required');
+    return this.retail.deleteForDist(id, companyId);
+  }
+
+  /** Public buyer-facing view — only points with stock > 0, grouped
+   *  by city. Returns null when the listing has no source connected
+   *  or the source is inactive. */
+  @Get('listings/:id/pickup-points')
+  async getListingPickupPoints(@Param('id') id: string) {
+    return this.retail.getForBuyer(id);
   }
 
   // Buyer requests a return on a delivered/shipped order

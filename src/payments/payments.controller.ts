@@ -32,7 +32,13 @@ export class PaymentsController {
 
   @Post('wompi/checkout')
   async checkout(@Req() req: any, @Body() body: {
-    items: Array<{ listingId: string; quantity: number }>;
+    items: Array<{
+      listingId: string;
+      quantity: number;
+      /** Optional pickup-point selection per line. When set, that
+       *  line ships in `pickup` mode against the named retail point. */
+      pickupPointId?: string;
+    }>;
     buyerName: string;
     buyerEmail: string;
     buyerPhone?: string;

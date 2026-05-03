@@ -124,6 +124,9 @@ export class PaymentsService {
     items: Array<{
       listingId: string;
       quantity: number;
+      /** Optional pickup-point selection per line. When set, the
+       *  whole order line ships in pickup mode against that point. */
+      pickupPointId?: string;
     }>;
     userId?: string;
     buyerName: string;
@@ -159,13 +162,41 @@ export class PaymentsService {
       }
     }
 
+    // Resolve any pickup-point selections up-front. We allow the
+    // frontend to send pickupPointId per line; each one is validated
+    // here against the listing's RetailSource so a malformed payload
+    // can't attach to a foreign distributor's store.
+    const pickupRequests = input.items
+      .map((item) => ({ listingId: item.listingId, pickupPointId: item.pickupPointId }))
+      .filter((p) => !!p.pickupPointId);
+    const pickupPointMap = new Map<string, { id: string; name: string; city: string; cityDisplay: string | null }>();
+    if (pickupRequests.length > 0) {
+      const pps = await this.prisma.retailPickupPoint.findMany({
+        where: { id: { in: pickupRequests.map((p) => p.pickupPointId!) } },
+        include: { source: { select: { listingId: true, isActive: true } } },
+      });
+      for (const req of pickupRequests) {
+        const pp = pps.find((x) => x.id === req.pickupPointId);
+        if (!pp || !pp.source?.isActive || pp.source.listingId !== req.listingId) {
+          throw new BadRequestException('Punto de recogida no válido para este producto');
+        }
+        if (pp.stockUnits <= 0) {
+          throw new BadRequestException(`${pp.name} no tiene unidades disponibles ahora`);
+        }
+        pickupPointMap.set(req.listingId, {
+          id: pp.id, name: pp.name, city: pp.city, cityDisplay: pp.cityDisplay,
+        });
+      }
+    }
+
     // Build per-order totals + the aggregate Payment row.
     const orderInputs = input.items.map((item) => {
       const l = listings.find((x) => x.id === item.listingId)!;
       const totalCop = l.precioCop * item.quantity;
       const feeCop   = Math.round(totalCop * FEE_RATE);
       const netCop   = totalCop - feeCop;
-      return { listing: l, quantity: item.quantity, totalCop, feeCop, netCop };
+      const pickup   = item.pickupPointId ? pickupPointMap.get(item.listingId) ?? null : null;
+      return { listing: l, quantity: item.quantity, totalCop, feeCop, netCop, pickup };
     });
     const grossCop = orderInputs.reduce((s, o) => s + o.totalCop, 0);
     const feeCop   = orderInputs.reduce((s, o) => s + o.feeCop,   0);
@@ -209,6 +240,12 @@ export class PaymentsService {
           buyerCity:      input.buyerCity ?? null,
           buyerCompany:   input.buyerCompany ?? null,
           notas:          input.notas ?? null,
+          // Pickup metadata is denormalised onto the order so a renamed
+          // / removed point doesn't break the order detail later.
+          deliveryMode:   o.pickup ? 'pickup' : 'domicilio',
+          pickupPointId:  o.pickup?.id ?? null,
+          pickupPointName: o.pickup?.name ?? null,
+          pickupCity:     o.pickup?.cityDisplay ?? o.pickup?.city ?? null,
           statusHistory: [{ status: 'pago_pendiente', at: new Date().toISOString() }] as any,
         },
         include: { listing: true, distributor: { select: { name: true } } },

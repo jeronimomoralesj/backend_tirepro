@@ -1766,8 +1766,13 @@ model DistributorListing {
   distributor Company            @relation("DistributorListings", fields: [distributorId], references: [id])
   catalog     TireMasterCatalog? @relation(fields: [catalogId], references: [id])
 
-  reviews DistributorReview[]
-  orders  MarketplaceOrder[]
+  reviews      DistributorReview[]
+  orders       MarketplaceOrder[]
+  // Optional connection to an external retailer's product page —
+  // when present, the daily cron re-scrapes price + per-store stock
+  // so buyers can choose to pick up at one of the retailer's
+  // physical locations. One source per listing.
+  retailSource RetailSource?
 
   @@index([distributorId, isActive])
   @@index([dimension, isActive])
@@ -1855,6 +1860,18 @@ model MarketplaceOrder {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Delivery mode chosen at checkout. "domicilio" = ship to address;
+  // "pickup" = buyer picks up at a partner retail store. Free-form
+  // string so we can add modes later (e.g. "in_store_pickup_dist")
+  // without a schema migration.
+  deliveryMode    String  @default("domicilio")
+  // When deliveryMode == "pickup", references the retail point. We
+  // also denormalise the name/city onto the order so a renamed or
+  // delisted store doesn't break the order detail months later.
+  pickupPointId   String?
+  pickupPointName String?
+  pickupCity      String?
+
   listing     DistributorListing @relation(fields: [listingId], references: [id])
   distributor Company            @relation("MarketplaceOrders", fields: [distributorId], references: [id])
   user        User?              @relation(fields: [userId], references: [id])
@@ -1863,6 +1880,11 @@ model MarketplaceOrder {
   // Post-delivery survey — at most one per order (UNIQUE on orderId).
   // Created by the buyer's tracking page once status hits 'entregado'.
   survey      OrderSurvey?
+  // Soft-FK to RetailPickupPoint when deliveryMode == "pickup". NOT a
+  // hard FK because we want the order detail to survive even if the
+  // pickup point gets deleted later (e.g. retailer closes a store).
+  // Resolution: app reads pickupPointId optimistically; if null /
+  // missing, falls back to the denormalised name + city.
 
   @@index([distributorId, status])
   @@index([userId])
@@ -2174,4 +2196,76 @@ model OrderSurvey {
 
   @@index([userId])
   @@map("order_surveys")
+}
+
+// =============================================================================
+// RETAIL SOURCE — external retailer product link for inventory + pickup
+//
+// A distributor (e.g. Merquellantas) has alliances with national retailers
+// (Alkosto, Ktronix, etc.) that hold the same SKU in their physical stores
+// across Colombia. This model tracks the public product page on the
+// retailer's site so a daily cron can re-scrape price + per-store stock.
+// Buyers then get the option to pick up at one of those stores instead
+// of waiting for shipping.
+//
+// One source per listing (UNIQUE listingId). domain is normalised
+// ('alkosto.com', 'ktronix.com.co'…) so the scraper can dispatch to a
+// domain-specific parser. priceHtmlSnippet / stockHtmlSnippet are kept
+// for the dist's reference (visible in the admin UI) and to ease
+// future generic-selector parsing — current parsers are domain-specific.
+// =============================================================================
+model RetailSource {
+  id        String  @id @default(uuid())
+  listingId String  @unique
+  url       String
+  domain    String?
+
+  // User-pasted HTML fragments — UI breadcrumb only. Not parsed today;
+  // kept so a future "generic" parser (or a debug screen) can look at
+  // exactly what the dist saw on the retailer's page when they connected
+  // the link.
+  priceHtmlSnippet String? @db.Text
+  stockHtmlSnippet String? @db.Text
+
+  // Refresh state
+  lastPriceCop  Int?
+  lastFetchedAt DateTime?
+  lastSuccessAt DateTime?
+  lastError     String?  @db.Text
+  isActive      Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listing      DistributorListing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  pickupPoints RetailPickupPoint[]
+
+  @@index([isActive])
+  @@map("retail_sources")
+}
+
+// One row per physical store on the retailer's page. Refreshed daily
+// from the cron (insert / update by externalId). Inactive points
+// (the retailer removed the store) get stockUnits=0 but the row stays
+// so historical orders that referenced it can still be displayed.
+model RetailPickupPoint {
+  id           String  @id @default(uuid())
+  sourceId     String
+  externalId   String? // e.g. "AKB30" (alkosto's internal store id)
+  name         String
+  address      String?
+  city         String  // normalised lowercase ("bogota", "medellin", …)
+  cityDisplay  String? // pretty form for the buyer UI ("Bogotá")
+  lat          Float?
+  lng          Float?
+  hours        String?
+  stockUnits   Int     @default(0)
+  refreshedAt  DateTime @default(now())
+
+  source RetailSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, externalId])
+  @@index([sourceId, city])
+  @@index([sourceId, stockUnits])
+  @@map("retail_pickup_points")
 }
