@@ -787,16 +787,27 @@ export class MarketplaceService {
     // objects (which never matches) and lumped every domicilio distributor
     // into every city.
     if (filters.ciudad) {
+      // Normalize both sides for diacritic + case insensitivity. Stored
+      // city names from the cobertura editor are user-entered free text —
+      // some distributors save "Bogotá" with the accent, others "Bogota"
+      // without — and the frontend always sends the canonical accented
+      // form. Postgres `unaccent()` would be cleaner but needs the
+      // extension installed; `translate()` is always available and
+      // covers every Spanish vowel + the ñ.
+      const ACCENT_FROM = 'áéíóúüñÁÉÍÓÚÜÑ';
+      const ACCENT_TO   = 'aeiouunAEIOUUN';
       const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
         SELECT id FROM "Company"
         WHERE
           "cobertura" IS NULL
           OR jsonb_typeof("cobertura") <> 'array'
           OR jsonb_array_length("cobertura") = 0
-          OR LOWER(COALESCE("ciudad", '')) = LOWER(${filters.ciudad})
+          OR LOWER(translate(COALESCE("ciudad", ''), ${ACCENT_FROM}, ${ACCENT_TO}))
+             = LOWER(translate(${filters.ciudad}, ${ACCENT_FROM}, ${ACCENT_TO}))
           OR EXISTS (
             SELECT 1 FROM jsonb_array_elements("cobertura") AS c
-            WHERE LOWER(COALESCE(c->>'ciudad', '')) = LOWER(${filters.ciudad})
+            WHERE LOWER(translate(COALESCE(c->>'ciudad', ''), ${ACCENT_FROM}, ${ACCENT_TO}))
+               = LOWER(translate(${filters.ciudad}, ${ACCENT_FROM}, ${ACCENT_TO}))
           )
       `;
       let allowed = rows.map((r) => r.id);
