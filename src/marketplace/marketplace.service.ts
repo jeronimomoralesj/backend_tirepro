@@ -622,7 +622,7 @@ export class MarketplaceService {
   private readonly adminBrandFields = [
     'name', 'slug', 'logoUrl', 'country', 'headquarters', 'foundedYear',
     'website', 'description', 'parentCompany', 'tier', 'sourceUrl',
-    'primaryColor', 'accentColor', 'heroImageUrl', 'tagline', 'published',
+    'primaryColor', 'accentColor', 'heroImageUrl', 'videoUrl', 'tagline', 'published',
   ];
 
   private pickBrand(data: Record<string, any>) {

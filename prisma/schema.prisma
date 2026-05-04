@@ -1950,6 +1950,10 @@ model BrandInfo {
   primaryColor String? // hex like "#E30613" — hero/accents tint
   accentColor  String? // hex — secondary color for badges/ctas
   heroImageUrl String? // optional background banner
+  // Loop video shown in the brand hero. Should be a direct .mp4 (or .webm)
+  // URL — embeds (YouTube/Vimeo) are not supported on purpose because the
+  // page renders it as a muted autoplay <video> background.
+  videoUrl     String?
   tagline      String? // short marketing line under the brand name
   published    Boolean  @default(true) // hide unfinished brand pages
   createdAt    DateTime @default(now())
