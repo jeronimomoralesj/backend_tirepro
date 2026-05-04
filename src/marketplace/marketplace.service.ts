@@ -596,7 +596,15 @@ export class MarketplaceService {
 
     const listings = await this.prisma.distributorListing.findMany({
       where: { isActive: true, marca: { equals: brand.name, mode: 'insensitive' } },
-      orderBy: [{ imageQualityScore: 'desc' }, { createdAt: 'desc' }],
+      // Primary sort by inventoryRank desc — the Postgres-generated
+      // LEAST(cantidadDisponible, 50) column. Listings with stock land at
+      // the top, zero-stock items always sink to the bottom (rank=0).
+      // Image quality + recency break ties between equally-stocked rows.
+      orderBy: [
+        { inventoryRank: 'desc' },
+        { imageQualityScore: 'desc' },
+        { createdAt: 'desc' },
+      ],
       take: 24,
       include: {
         distributor: { select: { id: true, slug: true, name: true, profileImage: true } },
