@@ -763,13 +763,45 @@ export class MarketplaceService {
     if (filters.marca) where.marca = { contains: filters.marca, mode: 'insensitive' };
     if (filters.eje) where.eje = filters.eje;
     if (filters.tipo) where.tipo = filters.tipo;
-    if (filters.distributorId) where.distributorId = filters.distributorId;
 
-    // City coverage filter — only show listings from distributors that cover this city
+    // City coverage filter. Inclusive logic — a distributor counts as
+    // covering the city if ANY of these hold:
+    //   1. They have a physical pickup point in the city (cobertura is an
+    //      array of {ciudad, direccion, lat, lng} objects, looked up via
+    //      a raw JSONB predicate since Prisma's array_contains can't peek
+    //      into nested object fields).
+    //   2. Their primary ciudad equals the filter (string equality).
+    //   3. They ship by domicilio or ambos — national delivery is the
+    //      default business model on the marketplace, so a distributor
+    //      that ships nationally counts for every city even without a
+    //      physical pickup point there.
+    // The previous filter (`array_contains: [filters.ciudad]`) compared
+    // a bare string against an array of objects and never matched, which
+    // is why every /marketplace/ciudad/<slug> page was empty.
     if (filters.ciudad) {
-      where.distributor = {
-        cobertura: { array_contains: [filters.ciudad] },
-      };
+      const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM "Company"
+        WHERE
+          "tipoEntrega" IN ('domicilio', 'ambos')
+          OR LOWER(COALESCE("ciudad", '')) = LOWER(${filters.ciudad})
+          OR (
+            "cobertura" IS NOT NULL
+            AND jsonb_typeof("cobertura") = 'array'
+            AND EXISTS (
+              SELECT 1 FROM jsonb_array_elements("cobertura") AS c
+              WHERE LOWER(COALESCE(c->>'ciudad', '')) = LOWER(${filters.ciudad})
+            )
+          )
+      `;
+      let allowed = rows.map((r) => r.id);
+      // If a specific distributor was also requested, intersect — only
+      // hits when both the distributor exists AND covers the city.
+      if (filters.distributorId) {
+        allowed = allowed.includes(filters.distributorId) ? [filters.distributorId] : [];
+      }
+      where.distributorId = { in: allowed };
+    } else if (filters.distributorId) {
+      where.distributorId = filters.distributorId;
     }
     if (filters.minPrice || filters.maxPrice) {
       where.precioCop = {};
