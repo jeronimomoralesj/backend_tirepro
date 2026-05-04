@@ -51,6 +51,13 @@ export class S3Service {
           Key: key,
           Body: buffer,
           ContentType: contentType,
+          // Long-lived cache. Object keys include a timestamp + random
+          // suffix so a "new" image is always at a new URL — the file at
+          // any given URL is effectively immutable. Google Image / Merchant
+          // Center / Bing all use Cache-Control to decide how often to
+          // re-fetch; without it they treat the image as ephemeral and
+          // can refuse to surface it in Shopping results.
+          CacheControl: 'public, max-age=31536000, immutable',
         }),
       );
     } catch (err) {
@@ -77,6 +84,7 @@ export class S3Service {
           Key: key,
           Body: buffer,
           ContentType: contentType,
+          CacheControl: 'public, max-age=31536000, immutable',
         }),
       );
     } catch (err) {
@@ -119,6 +127,7 @@ export class S3Service {
           Key: key,
           Body: buffer,
           ContentType: contentType,
+          CacheControl: 'public, max-age=31536000, immutable',
         }),
       );
     } catch (err) {
@@ -168,6 +177,7 @@ export class S3Service {
           Key: key,
           Body: buffer,
           ContentType: contentType,
+          CacheControl: 'public, max-age=31536000, immutable',
         }),
       );
     } catch (err) {

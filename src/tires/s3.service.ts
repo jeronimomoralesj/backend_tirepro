@@ -78,6 +78,11 @@ export class S3Service {
         Key:         key,
         Body:        buffer,
         ContentType: contentType,
+        // 1-year immutable cache. Keys are timestamped + per-resource so
+        // the object at any given URL is effectively immutable; this
+        // makes Google Image / Merchant Center re-fetch infrequently and
+        // serve from their cache, which they treat as a quality signal.
+        CacheControl: 'public, max-age=31536000, immutable',
       }));
     } catch (err) {
       this.logger.error(`S3 upload failed for key ${key}`, err);
