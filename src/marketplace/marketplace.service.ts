@@ -764,33 +764,39 @@ export class MarketplaceService {
     if (filters.eje) where.eje = filters.eje;
     if (filters.tipo) where.tipo = filters.tipo;
 
-    // City coverage filter. Inclusive logic — a distributor counts as
-    // covering the city if ANY of these hold:
-    //   1. They have a physical pickup point in the city (cobertura is an
-    //      array of {ciudad, direccion, lat, lng} objects, looked up via
-    //      a raw JSONB predicate since Prisma's array_contains can't peek
-    //      into nested object fields).
-    //   2. Their primary ciudad equals the filter (string equality).
-    //   3. They ship by domicilio or ambos — national delivery is the
-    //      default business model on the marketplace, so a distributor
-    //      that ships nationally counts for every city even without a
-    //      physical pickup point there.
-    // The previous filter (`array_contains: [filters.ciudad]`) compared
-    // a bare string against an array of objects and never matched, which
-    // is why every /marketplace/ciudad/<slug> page was empty.
+    // City coverage filter. Each distributor self-declares its covered
+    // cities via the `cobertura` JSONB array of {ciudad, direccion, lat,
+    // lng} objects (edited from /dashboard/marketplace/perfil). The
+    // marketplace/distributor profile page already follows the convention
+    // "cobertura.length > 0 → those exact cities, empty → Nacional", so
+    // the backend filter mirrors it:
+    //
+    //   1. Empty / null cobertura → distributor delivers nationally and
+    //      counts for every city.
+    //   2. Populated cobertura → distributor only counts for cities listed
+    //      explicitly. We use jsonb_array_elements to peek into each
+    //      entry's `ciudad` field (Prisma's array_contains can't filter
+    //      on nested object fields).
+    //   3. Fallback: a distributor's primary `ciudad` column also matches
+    //      (catches distributors who set their HQ city but never filled
+    //      in the cobertura editor).
+    //
+    // tipoEntrega is intentionally NOT consulted here — it's the delivery-
+    // method choice (domicilio / recogida / ambos), not a coverage signal.
+    // The previous filter both used array_contains against an array of
+    // objects (which never matches) and lumped every domicilio distributor
+    // into every city.
     if (filters.ciudad) {
       const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
         SELECT id FROM "Company"
         WHERE
-          "tipoEntrega" IN ('domicilio', 'ambos')
+          "cobertura" IS NULL
+          OR jsonb_typeof("cobertura") <> 'array'
+          OR jsonb_array_length("cobertura") = 0
           OR LOWER(COALESCE("ciudad", '')) = LOWER(${filters.ciudad})
-          OR (
-            "cobertura" IS NOT NULL
-            AND jsonb_typeof("cobertura") = 'array'
-            AND EXISTS (
-              SELECT 1 FROM jsonb_array_elements("cobertura") AS c
-              WHERE LOWER(COALESCE(c->>'ciudad', '')) = LOWER(${filters.ciudad})
-            )
+          OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements("cobertura") AS c
+            WHERE LOWER(COALESCE(c->>'ciudad', '')) = LOWER(${filters.ciudad})
           )
       `;
       let allowed = rows.map((r) => r.id);
