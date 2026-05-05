@@ -33,6 +33,131 @@ export interface ScrapedSourceResult {
   points: ScrapedPickupPoint[];
 }
 
+// =============================================================================
+// RETAILER REGISTRATION TYPES
+//
+// The scraper is built around a small registry of retailers (see RETAILERS
+// in the service). Each entry carries:
+//   - the hostnames it owns (e.g. ['alkosto.com', 'ktronix.com.co'])
+//   - a static-HTML parser (cheerio over the bare-curl response)
+//   - an optional render config used when the static parse comes back
+//     empty (typical for SPAs that hydrate their store list)
+//
+// To onboard a new retailer, write a parser + render config and append
+// to RETAILERS — no changes to the scraping pipeline itself.
+// =============================================================================
+
+interface RetailerConfig {
+  hostMatches: string[];
+  parseStatic: (url: string, domain: string, html: string) => ScrapedSourceResult;
+  render?: RetailerRenderConfig;
+}
+
+interface RetailerRenderConfig {
+  /** Where to centre the headless browser's geolocation. Most LATAM
+   *  retailers gate their store list on geo so we pin a sensible
+   *  default per retailer. */
+  geolocation: { latitude: number; longitude: number };
+  /** Optional cheap pre-filter to skip JSON responses from URLs that
+   *  obviously aren't the store list (saves JSON-parse cost). */
+  urlMatcher?: RegExp;
+  /** Decide which rows of an intercepted JSON payload look like the
+   *  retailer's store list. Returns [] for irrelevant payloads. */
+  extractRows: (body: unknown) => unknown[];
+  /** Stable dedup key per row (often a store id / cross / sku). Empty
+   *  string means "don't dedup, accept every occurrence". */
+  rowKey: (row: unknown) => string;
+  /** Map a captured raw JSON row into the storage shape. Receives the
+   *  scraper instance so it can reuse city/title-case helpers. Return
+   *  null to drop a malformed row. */
+  mapRow: (row: unknown, ctx: RetailScraperHelpers) => ScrapedPickupPoint | null;
+  /** CSS selectors clicked inside the rendered page if no XHR fires
+   *  on its own (some retailers gate the store list on a tab click). */
+  clickSelectors: string[];
+  /** Where to read the price from the rendered DOM. Both selectors
+   *  optional — leave undefined when a retailer doesn't expose price
+   *  on the PDP at all. */
+  price: { hiddenSelector?: string; textSelector?: string };
+}
+
+/** Subset of the service exposed to per-retailer mappers, so we don't
+ *  hand them the whole NestJS instance. */
+export interface RetailScraperHelpers {
+  publicNormaliseCity(raw: string): string;
+  publicPrettyCity(raw: string): string;
+  publicTitleCase(s: string): string;
+}
+
+// -------------------------------------------------------------------
+// HYBRIS-FAMILY RENDER CONFIG (Alkosto + Ktronix today)
+//
+// SAP Hybris-based retailers share a public-facing JSON shape:
+//   { data: [{ name, displayName, line1, line2, cityName,
+//              stockPickup, cross, latitude, longitude, openings, … }] }
+// stockPickup is human-readable Spanish ("Hay 5 unidades" / "Sin
+// existencias") — the only stable signal is the first integer.
+// -------------------------------------------------------------------
+type HybrisStoreRow = {
+  name?: string;
+  displayName?: string;
+  line1?: string;
+  line2?: string;
+  cityName?: string;
+  formattedDistance?: string;
+  stockPickup?: string;
+  cross?: string | number;
+  latitude?: number;
+  longitude?: number;
+  openings?: Record<string, string>;
+};
+
+const ALKOSTO_RENDER_CONFIG: RetailerRenderConfig = {
+  geolocation: { latitude: 4.7110, longitude: -74.0721 }, // Bogotá centre
+  urlMatcher: /store|pickup|pos|availab/i,
+  extractRows: (body) => {
+    const data = (body as { data?: unknown })?.data;
+    if (!Array.isArray(data)) return [];
+    return data.filter((r) => {
+      if (!r || typeof r !== 'object') return false;
+      const row = r as HybrisStoreRow;
+      return !!(row.displayName || row.name);
+    });
+  },
+  rowKey: (row) => {
+    const r = row as HybrisStoreRow;
+    return String(r.cross ?? r.name ?? r.displayName ?? '');
+  },
+  mapRow: (row, ctx) => {
+    const r = row as HybrisStoreRow;
+    const stockMatch = (r.stockPickup ?? '').match(/(\d+)/);
+    const stockUnits = stockMatch ? Math.max(0, parseInt(stockMatch[1], 10)) : 0;
+    const cityRaw = (r.cityName ?? '').trim();
+    const addressLine = [r.line1, r.line2].filter(Boolean).join(' ').trim() || null;
+    const name = (r.displayName ?? r.name ?? '').trim();
+    if (!name) return null;
+    return {
+      externalId: r.cross != null ? String(r.cross) : null,
+      name: ctx.publicTitleCase(name),
+      address: addressLine,
+      city: ctx.publicNormaliseCity(cityRaw || name),
+      cityDisplay: ctx.publicPrettyCity(cityRaw || name),
+      lat: typeof r.latitude === 'number' ? r.latitude : null,
+      lng: typeof r.longitude === 'number' ? r.longitude : null,
+      hours: r.openings
+        ? Object.entries(r.openings).map(([d, t]) => `${d}: ${t}`).join(' · ')
+        : null,
+      stockUnits,
+    };
+  },
+  clickSelectors: [
+    '.js-pickup-in-store-button',
+    '.js-pickup-button',
+    '.js-pickup-in-store-modal',
+    '[data-test="pickup-store"]',
+  ],
+  price: { hiddenSelector: 'input.price-hidden', textSelector: '#js-original_price' },
+};
+
 /**
  * Pulls inventory + pricing snapshots from public retailer product
  * pages. Domain-specific parsers live as private methods — the public
@@ -61,42 +186,69 @@ export class RetailScraperService {
     '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
   // -------------------------------------------------------------------
+  // RETAILER REGISTRY
+  //
+  // Each supported retailer registers a config: the hostnames it owns,
+  // the cheap static-HTML parser to try first, and the puppeteer
+  // fallback config used when the static parse comes back empty
+  // (typically because the retailer migrated to a SPA that loads its
+  // store list via XHR after hydration).
+  //
+  // Adding a new retailer (e.g. Falabella, Homecenter, Easy):
+  //   1. Write a `parseFooHtml(url, domain, html)` method that returns
+  //      ScrapedSourceResult for the static-HTML case.
+  //   2. Optionally provide a `RetailerRenderConfig` with a JSON
+  //      payload matcher + row mapper for the SPA fallback.
+  //   3. Append an entry to RETAILERS below. No other code changes.
+  //
+  // The puppeteer machinery (`renderAndCaptureStores`) is fully
+  // retailer-agnostic — it just takes the config and runs.
+  // -------------------------------------------------------------------
+  private readonly RETAILERS: RetailerConfig[] = [
+    {
+      hostMatches: ['alkosto.com', 'ktronix.com.co'],
+      // Both share the same SAP Hybris storefront, so the static parser
+      // and SPA mapper are identical.
+      parseStatic: (url, domain, html) => this.parseAlkosto(url, domain, html),
+      render: ALKOSTO_RENDER_CONFIG,
+    },
+    // Future:
+    //   { hostMatches: ['homecenter.com.co'], parseStatic: …, render: … },
+  ];
+
+  // -------------------------------------------------------------------
   // Public entry: fetch + parse a single product URL.
   //
-  // Alkosto / Ktronix migrated to a SPA-style PDP where the store list
-  // (the bit we actually care about) is loaded via XHR after the page
-  // hydrates. The plain-curl HTML now contains zero `js-store-box`
-  // elements, so the legacy parser silently returned 0 stock for
-  // every bodega — the bug the user reported.
-  //
-  // Strategy:
-  //   1. Try the cheap static HTML parser first. If the retailer
-  //      ever ships SSR'd store data again (or for sites that still
-  //      do), we don't pay the puppeteer cost.
-  //   2. If the static parse returns 0 points, fall back to a
-  //      puppeteer-extra render: open the page, set a Bogotá
-  //      geolocation, intercept the XHR JSON the frontend fires for
-  //      store availability, and parse THAT directly. JSON is
-  //      structurally stable across HTML refactors.
+  // Strategy is the same for every retailer:
+  //   1. Try the cheap static HTML parse first. If the retailer ships
+  //      SSR'd store data, we never pay browser cost.
+  //   2. If static returns 0 points, fall back to a puppeteer render
+  //      that intercepts the JSON the SPA frontend fetches. JSON shape
+  //      is structurally more stable than the HTML.
   // -------------------------------------------------------------------
   async fetch(url: string): Promise<ScrapedSourceResult> {
     const domain = this.normaliseDomain(url);
     if (!domain) throw new Error(`URL inválida: ${url}`);
 
-    if (domain.endsWith('alkosto.com') || domain.endsWith('ktronix.com.co')) {
-      const html = await this.fetchHtml(url);
-      const cheap = this.parseAlkosto(url, domain, html);
-      if (cheap.points.length > 0) return cheap;
-      // Cheap parser saw no stores — the SPA hydration kicks in here.
-      this.logger.log(`Static HTML had 0 stores for ${url} — falling back to puppeteer render`);
-      return this.fetchAlkostoRendered(url, domain, cheap.priceCop);
-    }
-    // Unknown domain — return enough of a shell so the admin UI can
-    // tell the dist "we don't have a parser for this site yet" rather
-    // than crashing.
-    throw new Error(
-      `Aún no soportamos ${domain}. Por ahora aceptamos enlaces de alkosto.com y ktronix.com.co.`,
+    const retailer = this.RETAILERS.find((r) =>
+      r.hostMatches.some((h) => domain.endsWith(h)),
     );
+    if (!retailer) {
+      const supported = this.RETAILERS.flatMap((r) => r.hostMatches).join(', ');
+      throw new Error(
+        `Aún no soportamos ${domain}. Por ahora aceptamos enlaces de ${supported}.`,
+      );
+    }
+
+    const html = await this.fetchHtml(url);
+    const cheap = retailer.parseStatic(url, domain, html);
+    if (cheap.points.length > 0) return cheap;
+    // Static parse returned no points — likely a SPA that hydrates
+    // its store list. Use the per-retailer render config (if any) to
+    // open the PDP in a browser and intercept the XHR.
+    if (!retailer.render) return cheap;
+    this.logger.log(`Static HTML had 0 stores for ${url} — falling back to puppeteer render`);
+    return this.renderAndCaptureStores(url, domain, cheap.priceCop, retailer.render);
   }
 
   // -------------------------------------------------------------------
@@ -195,32 +347,37 @@ export class RetailScraperService {
   }
 
   // -------------------------------------------------------------------
-  // ALKOSTO RENDERED — puppeteer fallback when the static HTML returns
-  // 0 stores (which is now the default since their PDP started loading
-  // the store list via XHR after hydration).
+  // GENERIC SPA SCRAPER
   //
-  // We intercept the JSON the frontend receives instead of scraping the
-  // rendered DOM — the JSON shape is more stable than the HTML and
-  // tells us per-bodega stock directly. The flow:
+  // Retailer-agnostic puppeteer pipeline used as the fallback path when
+  // the cheap static-HTML parse comes back empty (which is the common
+  // case for any modern SPA storefront). The retailer-specific bits
+  // — what the JSON looks like, which DOM button forces the XHR, how
+  // to read the price — all come from the `RetailerRenderConfig`
+  // passed in. The browser machinery itself doesn't know or care
+  // which retailer it's pointed at.
   //
-  //   1. Launch puppeteer-extra (headless + stealth so Cloudflare /
-  //      Akamai bot challenges don't trip).
-  //   2. Pin Bogotá geolocation so the SPA doesn't sit on a permission
-  //      prompt waiting for coordinates.
-  //   3. Listen on every response for the store-pickup JSON. Alkosto
-  //      paginates this — we accumulate everything that looks like a
-  //      `data: [...stores...]` payload.
-  //   4. Open the page, then click the "Recoger en tienda" button to
-  //      force the XHR (some flows auto-fire after geolocation, others
-  //      need the click). Either path adds to the same accumulator.
-  //   5. Map the captured JSON into the same ScrapedPickupPoint shape
-  //      the static parser produced — so the writer logic in
-  //      retail-source.service.ts doesn't change.
+  // Flow:
+  //   1. Launch headless Chromium with the stealth plugin so bot
+  //      challenges (Cloudflare, Akamai, etc.) don't trip.
+  //   2. Pin the configured geolocation so the SPA doesn't sit on a
+  //      permission prompt waiting for coordinates.
+  //   3. Subscribe to every JSON response. For each one, the retailer's
+  //      `extractRows()` decides whether the payload is the store list
+  //      (typically by shape match: `{ data: [...] }` of objects with
+  //      a recognisable field). Captured rows are deduped by id.
+  //   4. Open the page, wait for the auto-fire window, then click the
+  //      retailer's pickup-store CTA (if configured) to force the XHR.
+  //   5. Read the price from the rendered DOM via the retailer's price
+  //      selectors.
+  //   6. Hand each captured row to the retailer's `mapRow()` to convert
+  //      it into the storage-shape ScrapedPickupPoint.
   // -------------------------------------------------------------------
-  private async fetchAlkostoRendered(
+  private async renderAndCaptureStores(
     url: string,
     domain: string,
     fallbackPrice: number | null,
+    cfg: RetailerRenderConfig,
   ): Promise<ScrapedSourceResult> {
     let browser: Browser | null = null;
     try {
@@ -235,131 +392,75 @@ export class RetailScraperService {
       }) as unknown as Browser;
       const ctx = browser.defaultBrowserContext();
       try {
-        // Permit geolocation so the SPA doesn't ask + skip rendering
-        // the list. Origin must match the page; we strip query+hash.
         const origin = new URL(url).origin;
         await ctx.overridePermissions(origin, ['geolocation']);
-      } catch { /* ignore — fallback flow still works */ }
+      } catch { /* ignore — flow still works without geolocation */ }
       const page: Page = await browser.newPage();
       await page.setUserAgent(this.UA);
       await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-CO,es;q=0.9' });
-      // Bogotá city centre — far enough into Colombia that every
-      // bodega Alkosto serves shows up in the list (the API returns
-      // them regardless of distance, but a real lat/lng makes the
-      // request look like a typical browser session).
-      await page.setGeolocation({ latitude: 4.7110, longitude: -74.0721 });
+      await page.setGeolocation(cfg.geolocation);
 
-      // Accumulate every JSON response that looks like a store payload.
-      // Alkosto's URL templates change occasionally, so we filter on
-      // payload shape (data array of objects with displayName/stockPickup)
-      // instead of URL pattern.
-      type RawStore = {
-        name?: string;
-        displayName?: string;
-        line1?: string;
-        line2?: string;
-        cityName?: string;
-        formattedDistance?: string;
-        stockPickup?: string;
-        cross?: string | number;
-        latitude?: number;
-        longitude?: number;
-        url?: string;
-        openings?: Record<string, string>;
-        productcode?: string;
-      };
-      const stores: RawStore[] = [];
-      const seenCross = new Set<string>();
+      const collected: unknown[] = [];
+      const seen = new Set<string>();
       page.on('response', async (resp: HTTPResponse) => {
         try {
-          const respUrl = resp.url();
-          // Cheap pre-filter so we don't try to JSON-parse every PNG.
           if (!/json/i.test(resp.headers()['content-type'] ?? '')) return;
-          if (!/store|pickup|pos|availab/i.test(respUrl)) return;
+          if (cfg.urlMatcher && !cfg.urlMatcher.test(resp.url())) return;
           const body = (await resp.json()) as unknown;
-          const data = (body as { data?: unknown })?.data;
-          if (!Array.isArray(data)) return;
-          for (const row of data) {
-            if (!row || typeof row !== 'object') continue;
-            const r = row as RawStore;
-            if (!r.displayName && !r.name) continue;
-            const key = String(r.cross ?? r.name ?? r.displayName ?? '');
-            if (seenCross.has(key)) continue;
-            seenCross.add(key);
-            stores.push(r);
+          const rows = cfg.extractRows(body);
+          for (const row of rows) {
+            const key = cfg.rowKey(row);
+            if (key && seen.has(key)) continue;
+            if (key) seen.add(key);
+            collected.push(row);
           }
-        } catch {
-          /* not JSON, or shape mismatch — skip silently */
-        }
+        } catch { /* not JSON or shape mismatch — skip */ }
       });
 
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      // Give the SPA a moment to hydrate + auto-fire the store fetch.
+      // Auto-fire window: many SPAs trigger the store XHR after geo
+      // resolves, with no user interaction required.
       await new Promise((r) => setTimeout(r, 3000));
-      // If nothing showed up yet, click the pickup-in-store CTA so the
-      // XHR fires. Wrapped in try because the selector occasionally
-      // changes; a missing button isn't fatal — many flows already fired.
-      if (stores.length === 0) {
+      // If nothing fired, click the retailer's pickup CTA to force it.
+      if (collected.length === 0 && cfg.clickSelectors.length > 0) {
         try {
-          await page.evaluate(() => {
-            const sel = [
-              '.js-pickup-in-store-button',
-              '.js-pickup-button',
-              '.js-pickup-in-store-modal',
-              '[data-test="pickup-store"]',
-            ].join(', ');
+          await page.evaluate((sel: string) => {
             const btn = document.querySelector(sel) as HTMLElement | null;
             if (btn) btn.click();
-          });
-          // Wait up to 8s for the XHR to land.
-          for (let i = 0; i < 16 && stores.length === 0; i++) {
+          }, cfg.clickSelectors.join(', '));
+          for (let i = 0; i < 16 && collected.length === 0; i++) {
             await new Promise((r) => setTimeout(r, 500));
           }
         } catch { /* ignore */ }
       }
 
-      // Resolve price from rendered DOM (the rendered page is the most
-      // reliable place to read it — Alkosto sometimes A/B-tests the
-      // hidden input out).
-      const priceCop = await page.evaluate(() => {
-        const input = document.querySelector('input.price-hidden') as HTMLInputElement | null;
-        if (input?.value) {
-          const n = parseFloat(input.value);
-          if (Number.isFinite(n) && n > 0) return Math.round(n);
+      const priceCop = await page.evaluate((priceCfg) => {
+        // Hidden input first (machine-readable, no formatting noise).
+        if (priceCfg.hiddenSelector) {
+          const el = document.querySelector(priceCfg.hiddenSelector) as HTMLInputElement | null;
+          if (el?.value) {
+            const n = parseFloat(el.value);
+            if (Number.isFinite(n) && n > 0) return Math.round(n);
+          }
         }
-        const txt = document.querySelector('#js-original_price')?.textContent ?? '';
-        const m = txt.match(/\$\s*([\d.,]+)/);
-        if (m) {
-          const digits = m[1].replace(/[.,]/g, '');
-          const n = parseInt(digits, 10);
-          if (Number.isFinite(n) && n > 0) return n;
+        // Then text fallback — strip thousands separators, parse digits.
+        if (priceCfg.textSelector) {
+          const txt = document.querySelector(priceCfg.textSelector)?.textContent ?? '';
+          const m = txt.match(/\$\s*([\d.,]+)/);
+          if (m) {
+            const digits = m[1].replace(/[.,]/g, '');
+            const n = parseInt(digits, 10);
+            if (Number.isFinite(n) && n > 0) return n;
+          }
         }
         return null;
-      }).catch(() => null);
+      }, cfg.price).catch(() => null);
 
-      // Map raw rows → ScrapedPickupPoint. stockPickup is a Spanish
-      // string like "Hay 5 unidades" / "5 unidades disponibles" /
-      // "Sin existencias" — the only stable signal is the first
-      // integer in the text (presence ⇒ stock>0; absence ⇒ stock=0).
-      const points: ScrapedPickupPoint[] = stores.map((r) => {
-        const stockMatch = (r.stockPickup ?? '').match(/(\d+)/);
-        const stockUnits = stockMatch ? Math.max(0, parseInt(stockMatch[1], 10)) : 0;
-        const cityRaw = (r.cityName ?? '').trim();
-        const addressLine = [r.line1, r.line2].filter(Boolean).join(' ').trim() || null;
-        return {
-          externalId: r.cross != null ? String(r.cross) : null,
-          name: this.titleCase((r.displayName ?? r.name ?? '').trim()),
-          address: addressLine,
-          city: this.normaliseCity(cityRaw || (r.displayName ?? '')),
-          cityDisplay: this.prettyCity(cityRaw || (r.displayName ?? '')),
-          lat: typeof r.latitude === 'number' ? r.latitude : null,
-          lng: typeof r.longitude === 'number' ? r.longitude : null,
-          hours: r.openings ? Object.entries(r.openings).map(([d, t]) => `${d}: ${t}`).join(' · ') : null,
-          stockUnits,
-        };
-      }).filter((p) => p.name);
+      const points: ScrapedPickupPoint[] = collected
+        .map((r) => cfg.mapRow(r, this))
+        .filter((p): p is ScrapedPickupPoint => !!p && !!p.name);
 
-      this.logger.log(`Puppeteer render for ${url}: ${points.length} stores parsed`);
+      this.logger.log(`Rendered ${url}: ${points.length} stores parsed`);
       return { url, domain, priceCop: priceCop ?? fallbackPrice, points };
     } finally {
       if (browser) {
@@ -367,6 +468,12 @@ export class RetailScraperService {
       }
     }
   }
+
+  // Public exposure of the city normalisers so per-retailer mappers
+  // (declared at module scope) can reuse them.
+  publicNormaliseCity(raw: string): string  { return this.normaliseCity(raw); }
+  publicPrettyCity(raw: string): string     { return this.prettyCity(raw); }
+  publicTitleCase(s: string): string        { return this.titleCase(s); }
 
   // -------------------------------------------------------------------
   // Helpers

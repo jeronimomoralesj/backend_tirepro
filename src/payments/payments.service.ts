@@ -181,12 +181,12 @@ export class PaymentsService {
       // double-validate here so the buyer doesn't get a confusing
       // "warehouse is empty" error when they already chose a bodega.
       if (item.pickupPointId) continue;
-      const bodegaStock = (l.retailSource?.isActive ? l.retailSource.pickupPoints : [])
+      const partnerStock = (l.retailSource?.isActive ? l.retailSource.pickupPoints : [])
         .reduce((s, p) => s + Math.max(0, p.stockUnits), 0);
-      const effectiveStock = l.cantidadDisponible + bodegaStock;
+      const effectiveStock = l.cantidadDisponible + partnerStock;
       if (effectiveStock < item.quantity) {
-        const detail = bodegaStock > 0
-          ? `Solo ${effectiveStock} unidades disponibles entre bodega y tiendas`
+        const detail = partnerStock > 0
+          ? `Solo ${effectiveStock} unidades disponibles entre nuestro inventario y los puntos aliados`
           : `Sin unidades disponibles`;
         throw new BadRequestException(`${detail} de ${l.marca} ${l.modelo}`);
       }
