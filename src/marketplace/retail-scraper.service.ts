@@ -328,15 +328,65 @@ export class RetailScraperService {
 
     // ── Pickup points ───────────────────────────────────────────────
     const points: ScrapedPickupPoint[] = [];
+    // Diagnostic counters so the logs reveal which signal we ended up
+    // believing for each scrape — useful when Alkosto changes the
+    // attribute model again.
+    let textWins = 0, attrWins = 0, agree = 0;
     $('.js-store-box').each((_, el) => {
       try {
         const $el = $(el);
         const cityRaw  = ($el.attr('data-city') || '').trim();
-        const stockStr = ($el.attr('data-stock') || '').trim();
-        const stockUnits = Math.max(0, parseInt(stockStr, 10) || 0);
         const titleEl = $el.find('.store-title').first();
         const name = titleEl.text().trim() || ($el.attr('data-name') || '').trim();
         if (!name || !cityRaw) return; // skip malformed rows
+
+        // Stock has two surfaces:
+        //   1. data-stock attribute on the .js-store-box wrapper.
+        //   2. .store-stock text node ("2 Unidades disponibles" /
+        //      "No hay unidades disponibles").
+        // The user reported every store reading "30 u." even when the
+        // visible text said "2" — turns out Alkosto's PDP renders a
+        // skeleton with data-stock="30" then loads real stock only
+        // into the text. So we trust the text first; data-stock is a
+        // fallback when the .store-stock node is missing entirely.
+        const stockEl = $el.find('.store-stock').first();
+        const stockText = stockEl.text().trim();
+        const hasAvailableMarker = stockEl.hasClass('available');
+        const hasNoStockText = /no hay unidades|sin existencias|sin stock/i.test(stockText);
+        let stockFromText: number | null = null;
+        if (hasNoStockText) {
+          stockFromText = 0;
+        } else if (stockText) {
+          const m = stockText.match(/(\d+)/);
+          if (m) stockFromText = parseInt(m[1], 10);
+          // If no digit but the .available class is on, treat as ≥1
+          // so the buyer at least sees the bodega in the picker.
+          else if (hasAvailableMarker) stockFromText = 1;
+        }
+
+        const attrStr = ($el.attr('data-stock') || '').trim();
+        const stockFromAttr = attrStr ? parseInt(attrStr, 10) : null;
+
+        let stockUnits: number;
+        if (stockFromText != null && stockFromAttr != null) {
+          if (stockFromText === stockFromAttr) {
+            agree++;
+            stockUnits = stockFromText;
+          } else {
+            // Disagreement — text wins (it's what the buyer actually
+            // sees). The Alkosto skeleton bug is the canonical case.
+            textWins++;
+            stockUnits = stockFromText;
+          }
+        } else if (stockFromText != null) {
+          stockUnits = stockFromText;
+        } else if (stockFromAttr != null) {
+          attrWins++;
+          stockUnits = stockFromAttr;
+        } else {
+          stockUnits = 0;
+        }
+        stockUnits = Math.max(0, stockUnits);
 
         const address = $el.find('.store-address').first().text().trim() || null;
         const hours   = $el.find('.opening').first().text().trim() || null;
@@ -377,6 +427,12 @@ export class RetailScraperService {
         this.logger.warn(`alkosto store parse failed: ${(err as Error).message}`);
       }
     });
+
+    if (textWins + attrWins + agree > 0) {
+      this.logger.log(
+        `alkosto stock signal: ${agree} agree · ${textWins} text-wins · ${attrWins} attr-only`,
+      );
+    }
 
     // Dedupe — defence in depth. Some renders (modal re-opens, multiple
     // city tabs visible at once, partial-fragment swaps) can land the
