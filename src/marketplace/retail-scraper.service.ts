@@ -378,7 +378,20 @@ export class RetailScraperService {
       }
     });
 
-    return { url, domain, priceCop, points };
+    // Dedupe — defence in depth. Some renders (modal re-opens, multiple
+    // city tabs visible at once, partial-fragment swaps) can land the
+    // same store-box more than once in the DOM. Prefer the row with the
+    // higher stockUnits when an externalId collides; fall back to name
+    // when externalId is null.
+    const dedup = new Map<string, ScrapedPickupPoint>();
+    for (const p of points) {
+      const key = (p.externalId ?? p.name).toLowerCase().trim();
+      const existing = dedup.get(key);
+      if (!existing || p.stockUnits > existing.stockUnits) {
+        dedup.set(key, p);
+      }
+    }
+    return { url, domain, priceCop, points: Array.from(dedup.values()) };
   }
 
   // -------------------------------------------------------------------
@@ -456,33 +469,26 @@ export class RetailScraperService {
       // Auto-fire window: let the SPA hydrate.
       await new Promise((r) => setTimeout(r, 3000));
 
-      // Click EVERY matching pickup CTA in sequence — different
-      // retailer layouts wire the open-modal handler to different
-      // elements (anchor / list-item / wrapper div) and we don't
-      // know which one carries the live binding without inspecting.
-      // Reports back which selectors matched so the logs make the
-      // reason for a 0-store result obvious.
+      // Click the FIRST matching pickup CTA only. Some retailer modals
+      // (Alkosto's included) re-render the store list every time the
+      // open-modal trigger fires — clicking 4 different triggers in
+      // sequence appended the list 4 times, producing the inflated
+      // ~3.7x duplicates the user saw (184 stores instead of ~50).
       const clickReport = await page.evaluate((selectors: string[]) => {
-        const matched: Array<{ selector: string; clicked: boolean }> = [];
         for (const sel of selectors) {
-          const els = document.querySelectorAll(sel);
-          if (els.length === 0) {
-            matched.push({ selector: sel, clicked: false });
-            continue;
+          const el = document.querySelector(sel) as HTMLElement | null;
+          if (el) {
+            try { el.click(); } catch { /* ignore */ }
+            return { matched: sel, tried: selectors };
           }
-          for (const el of Array.from(els)) {
-            try { (el as HTMLElement).click(); } catch { /* ignore */ }
-          }
-          matched.push({ selector: sel, clicked: true });
         }
-        return matched;
-      }, cfg.clickSelectors).catch(() => [] as Array<{ selector: string; clicked: boolean }>);
+        return { matched: null as string | null, tried: selectors };
+      }, cfg.clickSelectors).catch(() => ({ matched: null as string | null, tried: cfg.clickSelectors }));
 
-      const hits = clickReport.filter((c) => c.clicked).map((c) => c.selector);
-      if (hits.length === 0 && cfg.clickSelectors.length > 0) {
+      if (clickReport.matched) {
+        this.logger.log(`Clicked pickup CTA: ${clickReport.matched}`);
+      } else if (cfg.clickSelectors.length > 0) {
         this.logger.warn(`No pickup CTA matched for ${url}. Tried: ${cfg.clickSelectors.join(', ')}`);
-      } else if (hits.length > 0) {
-        this.logger.log(`Clicked pickup CTAs: ${hits.join(', ')}`);
       }
 
       // Wait for the rendered store list (selector configured per retailer)
