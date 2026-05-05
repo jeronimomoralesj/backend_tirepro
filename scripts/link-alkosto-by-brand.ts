@@ -111,25 +111,34 @@ async function searchAlkosto(query: string, browser: Browser): Promise<SearchHit
     await page.setUserAgent(UA);
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-CO,es;q=0.9' });
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    // Search results render via Algolia after page load — give them a
-    // moment, then read every product anchor on the page.
-    await new Promise((r) => setTimeout(r, 3500));
+    // Algolia hydrates the result grid post-load. We try to wait for
+    // the first result container, then add a settle pause for the
+    // rest of the items to stream in.
+    try {
+      await page.waitForSelector('.ais-InfiniteHits-item, .product__item', { timeout: 12_000 });
+    } catch { /* timed out — sample whatever rendered */ }
+    await new Promise((r) => setTimeout(r, 1500));
+
     return await page.evaluate(() => {
-      const anchors = Array.from(document.querySelectorAll('a[href*="/p/"]'));
+      // Scope to the Algolia / product-grid containers — a bare
+      // `a[href*="/p/"]` selector grabs sidebar promos (oven service,
+      // Netflix gift cards) that appear on every search page.
+      const cards = Array.from(document.querySelectorAll('.ais-InfiniteHits-item, .product__item'));
       const seen = new Set<string>();
       const out: { url: string; title: string }[] = [];
-      for (const a of anchors) {
-        const href = (a as HTMLAnchorElement).href;
-        // Drop fragment / query so we dedup on the canonical product URL.
-        const clean = href.split('?')[0].split('#')[0];
+      for (const card of cards) {
+        const a = card.querySelector('a[href*="/p/"]') as HTMLAnchorElement | null;
+        if (!a) continue;
+        const clean = a.href.split('?')[0].split('#')[0];
         if (seen.has(clean)) continue;
         seen.add(clean);
-        // Prefer the closest enclosing block's text as the title — the
-        // anchor itself often wraps just an image.
-        const block = (a as HTMLElement).closest('article, .product__item, li, div') as HTMLElement | null;
-        const title = (block?.innerText ?? a.textContent ?? '')
-          .replace(/\s+/g, ' ').trim().slice(0, 250);
-        if (clean.includes('/p/')) out.push({ url: clean, title });
+        // Prefer the title node when present, fall back to card text.
+        const titleEl = card.querySelector(
+          '.product__item__top__title, .product__item__title, h3, .ais-Highlight',
+        );
+        const title = ((titleEl?.textContent ?? (card as HTMLElement).innerText ?? '')
+          .replace(/\s+/g, ' ').trim()).slice(0, 250);
+        out.push({ url: clean, title });
         if (out.length >= 10) break;
       }
       return out;
