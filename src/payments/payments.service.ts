@@ -145,20 +145,50 @@ export class PaymentsService {
     }
 
     // Resolve all listings + distributor info up front so we can build the
-    // money breakdown before persisting anything.
+    // money breakdown before persisting anything. We also pull the
+    // connected retail source's pickup-point stock — for delivery
+    // items we treat warehouse stock + bodega stock as a single
+    // pool, since the distributor can fulfill from either.
     const listings = await this.prisma.distributorListing.findMany({
       where: { id: { in: input.items.map((i) => i.listingId) } },
-      include: { distributor: { select: { id: true, slug: true, name: true, emailAtencion: true } } },
+      include: {
+        distributor: { select: { id: true, slug: true, name: true, emailAtencion: true } },
+        retailSource: {
+          select: {
+            isActive: true,
+            pickupPoints: { select: { id: true, stockUnits: true } },
+          },
+        },
+      },
     });
     if (listings.length !== input.items.length) {
       throw new BadRequestException('One or more products are no longer available');
     }
-    // Stock check — refuse the whole cart if any line exceeds available.
+    // Stock check.
+    //   - Pickup items: validated separately below against the chosen
+    //     bodega's stockUnits.
+    //   - Delivery items: pool the distributor's warehouse with every
+    //     active retail bodega's stock. The marketplace policy is that
+    //     a listing is sellable as long as ANY place — warehouse or
+    //     bodega — has the units the buyer wants. If the warehouse is
+    //     empty but Alkosto Av. 30 has 5 units, the dist can fulfill
+    //     from there, so we accept the order. Only reject when nobody
+    //     has it.
     for (const item of input.items) {
       const l = listings.find((x) => x.id === item.listingId)!;
       if (!l.isActive) throw new BadRequestException(`${l.marca} ${l.modelo} ya no está disponible`);
-      if (l.cantidadDisponible < item.quantity) {
-        throw new BadRequestException(`Solo ${l.cantidadDisponible} unidades disponibles de ${l.marca} ${l.modelo}`);
+      // Pickup items use the bodega-specific check below; we don't
+      // double-validate here so the buyer doesn't get a confusing
+      // "warehouse is empty" error when they already chose a bodega.
+      if (item.pickupPointId) continue;
+      const bodegaStock = (l.retailSource?.isActive ? l.retailSource.pickupPoints : [])
+        .reduce((s, p) => s + Math.max(0, p.stockUnits), 0);
+      const effectiveStock = l.cantidadDisponible + bodegaStock;
+      if (effectiveStock < item.quantity) {
+        const detail = bodegaStock > 0
+          ? `Solo ${effectiveStock} unidades disponibles entre bodega y tiendas`
+          : `Sin unidades disponibles`;
+        throw new BadRequestException(`${detail} de ${l.marca} ${l.modelo}`);
       }
     }
 

@@ -1,5 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as cheerio from 'cheerio';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import type { Browser, Page, HTTPResponse } from 'puppeteer';
+
+// Puppeteer-extra is a singleton — register stealth once at module load
+// so the browser launched in fetchAlkostoRendered can't be fingerprinted
+// as headless by Alkosto's frontend protections.
+puppeteer.use(StealthPlugin());
 
 /**
  * Single parsed pickup point — what the scraper hands back to the
@@ -54,14 +62,34 @@ export class RetailScraperService {
 
   // -------------------------------------------------------------------
   // Public entry: fetch + parse a single product URL.
+  //
+  // Alkosto / Ktronix migrated to a SPA-style PDP where the store list
+  // (the bit we actually care about) is loaded via XHR after the page
+  // hydrates. The plain-curl HTML now contains zero `js-store-box`
+  // elements, so the legacy parser silently returned 0 stock for
+  // every bodega — the bug the user reported.
+  //
+  // Strategy:
+  //   1. Try the cheap static HTML parser first. If the retailer
+  //      ever ships SSR'd store data again (or for sites that still
+  //      do), we don't pay the puppeteer cost.
+  //   2. If the static parse returns 0 points, fall back to a
+  //      puppeteer-extra render: open the page, set a Bogotá
+  //      geolocation, intercept the XHR JSON the frontend fires for
+  //      store availability, and parse THAT directly. JSON is
+  //      structurally stable across HTML refactors.
   // -------------------------------------------------------------------
   async fetch(url: string): Promise<ScrapedSourceResult> {
     const domain = this.normaliseDomain(url);
     if (!domain) throw new Error(`URL inválida: ${url}`);
 
-    const html = await this.fetchHtml(url);
     if (domain.endsWith('alkosto.com') || domain.endsWith('ktronix.com.co')) {
-      return this.parseAlkosto(url, domain, html);
+      const html = await this.fetchHtml(url);
+      const cheap = this.parseAlkosto(url, domain, html);
+      if (cheap.points.length > 0) return cheap;
+      // Cheap parser saw no stores — the SPA hydration kicks in here.
+      this.logger.log(`Static HTML had 0 stores for ${url} — falling back to puppeteer render`);
+      return this.fetchAlkostoRendered(url, domain, cheap.priceCop);
     }
     // Unknown domain — return enough of a shell so the admin UI can
     // tell the dist "we don't have a parser for this site yet" rather
@@ -164,6 +192,180 @@ export class RetailScraperService {
     });
 
     return { url, domain, priceCop, points };
+  }
+
+  // -------------------------------------------------------------------
+  // ALKOSTO RENDERED — puppeteer fallback when the static HTML returns
+  // 0 stores (which is now the default since their PDP started loading
+  // the store list via XHR after hydration).
+  //
+  // We intercept the JSON the frontend receives instead of scraping the
+  // rendered DOM — the JSON shape is more stable than the HTML and
+  // tells us per-bodega stock directly. The flow:
+  //
+  //   1. Launch puppeteer-extra (headless + stealth so Cloudflare /
+  //      Akamai bot challenges don't trip).
+  //   2. Pin Bogotá geolocation so the SPA doesn't sit on a permission
+  //      prompt waiting for coordinates.
+  //   3. Listen on every response for the store-pickup JSON. Alkosto
+  //      paginates this — we accumulate everything that looks like a
+  //      `data: [...stores...]` payload.
+  //   4. Open the page, then click the "Recoger en tienda" button to
+  //      force the XHR (some flows auto-fire after geolocation, others
+  //      need the click). Either path adds to the same accumulator.
+  //   5. Map the captured JSON into the same ScrapedPickupPoint shape
+  //      the static parser produced — so the writer logic in
+  //      retail-source.service.ts doesn't change.
+  // -------------------------------------------------------------------
+  private async fetchAlkostoRendered(
+    url: string,
+    domain: string,
+    fallbackPrice: number | null,
+  ): Promise<ScrapedSourceResult> {
+    let browser: Browser | null = null;
+    try {
+      browser = await puppeteer.launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--lang=es-CO',
+        ],
+      }) as unknown as Browser;
+      const ctx = browser.defaultBrowserContext();
+      try {
+        // Permit geolocation so the SPA doesn't ask + skip rendering
+        // the list. Origin must match the page; we strip query+hash.
+        const origin = new URL(url).origin;
+        await ctx.overridePermissions(origin, ['geolocation']);
+      } catch { /* ignore — fallback flow still works */ }
+      const page: Page = await browser.newPage();
+      await page.setUserAgent(this.UA);
+      await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-CO,es;q=0.9' });
+      // Bogotá city centre — far enough into Colombia that every
+      // bodega Alkosto serves shows up in the list (the API returns
+      // them regardless of distance, but a real lat/lng makes the
+      // request look like a typical browser session).
+      await page.setGeolocation({ latitude: 4.7110, longitude: -74.0721 });
+
+      // Accumulate every JSON response that looks like a store payload.
+      // Alkosto's URL templates change occasionally, so we filter on
+      // payload shape (data array of objects with displayName/stockPickup)
+      // instead of URL pattern.
+      type RawStore = {
+        name?: string;
+        displayName?: string;
+        line1?: string;
+        line2?: string;
+        cityName?: string;
+        formattedDistance?: string;
+        stockPickup?: string;
+        cross?: string | number;
+        latitude?: number;
+        longitude?: number;
+        url?: string;
+        openings?: Record<string, string>;
+        productcode?: string;
+      };
+      const stores: RawStore[] = [];
+      const seenCross = new Set<string>();
+      page.on('response', async (resp: HTTPResponse) => {
+        try {
+          const respUrl = resp.url();
+          // Cheap pre-filter so we don't try to JSON-parse every PNG.
+          if (!/json/i.test(resp.headers()['content-type'] ?? '')) return;
+          if (!/store|pickup|pos|availab/i.test(respUrl)) return;
+          const body = (await resp.json()) as unknown;
+          const data = (body as { data?: unknown })?.data;
+          if (!Array.isArray(data)) return;
+          for (const row of data) {
+            if (!row || typeof row !== 'object') continue;
+            const r = row as RawStore;
+            if (!r.displayName && !r.name) continue;
+            const key = String(r.cross ?? r.name ?? r.displayName ?? '');
+            if (seenCross.has(key)) continue;
+            seenCross.add(key);
+            stores.push(r);
+          }
+        } catch {
+          /* not JSON, or shape mismatch — skip silently */
+        }
+      });
+
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      // Give the SPA a moment to hydrate + auto-fire the store fetch.
+      await new Promise((r) => setTimeout(r, 3000));
+      // If nothing showed up yet, click the pickup-in-store CTA so the
+      // XHR fires. Wrapped in try because the selector occasionally
+      // changes; a missing button isn't fatal — many flows already fired.
+      if (stores.length === 0) {
+        try {
+          await page.evaluate(() => {
+            const sel = [
+              '.js-pickup-in-store-button',
+              '.js-pickup-button',
+              '.js-pickup-in-store-modal',
+              '[data-test="pickup-store"]',
+            ].join(', ');
+            const btn = document.querySelector(sel) as HTMLElement | null;
+            if (btn) btn.click();
+          });
+          // Wait up to 8s for the XHR to land.
+          for (let i = 0; i < 16 && stores.length === 0; i++) {
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        } catch { /* ignore */ }
+      }
+
+      // Resolve price from rendered DOM (the rendered page is the most
+      // reliable place to read it — Alkosto sometimes A/B-tests the
+      // hidden input out).
+      const priceCop = await page.evaluate(() => {
+        const input = document.querySelector('input.price-hidden') as HTMLInputElement | null;
+        if (input?.value) {
+          const n = parseFloat(input.value);
+          if (Number.isFinite(n) && n > 0) return Math.round(n);
+        }
+        const txt = document.querySelector('#js-original_price')?.textContent ?? '';
+        const m = txt.match(/\$\s*([\d.,]+)/);
+        if (m) {
+          const digits = m[1].replace(/[.,]/g, '');
+          const n = parseInt(digits, 10);
+          if (Number.isFinite(n) && n > 0) return n;
+        }
+        return null;
+      }).catch(() => null);
+
+      // Map raw rows → ScrapedPickupPoint. stockPickup is a Spanish
+      // string like "Hay 5 unidades" / "5 unidades disponibles" /
+      // "Sin existencias" — the only stable signal is the first
+      // integer in the text (presence ⇒ stock>0; absence ⇒ stock=0).
+      const points: ScrapedPickupPoint[] = stores.map((r) => {
+        const stockMatch = (r.stockPickup ?? '').match(/(\d+)/);
+        const stockUnits = stockMatch ? Math.max(0, parseInt(stockMatch[1], 10)) : 0;
+        const cityRaw = (r.cityName ?? '').trim();
+        const addressLine = [r.line1, r.line2].filter(Boolean).join(' ').trim() || null;
+        return {
+          externalId: r.cross != null ? String(r.cross) : null,
+          name: this.titleCase((r.displayName ?? r.name ?? '').trim()),
+          address: addressLine,
+          city: this.normaliseCity(cityRaw || (r.displayName ?? '')),
+          cityDisplay: this.prettyCity(cityRaw || (r.displayName ?? '')),
+          lat: typeof r.latitude === 'number' ? r.latitude : null,
+          lng: typeof r.longitude === 'number' ? r.longitude : null,
+          hours: r.openings ? Object.entries(r.openings).map(([d, t]) => `${d}: ${t}`).join(' · ') : null,
+          stockUnits,
+        };
+      }).filter((p) => p.name);
+
+      this.logger.log(`Puppeteer render for ${url}: ${points.length} stores parsed`);
+      return { url, domain, priceCop: priceCop ?? fallbackPrice, points };
+    } finally {
+      if (browser) {
+        await browser.close().catch(() => { /* nothing useful to recover */ });
+      }
+    }
   }
 
   // -------------------------------------------------------------------
