@@ -165,11 +165,19 @@ const ALKOSTO_RENDER_CONFIG: RetailerRenderConfig = {
       stockUnits,
     };
   },
+  // Modal trigger selectors confirmed against the actual Alkosto PDP
+  // HTML (8807622212017). Tried in order, every match clicked. The
+  // visible CTA is the anchor; the LI is the tab variant; the wrapper
+  // divs are kept as fallbacks because the SPA reshuffles them
+  // periodically.
   clickSelectors: [
+    '.js-pickup-in-store-modal-label',
+    '.js-open-modal-PDP-components[data-id="store-availability"]',
+    '.js-delivery-pickup-selection',
+    '.AddToCart-PickUpInStoreAction',
+    '.js-pickup-in-store-modal',
     '.js-pickup-in-store-button',
     '.js-pickup-button',
-    '.js-pickup-in-store-modal',
-    '[data-test="pickup-store"]',
   ],
   // Wait for the post-hydration store list to appear in the modal —
   // each entry is a `.js-store-box` with `data-stock` / `data-city`
@@ -445,31 +453,62 @@ export class RetailScraperService {
       });
 
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      // Auto-fire window: many SPAs trigger the store XHR after geo
-      // resolves, with no user interaction required.
+      // Auto-fire window: let the SPA hydrate.
       await new Promise((r) => setTimeout(r, 3000));
-      // Click the retailer's pickup CTA to open the store-list modal.
-      // Even if the XHR auto-fired, some retailers only render the
-      // DOM list on click — we always try to click so the
-      // parseRenderedHtml fallback below has data to scrape.
-      if (cfg.clickSelectors.length > 0) {
-        try {
-          await page.evaluate((sel: string) => {
-            const btn = document.querySelector(sel) as HTMLElement | null;
-            if (btn) btn.click();
-          }, cfg.clickSelectors.join(', '));
-        } catch { /* ignore */ }
+
+      // Click EVERY matching pickup CTA in sequence — different
+      // retailer layouts wire the open-modal handler to different
+      // elements (anchor / list-item / wrapper div) and we don't
+      // know which one carries the live binding without inspecting.
+      // Reports back which selectors matched so the logs make the
+      // reason for a 0-store result obvious.
+      const clickReport = await page.evaluate((selectors: string[]) => {
+        const matched: Array<{ selector: string; clicked: boolean }> = [];
+        for (const sel of selectors) {
+          const els = document.querySelectorAll(sel);
+          if (els.length === 0) {
+            matched.push({ selector: sel, clicked: false });
+            continue;
+          }
+          for (const el of Array.from(els)) {
+            try { (el as HTMLElement).click(); } catch { /* ignore */ }
+          }
+          matched.push({ selector: sel, clicked: true });
+        }
+        return matched;
+      }, cfg.clickSelectors).catch(() => [] as Array<{ selector: string; clicked: boolean }>);
+
+      const hits = clickReport.filter((c) => c.clicked).map((c) => c.selector);
+      if (hits.length === 0 && cfg.clickSelectors.length > 0) {
+        this.logger.warn(`No pickup CTA matched for ${url}. Tried: ${cfg.clickSelectors.join(', ')}`);
+      } else if (hits.length > 0) {
+        this.logger.log(`Clicked pickup CTAs: ${hits.join(', ')}`);
       }
+
       // Wait for the rendered store list (selector configured per retailer)
       // OR for the JSON interception to land — whichever comes first.
       if (cfg.storeListSelector) {
         try {
-          await page.waitForSelector(cfg.storeListSelector, { timeout: 12_000 });
-        } catch { /* timed out — continue with what we've got */ }
+          await page.waitForSelector(cfg.storeListSelector, { timeout: 15_000 });
+          // Give the modal a beat to fully populate after the first
+          // .js-store-box appears (Alkosto streams them in groups).
+          await new Promise((r) => setTimeout(r, 1500));
+        } catch {
+          this.logger.warn(`Timed out waiting for ${cfg.storeListSelector} on ${url}`);
+        }
       } else {
         for (let i = 0; i < 16 && collected.length === 0; i++) {
           await new Promise((r) => setTimeout(r, 500));
         }
+      }
+
+      // Diagnostic: how many candidate elements actually rendered?
+      if (cfg.storeListSelector) {
+        const inDom = await page.evaluate(
+          (sel) => document.querySelectorAll(sel).length,
+          cfg.storeListSelector,
+        ).catch(() => 0);
+        this.logger.log(`${cfg.storeListSelector} count in DOM: ${inDom}`);
       }
 
       const priceCop = await page.evaluate((priceCfg) => {
