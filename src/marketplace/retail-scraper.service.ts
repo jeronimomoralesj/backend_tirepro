@@ -78,6 +78,22 @@ interface RetailerRenderConfig {
    *  optional — leave undefined when a retailer doesn't expose price
    *  on the PDP at all. */
   price: { hiddenSelector?: string; textSelector?: string };
+  /** Selector that signals "the store list is fully rendered in the
+   *  DOM". After clicking the pickup CTA the scraper waits for this
+   *  before sampling the page HTML. Optional — not every retailer
+   *  builds the list directly into the DOM (some only respond to the
+   *  XHR interception path). */
+  storeListSelector?: string;
+  /**
+   * Fallback path: parse the post-hydration HTML with the same parser
+   * that handles the static SSR case. The Alkosto family in particular
+   * doesn't fire an XHR on the PDP — the SPA pulls the store data once
+   * at boot and renders it directly into the modal. So when JSON
+   * interception comes back empty, we hand the rendered HTML to this
+   * parser to extract the store list from the DOM. Optional — leave
+   * undefined for retailers that genuinely only expose stock via XHR.
+   */
+  parseRenderedHtml?: (url: string, domain: string, html: string) => ScrapedSourceResult;
 }
 
 /** Subset of the service exposed to per-retailer mappers, so we don't
@@ -155,6 +171,10 @@ const ALKOSTO_RENDER_CONFIG: RetailerRenderConfig = {
     '.js-pickup-in-store-modal',
     '[data-test="pickup-store"]',
   ],
+  // Wait for the post-hydration store list to appear in the modal —
+  // each entry is a `.js-store-box` with `data-stock` / `data-city`
+  // attributes the static parser already knows how to read.
+  storeListSelector: '.js-store-box',
   price: { hiddenSelector: 'input.price-hidden', textSelector: '#js-original_price' },
 };
 
@@ -208,9 +228,16 @@ export class RetailScraperService {
     {
       hostMatches: ['alkosto.com', 'ktronix.com.co'],
       // Both share the same SAP Hybris storefront, so the static parser
-      // and SPA mapper are identical.
+      // and SPA mapper are identical. The render config also reuses the
+      // static parser as its DOM fallback (parseRenderedHtml) — Alkosto
+      // PDPs render the store list directly into the modal HTML on
+      // hydration, so the post-render `page.content()` looks exactly
+      // like the SSR'd version this parser was originally written for.
       parseStatic: (url, domain, html) => this.parseAlkosto(url, domain, html),
-      render: ALKOSTO_RENDER_CONFIG,
+      render: {
+        ...ALKOSTO_RENDER_CONFIG,
+        parseRenderedHtml: (url, domain, html) => this.parseAlkosto(url, domain, html),
+      },
     },
     // Future:
     //   { hostMatches: ['homecenter.com.co'], parseStatic: …, render: … },
@@ -421,17 +448,28 @@ export class RetailScraperService {
       // Auto-fire window: many SPAs trigger the store XHR after geo
       // resolves, with no user interaction required.
       await new Promise((r) => setTimeout(r, 3000));
-      // If nothing fired, click the retailer's pickup CTA to force it.
-      if (collected.length === 0 && cfg.clickSelectors.length > 0) {
+      // Click the retailer's pickup CTA to open the store-list modal.
+      // Even if the XHR auto-fired, some retailers only render the
+      // DOM list on click — we always try to click so the
+      // parseRenderedHtml fallback below has data to scrape.
+      if (cfg.clickSelectors.length > 0) {
         try {
           await page.evaluate((sel: string) => {
             const btn = document.querySelector(sel) as HTMLElement | null;
             if (btn) btn.click();
           }, cfg.clickSelectors.join(', '));
-          for (let i = 0; i < 16 && collected.length === 0; i++) {
-            await new Promise((r) => setTimeout(r, 500));
-          }
         } catch { /* ignore */ }
+      }
+      // Wait for the rendered store list (selector configured per retailer)
+      // OR for the JSON interception to land — whichever comes first.
+      if (cfg.storeListSelector) {
+        try {
+          await page.waitForSelector(cfg.storeListSelector, { timeout: 12_000 });
+        } catch { /* timed out — continue with what we've got */ }
+      } else {
+        for (let i = 0; i < 16 && collected.length === 0; i++) {
+          await new Promise((r) => setTimeout(r, 500));
+        }
       }
 
       const priceCop = await page.evaluate((priceCfg) => {
@@ -456,11 +494,29 @@ export class RetailScraperService {
         return null;
       }, cfg.price).catch(() => null);
 
-      const points: ScrapedPickupPoint[] = collected
+      let points: ScrapedPickupPoint[] = collected
         .map((r) => cfg.mapRow(r, this))
         .filter((p): p is ScrapedPickupPoint => !!p && !!p.name);
+      let source: 'json' | 'dom' | 'none' = points.length > 0 ? 'json' : 'none';
 
-      this.logger.log(`Rendered ${url}: ${points.length} stores parsed`);
+      // Fallback: the SPA may have rendered the store list straight into
+      // the DOM (Alkosto's PDP does exactly this — no XHR fires for the
+      // store data, the modal just opens with everything pre-rendered).
+      // Sample the post-hydration HTML and reuse the static parser.
+      if (points.length === 0 && cfg.parseRenderedHtml) {
+        try {
+          const html = await page.content();
+          const fromDom = cfg.parseRenderedHtml(url, domain, html);
+          if (fromDom.points.length > 0) {
+            points = fromDom.points;
+            source = 'dom';
+          }
+        } catch (err) {
+          this.logger.warn(`DOM-fallback parse failed for ${url}: ${(err as Error).message}`);
+        }
+      }
+
+      this.logger.log(`Rendered ${url}: ${points.length} stores parsed (source: ${source})`);
       return { url, domain, priceCop: priceCop ?? fallbackPrice, points };
     } finally {
       if (browser) {
