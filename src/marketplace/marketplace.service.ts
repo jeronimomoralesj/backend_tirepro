@@ -964,6 +964,12 @@ export class MarketplaceService {
           },
           _count: { select: { reviews: true, orders: true } },
           reviews: { select: { rating: true }, take: 10 },
+          // Cheap left-join so card UIs can decide whether to surface a
+          // "Recoger en tienda" pill without a per-card round-trip to
+          // /listings/:id/pickup-points. We only expose the boolean
+          // isActive — full pickup-point lists stay on the dedicated
+          // endpoint to keep the search payload small.
+          retailSource: { select: { isActive: true } },
         },
       }),
       this.prisma.distributorListing.count({ where }),
@@ -1532,6 +1538,12 @@ export class MarketplaceService {
         },
         reviews: { include: { user: { select: { name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },
         _count: { select: { reviews: true } },
+        // Same isActive flag the search response carries — lets the
+        // product page render a "Recoger hoy" CTA above the fold
+        // without having to wait for the second /pickup-points fetch
+        // to come back. The full per-store list still lives on the
+        // dedicated endpoint.
+        retailSource: { select: { isActive: true } },
       },
     });
     if (!listing) throw new NotFoundException('Listing not found');
