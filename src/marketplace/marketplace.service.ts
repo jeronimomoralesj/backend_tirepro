@@ -1080,6 +1080,15 @@ export class MarketplaceService {
 
     const imageQualityScore = await this.scoreImageQuality(data.imageUrls ?? null);
 
+    // Defensive: only let `eje` through if it matches one of Prisma's
+    // EjeType enum values. Bulk imports + stale frontends have shipped
+    // values like `"todas"` or `""` which Prisma rejects at the runtime
+    // boundary — easier to drop the field than 500 the whole request.
+    // Keep this list in sync with prisma/schema.prisma:enum EjeType.
+    const VALID_EJE = ['direccion', 'traccion', 'libre', 'remolque', 'repuesto'] as const;
+    const ejeIn = (data.eje ?? '').toString().trim().toLowerCase();
+    const eje = (VALID_EJE as readonly string[]).includes(ejeIn) ? ejeIn : null;
+
     const result = await this.prisma.distributorListing.create({
       data: {
         distributorId: data.distributorId,
@@ -1087,7 +1096,7 @@ export class MarketplaceService {
         marca: data.marca,
         modelo: data.modelo,
         dimension: data.dimension,
-        eje: data.eje as any ?? null,
+        eje: eje as any,
         tipo: data.tipo ?? 'nueva',
         precioCop: data.precioCop,
         precioPromo: data.precioPromo ?? null,
