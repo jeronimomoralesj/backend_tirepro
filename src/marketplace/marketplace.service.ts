@@ -1110,6 +1110,8 @@ export class MarketplaceService {
     dimension: string;
     eje?: string;
     tipo?: string;
+    /** Per-listing delivery override: "domicilio" | "pickup" | "both". */
+    deliveryMode?: string;
     precioCop: number;
     precioPromo?: number;
     promoHasta?: string;
@@ -1187,6 +1189,14 @@ export class MarketplaceService {
     const ejeIn = (data.eje ?? '').toString().trim().toLowerCase();
     const eje = (VALID_EJE as readonly string[]).includes(ejeIn) ? ejeIn : null;
 
+    // deliveryMode is a free string column for now (no Prisma enum), but
+    // we still want to keep the value space tight so dashboards don't
+    // ship surprise modes. Coerce anything outside the allowed set
+    // back to null ("use distributor default").
+    const VALID_DELIVERY = ['domicilio', 'pickup', 'both'] as const;
+    const dmIn = (data.deliveryMode ?? '').toString().trim().toLowerCase();
+    const deliveryMode = (VALID_DELIVERY as readonly string[]).includes(dmIn) ? dmIn : null;
+
     const result = await this.prisma.distributorListing.create({
       data: {
         distributorId: data.distributorId,
@@ -1195,6 +1205,7 @@ export class MarketplaceService {
         modelo: data.modelo,
         dimension: data.dimension,
         eje: eje as any,
+        deliveryMode,
         tipo: data.tipo ?? 'nueva',
         precioCop: data.precioCop,
         precioPromo: data.precioPromo ?? null,
@@ -1415,6 +1426,7 @@ export class MarketplaceService {
     imageUrls: string[];
     coverIndex: number;
     isActive: boolean;
+    deliveryMode: string | null;
   }>) {
     const listing = await this.prisma.distributorListing.findUnique({ where: { id } });
     if (!listing) throw new NotFoundException('Listing not found');
@@ -1423,6 +1435,14 @@ export class MarketplaceService {
     const updateData: any = { ...data };
     if (data.promoHasta !== undefined) {
       updateData.promoHasta = data.promoHasta ? new Date(data.promoHasta) : null;
+    }
+    // Same enum guard as createListing — accept domicilio | pickup |
+    // both, treat anything else (or empty string) as "clear the
+    // override and fall back to distributor default".
+    if (data.deliveryMode !== undefined) {
+      const VALID = ['domicilio', 'pickup', 'both'];
+      const dm = (data.deliveryMode ?? '').toString().trim().toLowerCase();
+      updateData.deliveryMode = VALID.includes(dm) ? dm : null;
     }
 
     const result = await this.prisma.distributorListing.update({ where: { id }, data: updateData });

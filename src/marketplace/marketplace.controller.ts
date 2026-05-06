@@ -256,6 +256,8 @@ export class MarketplaceController {
     dimension: string;
     eje?: string;
     tipo?: string;
+    /** "domicilio" | "pickup" | "both" — overrides distributor default. */
+    deliveryMode?: string;
     precioCop: number;
     precioPromo?: number;
     promoHasta?: string;
@@ -344,6 +346,8 @@ export class MarketplaceController {
       descripcion: string;
       imageUrl: string;
       isActive: boolean;
+      /** "domicilio" | "pickup" | "both" — null clears the override. */
+      deliveryMode: string | null;
     }>,
   ) {
     const { distributorId, ...data } = body;

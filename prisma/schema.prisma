@@ -1759,6 +1759,13 @@ model DistributorListing {
   // must never write to this column — declared nullable so Prisma omits
   // it from INSERT payloads.
   inStock            Boolean?
+  // Per-listing delivery mode — explicit override of the distributor's
+  // overall tipoEntrega for this specific SKU. Lets a distributor mark
+  // certain tires pickup-only (e.g. heavy commercial sizes that don't
+  // ship economically) or delivery-only (warehouse SKUs with no retail
+  // bodega coverage). Null falls back to the distributor's default.
+  // Values: "domicilio" | "pickup" | "both"
+  deliveryMode       String?
   tiempoEntrega      String?
 
   descripcion       String? @db.Text
