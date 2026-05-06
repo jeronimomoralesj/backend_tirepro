@@ -835,6 +835,79 @@ export class PaymentsService {
     return { ok: true, reason: `Processed ${normalized}` };
   }
 
+  // ===========================================================================
+  // RECONCILE — webhook-failure rescue. When Bold's webhook never reaches
+  // us (network blip, signing-key mismatch, dashboard misconfiguration),
+  // an already-paid order can sit forever in `pago_pendiente` and the
+  // distributor never sees it. This handler polls Bold's transaction-
+  // status endpoint by reference, finds the truth, and runs the same
+  // status cascade the webhook would have run.
+  //
+  // Idempotent — calling reconcile on an already-finalised Payment is a
+  // no-op. Public endpoint (no auth) because the reference is server-
+  // generated and unguessable; an attacker would gain nothing by hitting
+  // it for an unknown ref (404) or a known one (Bold's API is the source
+  // of truth, not the request body).
+  // ===========================================================================
+  async reconcileBoldPayment(reference: string) {
+    const payment = await this.prisma.payment.findUnique({ where: { boldOrderId: reference } });
+    if (!payment) {
+      this.logger.warn(`Bold reconcile for unknown reference ${reference}`);
+      return { ok: false, reason: 'Unknown reference' };
+    }
+    if (payment.provider !== 'bold') {
+      return { ok: false, reason: 'Payment is not a Bold payment' };
+    }
+
+    // Already final — nothing to do. Caller can safely poll us repeatedly.
+    if (payment.status === 'approved' || payment.status === 'declined' || payment.status === 'voided') {
+      return { ok: true, reason: `Already ${payment.status}`, status: payment.status };
+    }
+
+    const txn = await this.bold.getTransactionByReference(reference);
+    if (!txn) {
+      return { ok: true, reason: 'No transaction at Bold yet', status: 'pending' };
+    }
+
+    const normalized = this.bold.normalizeTransactionStatus(txn.payment_status);
+    this.logger.log(
+      `Bold reconcile ref=${reference} bold_status=${txn.payment_status} → normalized=${normalized} txn_id=${txn.transaction_id}`,
+    );
+
+    if (normalized === 'pending') {
+      // Bold hasn't finalised yet (PSE pending, processing, etc.). Caller
+      // should poll again in a few seconds.
+      return { ok: true, reason: `Bold still ${txn.payment_status}`, status: 'pending' };
+    }
+
+    // Idempotent: if we already saw this final state, no-op.
+    if (payment.status === normalized && payment.boldPaymentId === txn.transaction_id) {
+      return { ok: true, reason: 'Already processed', status: normalized };
+    }
+
+    await this.prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        boldPaymentId:  txn.transaction_id ?? payment.boldPaymentId,
+        status:         normalized,
+        paymentMethod:  txn.payment_method ?? payment.paymentMethod,
+        paidAt:         normalized === 'approved' ? new Date() : payment.paidAt,
+        // Mark this row as resolved via the polling fallback so we can
+        // tell from the DB which orders were rescued without a webhook.
+        rawWebhookData: { reconciledAt: new Date().toISOString(), source: 'reconcile', txn } as any,
+      },
+    });
+
+    if (normalized === 'approved') {
+      await this.advanceOrdersToPendiente(payment.id);
+      await this.notifyBuyerPaymentApproved(payment.id);
+    } else if (normalized === 'declined' || normalized === 'voided') {
+      await this.markOrdersCancelledByPayment(payment.id, normalized);
+    }
+
+    return { ok: true, reason: `Reconciled to ${normalized}`, status: normalized };
+  }
+
   private normalizeStatus(wompi: string): string {
     switch ((wompi || '').toUpperCase()) {
       case 'APPROVED': return 'approved';

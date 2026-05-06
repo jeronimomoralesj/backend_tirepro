@@ -1810,6 +1810,14 @@ export class MarketplaceService {
         // between rendering the form vs the thank-you state without a
         // second round-trip.
         survey: { select: { id: true, rating: true, comment: true, createdAt: true } },
+        // Surface the Bold reference so the tracking page can call
+        // /payments/bold/reconcile/{reference} when an order is still
+        // pago_pendiente. Webhooks aren't always reliable; the rescue
+        // poll happens straight from the buyer's browser when they
+        // land back on the tracking page.
+        payment: {
+          select: { id: true, provider: true, boldOrderId: true, status: true },
+        },
       },
     });
     if (!order) throw new NotFoundException('Order not found');

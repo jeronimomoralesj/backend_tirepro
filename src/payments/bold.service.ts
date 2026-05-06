@@ -15,7 +15,25 @@ import * as crypto from 'crypto';
 // `x-bold-signature` header (base64). The signing secret is the "Llave
 // secreta para webhook" issued in the Bold dashboard when you create the
 // webhook subscription — different from the public/identity key.
-const BOLD_LINK_API = 'https://integrations.api.bold.co/online/link/v1';
+const BOLD_LINK_API   = 'https://integrations.api.bold.co/online/link/v1';
+// Transaction-status API for Botón de Pagos. We poll this when the
+// webhook doesn't arrive (network blip / Bold delivery issue / wrong
+// signing key) so an already-paid order still resolves correctly.
+//   GET https://payments.api.bold.co/v2/payment-voucher/{reference}
+//   Header: Authorization: x-api-key <identity>
+//   Response: { payment_status, transaction_id, reference_id, total, ... }
+const BOLD_STATUS_API = 'https://payments.api.bold.co/v2/payment-voucher';
+
+/** Shape of the response from Bold's transaction-status endpoint. */
+export type BoldTransactionStatus = {
+  payment_status?: 'APPROVED' | 'REJECTED' | 'FAILED' | 'VOIDED' | 'PROCESSING' | 'PENDING' | 'NO_TRANSACTION_FOUND' | string;
+  transaction_id?: string;
+  reference_id?: string;
+  total?: number;
+  subtotal?: number;
+  payment_method?: string;
+  [k: string]: any;
+};
 
 export type BoldPaymentLinkRequest = {
   /** Our reference — we set this to Payment.boldOrderId so the webhook can
@@ -226,6 +244,80 @@ export class BoldService {
    */
   generateReference(): string {
     return `tp_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+  }
+
+  /**
+   * Look up a transaction at Bold by the reference we sent (= our
+   * Payment.boldOrderId). Used as a webhook-failure fallback: when
+   * Bold's webhook never reaches us we can poll this endpoint and
+   * still reconcile the order. Returns null when:
+   *   - The identity key is misconfigured
+   *   - Bold returns 404 (no payment attempt yet) or 401 (bad key)
+   *   - Network error
+   *
+   * NOTE: This API works for production only. Bold's docs explicitly
+   * warn that test-mode keys do NOT receive webhook notifications and
+   * the test status endpoint may behave differently.
+   */
+  async getTransactionByReference(reference: string): Promise<BoldTransactionStatus | null> {
+    const identityKey = process.env.BOLD_IDENTITY_KEY;
+    if (!identityKey) {
+      this.logger.warn('BOLD_IDENTITY_KEY not configured — cannot poll transaction status');
+      return null;
+    }
+
+    let res: Response;
+    try {
+      res = await fetch(`${BOLD_STATUS_API}/${encodeURIComponent(reference)}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `x-api-key ${identityKey}`,
+          'Accept':        'application/json',
+        },
+      });
+    } catch (err: any) {
+      this.logger.warn(`Bold status API network error for ${reference}: ${err?.message ?? err}`);
+      return null;
+    }
+
+    if (res.status === 404) {
+      // No transaction recorded yet — buyer hasn't paid (or hasn't
+      // returned from the modal). Caller should treat this as "still
+      // pending" and try again later.
+      return null;
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      this.logger.warn(`Bold status API ${res.status} for ${reference}: ${body}`);
+      return null;
+    }
+
+    try {
+      const json = await res.json();
+      // Bold sometimes wraps the payload under `payload` (matching the
+      // Link API shape), sometimes returns it at the top level. Normalise.
+      return (json?.payload ?? json) as BoldTransactionStatus;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Map a Bold transaction-status string (from the polling endpoint)
+   * to our internal Payment.status. Slightly different value space
+   * from the webhook event types, hence its own normaliser.
+   */
+  normalizeTransactionStatus(s: string | undefined): 'approved' | 'declined' | 'voided' | 'pending' {
+    switch ((s ?? '').toUpperCase()) {
+      case 'APPROVED':           return 'approved';
+      case 'REJECTED':
+      case 'FAILED':             return 'declined';
+      case 'VOIDED':             return 'voided';
+      case 'PROCESSING':
+      case 'PENDING':
+      case 'NO_TRANSACTION_FOUND':
+      default:                   return 'pending';
+    }
   }
 
   /**

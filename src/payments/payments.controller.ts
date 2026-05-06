@@ -4,6 +4,7 @@ import {
   Get,
   Patch,
   Body,
+  Param,
   Req,
   HttpCode,
   HttpStatus,
@@ -187,6 +188,26 @@ export class PaymentsController {
       rawBody:         req?.rawBody,
       signatureHeader: req?.headers?.['x-bold-signature'],
     });
+  }
+
+  // ===========================================================================
+  // BOLD RECONCILE — webhook-failure rescue. The order tracking page
+  // calls this when a buyer lands back from Bold but the order is still
+  // `pago_pendiente` (i.e. webhook hasn't arrived yet). We poll Bold's
+  // transaction-status API for the truth and resolve the Payment + Orders
+  // accordingly. Idempotent and safe to call repeatedly.
+  //
+  // Public endpoint: the reference is server-generated and unguessable
+  // (`tp_<ts>_<rand>`), and Bold's API is the source of truth, so an
+  // attacker hitting it gains nothing.
+  // ===========================================================================
+  @Post('bold/reconcile/:reference')
+  @HttpCode(HttpStatus.OK)
+  async boldReconcile(@Param('reference') reference: string) {
+    if (!reference?.startsWith('tp_')) {
+      throw new BadRequestException('Invalid reference');
+    }
+    return this.svc.reconcileBoldPayment(reference);
   }
 
   // ===========================================================================
