@@ -146,45 +146,55 @@ export class BoldService {
 
   /**
    * Verify the HMAC signature on a Bold webhook delivery.
-   *   - Header: `x-bold-signature` (base64 HMAC-SHA256 of the raw body).
-   *   - Secret: BOLD_WEBHOOK_SECRET — the "llave secreta para webhook" Bold
-   *     issues in the dashboard, separate from the API identity / secret keys.
    *
-   * IMPORTANT: We must hash the *raw* request body (the bytes Bold actually
-   * sent), not a re-serialized JSON object. main.ts attaches `req.rawBody`
-   * for the Bold webhook route specifically — see the express.json verify
-   * callback there.
+   * Bold's exact recipe (per developers.bold.co/webhook):
+   *   1. Take the raw request body bytes.
+   *   2. Base64-encode them.
+   *   3. HMAC-SHA256 the base64 STRING using your "llave secreta" as the
+   *      key. (Yes — they hash the base64 representation, not the raw
+   *      bytes. This is unusual but spec'd.)
+   *   4. Hex-encode the result.
+   *   5. Compare against the `x-bold-signature` header (hex).
    *
-   * Behaviour when the secret is unset:
-   *   - Returns true (lenient — same fallback the Wompi webhook uses).
-   *   - Logs a warning so we notice in CloudWatch and add the secret.
-   * Behaviour when verification fails:
-   *   - Returns false. The caller logs a warning but still processes the
-   *     event (Bold retries on non-2xx; the integrity hash on the link
-   *     already prevents amount tampering, and we re-check status against
-   *     our stored amount before accepting).
+   * Notes:
+   *   - In Bold's TEST environment the signing key is the empty string
+   *     "" (not the test secret key). For production we use the real
+   *     llave secreta.
+   *   - We rely on `req.rawBody` (set up in main.ts only on the Bold
+   *     webhook route) — re-serializing the parsed body would re-order
+   *     keys and the base64 wouldn't match.
+   *   - There's no "BOLD_WEBHOOK_SECRET" in the Bold dashboard — the
+   *     webhook signing secret IS the same llave secreta you use for
+   *     button integrity hashes. We accept BOLD_WEBHOOK_SECRET as an
+   *     override only for cases where the user has rotated keys
+   *     out-of-band; otherwise we fall back to BOLD_SECRET_KEY.
+   *
+   * Lenient when no secret is available at all (logs + accepts) — same
+   * fallback as the Wompi handler. Bold retries on non-2xx, and the
+   * link is amount-locked server-side, so spoofed events can't change
+   * what's already in our Payment row.
    */
   verifyWebhookSignature(rawBody: Buffer | string | undefined, signatureHeader: string | undefined): boolean {
-    const secret = process.env.BOLD_WEBHOOK_SECRET;
-    if (!secret) {
-      this.logger.warn('BOLD_WEBHOOK_SECRET not configured — accepting webhook unverified');
+    const secret = process.env.BOLD_WEBHOOK_SECRET || process.env.BOLD_SECRET_KEY;
+    if (secret === undefined) {
+      this.logger.warn('Neither BOLD_WEBHOOK_SECRET nor BOLD_SECRET_KEY configured — accepting webhook unverified');
       return true;
     }
     if (!rawBody || !signatureHeader) return false;
 
     const buf = typeof rawBody === 'string' ? Buffer.from(rawBody, 'utf8') : rawBody;
-    const computed = crypto
-      .createHmac('sha256', secret)
-      .update(buf)
-      .digest('base64');
+    const bodyBase64 = buf.toString('base64');
 
-    // Bold may include the signature alone or pair it with a timestamp.
-    // Match the first base64-looking token in the header.
-    const candidate = signatureHeader.trim().split(',').map((s) => s.trim()).pop() ?? signatureHeader.trim();
+    const computedHex = crypto
+      .createHmac('sha256', secret)
+      .update(bodyBase64)
+      .digest('hex');
+
+    const candidate = signatureHeader.trim();
 
     try {
-      const a = Buffer.from(computed, 'base64');
-      const b = Buffer.from(candidate, 'base64');
+      const a = Buffer.from(computedHex, 'utf8');
+      const b = Buffer.from(candidate, 'utf8');
       if (a.length !== b.length) return false;
       return crypto.timingSafeEqual(a, b);
     } catch {
