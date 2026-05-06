@@ -1752,6 +1752,13 @@ model DistributorListing {
   // change. Declared `Int?` here so Prisma omits it from INSERT
   // payloads; in practice the DB always populates it.
   inventoryRank      Int?
+  // Postgres-managed STORED generated boolean: cantidadDisponible > 0.
+  // Used as the primary sort key on every marketplace listings query
+  // so out-of-stock items sink to the bottom regardless of the buyer's
+  // chosen secondary sort (price asc, newest, etc.). Application code
+  // must never write to this column — declared nullable so Prisma omits
+  // it from INSERT payloads.
+  inStock            Boolean?
   tiempoEntrega      String?
 
   descripcion       String? @db.Text
@@ -1782,6 +1789,7 @@ model DistributorListing {
   @@index([isActive, imageQualityScore, createdAt])
   @@index([isActive, precioCop])
   @@index([isActive, inventoryRank])
+  @@index([isActive, inStock])
   @@index([tipo, isActive])
   @@map("distributor_listings")
 }

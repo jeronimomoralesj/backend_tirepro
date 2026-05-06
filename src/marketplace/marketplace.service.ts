@@ -596,11 +596,12 @@ export class MarketplaceService {
 
     const listings = await this.prisma.distributorListing.findMany({
       where: { isActive: true, marca: { equals: brand.name, mode: 'insensitive' } },
-      // Primary sort by inventoryRank desc — the Postgres-generated
-      // LEAST(cantidadDisponible, 50) column. Listings with stock land at
-      // the top, zero-stock items always sink to the bottom (rank=0).
-      // Image quality + recency break ties between equally-stocked rows.
+      // inStock (binary) → inventoryRank (tier 0-50) → image quality →
+      // recency. The binary partition guarantees out-of-stock listings
+      // sink to the bottom regardless of any tier ties; inventoryRank
+      // then sorts among in-stock items so deeper-stock products lead.
       orderBy: [
+        { inStock: 'desc' },
         { inventoryRank: 'desc' },
         { imageQualityScore: 'desc' },
         { createdAt: 'desc' },
@@ -931,12 +932,21 @@ export class MarketplaceService {
     //     listings with the same price don't swap between requests
     //     — without it pagination can show the same listing twice
     //     (or skip one) when ordering ties exist.
+    // Every non-default sort prepends `inStock desc` so listings with
+    // 0 warehouse stock fall to the bottom regardless of the buyer's
+    // chosen sort. inStock is a Postgres-generated boolean
+    // (cantidadDisponible > 0) — true sorts before false on `desc`,
+    // giving us a clean binary partition instead of the count-based
+    // zigzag that motivated removing inventoryRank from these branches.
     let orderBy: any;
     switch (filters.sortBy) {
-      case 'price_asc':  orderBy = [{ precioCop: 'asc'  }, { id: 'asc' }]; break;
-      case 'price_desc': orderBy = [{ precioCop: 'desc' }, { id: 'asc' }]; break;
-      case 'newest':     orderBy = [{ createdAt: 'desc' }, { id: 'asc' }]; break;
+      case 'price_asc':  orderBy = [{ inStock: 'desc' }, { precioCop: 'asc'  }, { id: 'asc' }]; break;
+      case 'price_desc': orderBy = [{ inStock: 'desc' }, { precioCop: 'desc' }, { id: 'asc' }]; break;
+      case 'newest':     orderBy = [{ inStock: 'desc' }, { createdAt: 'desc' }, { id: 'asc' }]; break;
       default: orderBy = [
+        // Default / relevance: stick with inventoryRank because high-stock
+        // listings are objectively more relevant; the binary inStock would
+        // collapse all in-stock items to a tie, then secondary keys decide.
         { inventoryRank:     'desc' },
         { imageQualityScore: 'desc' },
         { createdAt:         'desc' },
@@ -983,7 +993,10 @@ export class MarketplaceService {
   async getDistributorListings(distributorId: string) {
     return this.prisma.distributorListing.findMany({
       where: { distributorId },
-      orderBy: { updatedAt: 'desc' },
+      // Out-of-stock listings sink to the bottom; among in-stock items,
+      // most recently updated wins (matches the buyer's expectation that
+      // freshly restocked / repriced items lead).
+      orderBy: [{ inStock: 'desc' }, { updatedAt: 'desc' }],
       include: {
         catalog: { select: { id: true, skuRef: true, marca: true, modelo: true, dimension: true } },
         _count: { select: { orders: true, reviews: true } },
