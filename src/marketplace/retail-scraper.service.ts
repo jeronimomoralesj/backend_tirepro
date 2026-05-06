@@ -463,13 +463,21 @@ export class RetailScraperService {
     }
 
     // Dedupe — defence in depth. Some renders (modal re-opens, multiple
-    // city tabs visible at once, partial-fragment swaps) can land the
-    // same store-box more than once in the DOM. Prefer the row with the
-    // higher stockUnits when an externalId collides; fall back to name
-    // when externalId is null.
+    // city tabs visible at once, the same store rendered separately for
+    // pickup vs delivery, partial-fragment swaps) land the same store-
+    // box more than once in the DOM, sometimes with subtly different
+    // externalIds (`AKB30`, `AKB30-1`, `AKB30-mobile`, etc.). Keying
+    // dedup off externalId alone produced 4–5 copies of the same
+    // physical store on the buyer's "Recoger en tienda" picker.
+    //
+    // The new key is `name|city` lowercased — a physical store has a
+    // single name within a city. Among entries that collide, we keep
+    // the row reporting the highest stock (Alkosto's dual-render bug
+    // sometimes ships one row with the right number and one with a
+    // skeleton "0", so highest-wins is the safer choice).
     const dedup = new Map<string, ScrapedPickupPoint>();
     for (const p of points) {
-      const key = (p.externalId ?? p.name).toLowerCase().trim();
+      const key = `${p.name.toLowerCase().trim()}|${p.city.toLowerCase().trim()}`;
       const existing = dedup.get(key);
       if (!existing || p.stockUnits > existing.stockUnits) {
         dedup.set(key, p);

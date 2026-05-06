@@ -256,23 +256,44 @@ export class RetailSourceService {
     try {
       const result = await this.scraper.fetch(source.url);
       // Fold the new points onto the existing rows. Two passes:
-      //   1. Upsert each scraped point keyed by externalId
-      //   2. Zero out any existing point that wasn't in the new payload
+      //   1. Upsert each scraped point — match against existing rows
+      //      by externalId first, falling back to (name, city) so
+      //      stores Alkosto ships without a stable id don't get
+      //      re-created on every refresh (was producing 4–5 duplicate
+      //      rows for the same physical bodega).
+      //   2. Zero out any existing row that wasn't matched in this run,
+      //      including legacy duplicates accumulated before the fix.
+      //      Stock-zero is preferred over delete to keep historical
+      //      MarketplaceOrder.pickupPointId references intact.
       const existing = await this.prisma.retailPickupPoint.findMany({
         where: { sourceId },
-        select: { id: true, externalId: true },
+        select: { id: true, externalId: true, name: true, city: true },
       });
-      const seenExternalIds = new Set<string>();
+      const norm = (s: string) => s.toLowerCase().trim();
+      const seenIds = new Set<string>();
       for (const p of result.points) {
         const externalId = p.externalId ?? null;
-        const match = existing.find((e) =>
-          (e.externalId ?? null) === externalId && externalId !== null,
-        );
-        if (externalId) seenExternalIds.add(externalId);
+        // Match priority:
+        //   1. externalId match (when both sides have a non-null id)
+        //   2. (name, city) match — handles Alkosto stores without a
+        //      stable id, AND legacy duplicate rows from before this
+        //      fix landed (we'll match the FIRST one and zero the rest)
+        let match = externalId
+          ? existing.find((e) => e.externalId === externalId && !seenIds.has(e.id))
+          : null;
+        if (!match) {
+          match = existing.find((e) =>
+            norm(e.name) === norm(p.name) &&
+            norm(e.city) === norm(p.city) &&
+            !seenIds.has(e.id),
+          );
+        }
         if (match) {
+          seenIds.add(match.id);
           await this.prisma.retailPickupPoint.update({
             where: { id: match.id },
             data: {
+              externalId, // backfill if the row was created without one
               name: p.name,
               address: p.address ?? null,
               city: p.city,
@@ -285,7 +306,7 @@ export class RetailSourceService {
             },
           });
         } else {
-          await this.prisma.retailPickupPoint.create({
+          const created = await this.prisma.retailPickupPoint.create({
             data: {
               sourceId,
               externalId,
@@ -299,13 +320,40 @@ export class RetailSourceService {
               stockUnits: p.stockUnits,
               refreshedAt: fetchedAt,
             },
+            select: { id: true },
           });
+          seenIds.add(created.id);
         }
       }
-      // Zero out anything the retailer dropped from their list.
-      const droppedIds = existing
-        .filter((e) => e.externalId && !seenExternalIds.has(e.externalId))
+      // Cleanup pass — split unseen rows into two buckets:
+      //   1. Legacy duplicates (same (name, city) as a row we DID
+      //      match): hard-delete. Safe because pickupPointId is a
+      //      soft FK by design (see schema: "NOT a hard FK because we
+      //      want the order detail to survive even if the pickup
+      //      point gets deleted later") and orders carry denormalised
+      //      pickupPointName + pickupCity, so deleting the pickup
+      //      point row doesn't break order display. This is what
+      //      collapses the 4× "Alkomprar Florida 9 u." rows the user
+      //      was seeing into a single row.
+      //   2. Genuinely dropped by the retailer: keep the row but zero
+      //      its stock so any historical order still resolves the
+      //      pickup-point id to a real-but-empty record.
+      const seenNameCity = new Set<string>();
+      for (const id of seenIds) {
+        const row = existing.find((e) => e.id === id);
+        if (row) seenNameCity.add(`${norm(row.name)}|${norm(row.city)}`);
+      }
+      const dupeIds = existing
+        .filter((e) => !seenIds.has(e.id) && seenNameCity.has(`${norm(e.name)}|${norm(e.city)}`))
         .map((e) => e.id);
+      const droppedIds = existing
+        .filter((e) => !seenIds.has(e.id) && !seenNameCity.has(`${norm(e.name)}|${norm(e.city)}`))
+        .map((e) => e.id);
+
+      if (dupeIds.length > 0) {
+        await this.prisma.retailPickupPoint.deleteMany({ where: { id: { in: dupeIds } } });
+        this.logger.log(`Removed ${dupeIds.length} duplicate pickup-point row${dupeIds.length === 1 ? '' : 's'} from source ${sourceId}`);
+      }
       if (droppedIds.length > 0) {
         await this.prisma.retailPickupPoint.updateMany({
           where: { id: { in: droppedIds } },
