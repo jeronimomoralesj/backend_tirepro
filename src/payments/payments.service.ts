@@ -558,6 +558,189 @@ export class PaymentsService {
   }
 
   // ===========================================================================
+  // BOLD BUTTON CONFIG — same as createBoldCheckout but returns the data
+  // attributes for Bold's <script data-bold-button> widget instead of
+  // server-minted link URL. The buyer-facing CTA on the cart is Bold's
+  // own polished button (with their logo), and Bold's library opens its
+  // checkout when clicked.
+  //
+  // We still create the Payment + MarketplaceOrder rows up-front and lock
+  // the amount via the integrity hash, so the webhook reconciliation flow
+  // is identical to the link-based path. The only difference is who hosts
+  // the redirect: Bold renders the button + opens its own checkout, vs.
+  // us pre-minting a link and pushing the buyer there.
+  // ===========================================================================
+  async createBoldButtonConfig(input: {
+    items: Array<{
+      listingId: string;
+      quantity: number;
+      pickupPointId?: string;
+    }>;
+    userId?: string;
+    buyerName: string;
+    buyerEmail: string;
+    buyerPhone?: string;
+    buyerAddress?: string;
+    buyerCity?: string;
+    buyerCompany?: string;
+    notas?: string;
+    /** Where Bold sends the buyer back after the checkout (frontend URL). */
+    redirectBaseUrl: string;
+  }) {
+    if (!input.items?.length) throw new BadRequestException('Cart is empty');
+    if (!input.buyerName?.trim() || !input.buyerEmail?.trim()) {
+      throw new BadRequestException('Buyer name and email are required');
+    }
+
+    // Resolve listings + run the same validation as createBoldCheckout.
+    const listings = await this.prisma.distributorListing.findMany({
+      where: { id: { in: input.items.map((i) => i.listingId) } },
+      include: {
+        distributor: { select: { id: true, slug: true, name: true, emailAtencion: true } },
+        retailSource: {
+          select: {
+            isActive: true,
+            pickupPoints: { select: { id: true, stockUnits: true } },
+          },
+        },
+      },
+    });
+    if (listings.length !== input.items.length) {
+      throw new BadRequestException('One or more products are no longer available');
+    }
+    for (const item of input.items) {
+      const l = listings.find((x) => x.id === item.listingId)!;
+      if (!l.isActive) throw new BadRequestException(`${l.marca} ${l.modelo} ya no está disponible`);
+      if (item.pickupPointId) continue;
+      const partnerStock = (l.retailSource?.isActive ? l.retailSource.pickupPoints : [])
+        .reduce((s, p) => s + Math.max(0, p.stockUnits), 0);
+      const effectiveStock = l.cantidadDisponible + partnerStock;
+      if (effectiveStock < item.quantity) {
+        const detail = partnerStock > 0
+          ? `Solo ${effectiveStock} unidades disponibles entre nuestro inventario y los puntos aliados`
+          : `Sin unidades disponibles`;
+        throw new BadRequestException(`${detail} de ${l.marca} ${l.modelo}`);
+      }
+    }
+
+    const pickupRequests = input.items
+      .map((item) => ({ listingId: item.listingId, pickupPointId: item.pickupPointId }))
+      .filter((p) => !!p.pickupPointId);
+    const pickupPointMap = new Map<string, { id: string; name: string; city: string; cityDisplay: string | null }>();
+    if (pickupRequests.length > 0) {
+      const pps = await this.prisma.retailPickupPoint.findMany({
+        where: { id: { in: pickupRequests.map((p) => p.pickupPointId!) } },
+        include: { source: { select: { listingId: true, isActive: true } } },
+      });
+      for (const req of pickupRequests) {
+        const pp = pps.find((x) => x.id === req.pickupPointId);
+        if (!pp || !pp.source?.isActive || pp.source.listingId !== req.listingId) {
+          throw new BadRequestException('Punto de recogida no válido para este producto');
+        }
+        if (pp.stockUnits <= 0) {
+          throw new BadRequestException(`${pp.name} no tiene unidades disponibles ahora`);
+        }
+        pickupPointMap.set(req.listingId, {
+          id: pp.id, name: pp.name, city: pp.city, cityDisplay: pp.cityDisplay,
+        });
+      }
+    }
+
+    const orderInputs = input.items.map((item) => {
+      const l = listings.find((x) => x.id === item.listingId)!;
+      const totalCop = l.precioCop * item.quantity;
+      const feeCop   = Math.round(totalCop * FEE_RATE);
+      const netCop   = totalCop - feeCop;
+      const pickup   = item.pickupPointId ? pickupPointMap.get(item.listingId) ?? null : null;
+      return { listing: l, quantity: item.quantity, totalCop, feeCop, netCop, pickup };
+    });
+    const grossCop = orderInputs.reduce((s, o) => s + o.totalCop, 0);
+    const feeCop   = orderInputs.reduce((s, o) => s + o.feeCop,   0);
+    const netCop   = orderInputs.reduce((s, o) => s + o.netCop,   0);
+
+    const reference = this.bold.generateReference();
+    const result = await this.prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.create({
+        data: {
+          provider:    'bold',
+          boldOrderId: reference,
+          status:      'pending',
+          grossCop,
+          feeCop,
+          netCop,
+          buyerEmail:  input.buyerEmail,
+        },
+      });
+      const orders = await Promise.all(orderInputs.map((o) => tx.marketplaceOrder.create({
+        data: {
+          listingId:      o.listing.id,
+          distributorId:  o.listing.distributorId,
+          quantity:       o.quantity,
+          totalCop:       o.totalCop,
+          feeCop:         o.feeCop,
+          netCop:         o.netCop,
+          paymentId:      payment.id,
+          status:         'pago_pendiente',
+          userId:         input.userId ?? null,
+          buyerName:      input.buyerName,
+          buyerEmail:     input.buyerEmail,
+          buyerPhone:     input.buyerPhone ?? null,
+          buyerAddress:   input.buyerAddress ?? null,
+          buyerCity:      input.buyerCity ?? null,
+          buyerCompany:   input.buyerCompany ?? null,
+          notas:          input.notas ?? null,
+          deliveryMode:   o.pickup ? 'pickup' : 'domicilio',
+          pickupPointId:  o.pickup?.id ?? null,
+          pickupPointName: o.pickup?.name ?? null,
+          pickupCity:     o.pickup?.cityDisplay ?? o.pickup?.city ?? null,
+          statusHistory: [{ status: 'pago_pendiente', at: new Date().toISOString() }] as any,
+        },
+        include: { listing: true, distributor: { select: { name: true } } },
+      })));
+      return { payment, orders };
+    });
+
+    const integritySignature = this.bold.generateIntegrityHash(reference, grossCop);
+    const redirectionUrl = `${input.redirectBaseUrl}/marketplace/order/${result.orders[0].id}?email=${encodeURIComponent(input.buyerEmail)}`;
+    const description = `TirePro Marketplace · ${result.orders.length} producto${result.orders.length === 1 ? '' : 's'}`.slice(0, 100);
+
+    // customerData / billingAddress are JSON strings per Bold's docs — we
+    // pass them through to the widget so Bold's checkout can prefill the
+    // payer details and skip a re-entry step.
+    const customerData = JSON.stringify({
+      email:    input.buyerEmail,
+      fullName: input.buyerName,
+      ...(input.buyerPhone ? { phone: input.buyerPhone, dialCode: '+57' } : {}),
+    });
+    const billingAddress = (input.buyerAddress && input.buyerCity)
+      ? JSON.stringify({
+          address:  input.buyerAddress,
+          city:     input.buyerCity,
+          state:    input.buyerCity,
+          country:  'CO',
+          zipCode:  '00000',
+        })
+      : null;
+
+    return {
+      // Frontend renders these on the <script data-bold-button> tag.
+      apiKey:             process.env.BOLD_IDENTITY_KEY,
+      orderId:            reference,
+      amount:             grossCop,
+      currency:           'COP',
+      integritySignature,
+      redirectionUrl,
+      description,
+      customerData,
+      ...(billingAddress ? { billingAddress } : {}),
+      // Buyer-side bookkeeping — same as the link-based path so the
+      // post-checkout tracking page loads the right order.
+      paymentId: result.payment.id,
+      orderIds:  result.orders.map((o) => o.id),
+    };
+  }
+
+  // ===========================================================================
   // Bold webhook — fired on every transaction state change (SALE_APPROVED
   // / SALE_REJECTED / VOID_APPROVED / VOID_REJECTED). Idempotent: replays
   // for the same (reference, payment_id, status) are a no-op.

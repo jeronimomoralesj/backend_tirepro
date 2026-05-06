@@ -133,6 +133,47 @@ export class PaymentsController {
   }
 
   // ===========================================================================
+  // BOLD BUTTON CONFIG — used when the cart wants to render Bold's official
+  // <script data-bold-button> widget instead of redirecting to a hosted
+  // checkout link. Returns the data attributes (api key, integrity hash,
+  // amount, etc.) for the buyer-facing CTA on the cart page. Same Payment
+  // / MarketplaceOrder rows are created up-front as the link flow, so the
+  // webhook reconciliation is identical regardless of which path was used.
+  // ===========================================================================
+  @Post('bold/button-config')
+  async boldButtonConfig(@Req() req: any, @Body() body: {
+    items: Array<{
+      listingId: string;
+      quantity: number;
+      pickupPointId?: string;
+    }>;
+    buyerName: string;
+    buyerEmail: string;
+    buyerPhone?: string;
+    buyerAddress?: string;
+    buyerCity?: string;
+    buyerCompany?: string;
+    notas?: string;
+    redirectBaseUrl: string;
+  }) {
+    if (!body?.items?.length) throw new BadRequestException('items required');
+    if (!body.redirectBaseUrl?.startsWith('http')) {
+      throw new BadRequestException('redirectBaseUrl required');
+    }
+
+    let userId: string | undefined;
+    const authHeader: string | undefined = req?.headers?.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const payload = await this.jwt.verifyAsync(authHeader.slice(7));
+        if (payload?.sub && typeof payload.sub === 'string') userId = payload.sub;
+      } catch { /* invalid token — proceed as guest */ }
+    }
+
+    return this.svc.createBoldButtonConfig({ ...body, userId });
+  }
+
+  // ===========================================================================
   // BOLD WEBHOOK — Bold pings us on SALE_APPROVED / SALE_REJECTED /
   // VOID_APPROVED / VOID_REJECTED. Public endpoint, signature-verified
   // inside the service against `req.rawBody` (set up in main.ts so Bold's

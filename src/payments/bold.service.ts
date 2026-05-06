@@ -227,4 +227,24 @@ export class BoldService {
   generateReference(): string {
     return `tp_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
   }
+
+  /**
+   * Integrity hash for Bold's "Botón de pagos" widget.
+   *   sha256( orderId + amount + currency + secretKey )  → hex
+   *
+   * Per developers.bold.co/pagos-en-linea/boton-de-pagos/integracion-manual.
+   * Generated server-side ONLY — leaking BOLD_SECRET_KEY to the browser
+   * would let anyone mint valid checkout buttons against this merchant.
+   *
+   * Open-amount donations would pass amount=0; we always pass the cart
+   * total so the hash locks the price the buyer sees.
+   */
+  generateIntegrityHash(orderId: string, amountCop: number, currency = 'COP'): string {
+    const secret = process.env.BOLD_SECRET_KEY;
+    if (!secret) throw new Error('BOLD_SECRET_KEY not configured');
+    return crypto
+      .createHash('sha256')
+      .update(`${orderId}${amountCop}${currency}${secret}`)
+      .digest('hex');
+  }
 }
