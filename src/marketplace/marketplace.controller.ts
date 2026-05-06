@@ -538,7 +538,14 @@ export class MarketplaceController {
   @Post('admin/retail-sources/refresh-all')
   @UseGuards(JwtAuthGuard)
   async refreshAllRetailSources(@Req() req: any) {
-    if (req?.user?.role !== 'tirepro_admin') {
+    // Any admin role can fire this — it's read-only against the
+    // public retailer pages and the operation is idempotent. The
+    // role values that show up in JWTs today are `admin` (company
+    // dashboard owners) and `tirepro_admin` (platform super-admin),
+    // both fine here. We refuse any other role so a regular dist
+    // user can't repeatedly DDoS Alkosto from the marketplace.
+    const role = req?.user?.role;
+    if (role !== 'admin' && role !== 'tirepro_admin') {
       throw new ForbiddenException('Admin only');
     }
     // Fire-and-forget — return immediately, log progress server-side.
