@@ -752,29 +752,60 @@ export class PaymentsService {
   }) {
     const { body, rawBody, signatureHeader } = args;
 
+    // Unconditional log so every Bold delivery is visible in pm2/journal —
+    // helpful while we're still confirming the field paths Bold uses for
+    // button-flow events. Once the integration is stable this can drop
+    // back to debug level.
+    this.logger.log(
+      `Bold webhook received — type=${body?.type} subject=${body?.subject} source=${body?.source} keys=${JSON.stringify(Object.keys(body?.data ?? {}))}`,
+    );
+
     if (!this.bold.verifyWebhookSignature(rawBody, signatureHeader)) {
       this.logger.warn(
-        `Bold webhook with invalid signature — ref=${body?.data?.metadata?.reference} type=${body?.type}`,
+        `Bold webhook with invalid signature — type=${body?.type}`,
       );
       // Don't 401: Bold retries on non-2xx and the link is amount-locked
       // server-side, so spoofed events can't change the amount anyway.
       // Same lenient fallback as the Wompi handler.
     }
 
-    const data = body?.data;
-    if (!data) return { ok: false, reason: 'No data' };
+    const data: any = body?.data;
+    if (!data) {
+      this.logger.warn('Bold webhook had no data field — dropping');
+      return { ok: false, reason: 'No data' };
+    }
 
-    const reference = data.metadata?.reference;
-    const paymentId = data.payment_id;
+    // Bold's webhook payload shape varies a bit between flows
+    // (button vs link vs datáfono). Search the most likely paths in
+    // order, taking the first match. Whichever field carries our
+    // boldOrderId, we want to find it.
+    const reference: string | undefined =
+      data.metadata?.reference  // API Link de pagos shape
+      ?? data.metadata?.order_id
+      ?? data.order_id          // Botón de pagos shape (suspected)
+      ?? data.reference
+      ?? (body as any)?.metadata?.reference
+      ?? (body as any)?.reference;
+    const paymentId: string | undefined = data.payment_id ?? data.id;
     const eventType = body.type ?? '';
 
-    if (!reference) return { ok: false, reason: 'No reference' };
+    if (!reference) {
+      // Print the full payload so we can see exactly where Bold put the
+      // reference for this flow and patch the lookup paths above.
+      this.logger.warn(
+        `Bold webhook missing reference — full body=${JSON.stringify(body)}`,
+      );
+      return { ok: false, reason: 'No reference' };
+    }
 
     const payment = await this.prisma.payment.findUnique({ where: { boldOrderId: reference } });
     if (!payment) {
-      this.logger.warn(`Bold webhook for unknown reference ${reference}`);
+      this.logger.warn(`Bold webhook for unknown reference ${reference} — full body=${JSON.stringify(body)}`);
       return { ok: false, reason: 'Unknown reference' };
     }
+    this.logger.log(
+      `Bold webhook matched Payment id=${payment.id} ref=${reference} → status=${this.bold.normalizeStatus(eventType)}`,
+    );
 
     const normalized = this.bold.normalizeStatus(eventType);
 
