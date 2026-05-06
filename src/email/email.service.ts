@@ -15,6 +15,7 @@ import {
   emailCallout,
   emailKvList,
   emailProductCard,
+  emailPaymentBreakdown,
   emailDivider,
   emailLabel,
   emailFallbackLink,
@@ -453,9 +454,12 @@ export class EmailService implements OnModuleInit {
           modelo: opts.listing.modelo,
           dimension: opts.listing.dimension,
           quantity: opts.quantity,
-          totalLabel: 'Total',
-          totalValue: fmtCOP(opts.totalCop),
         }),
+        // Receipt-style breakdown (Subtotal / IVA / Total pagado) so
+        // the email matches the buyer's card statement and the
+        // tracking page Resumen. Computed from the per-order net
+        // totalCop — IVA is stamped on at send time, not stored.
+        emailPaymentBreakdown(opts.totalCop),
         emailKvList([
           { label: 'Pedido',       value: `#${orderNo}` },
           { label: 'Distribuidor', value: opts.distributorName },
@@ -520,9 +524,12 @@ export class EmailService implements OnModuleInit {
           modelo: opts.listing.modelo,
           dimension: opts.listing.dimension,
           quantity: opts.quantity,
-          totalLabel: 'Total',
-          totalValue: fmtCOP(opts.totalCop),
         }),
+        // Receipt-style breakdown (Subtotal / IVA / Total pagado) so
+        // the email matches the buyer's card statement and the
+        // tracking page Resumen. Computed from the per-order net
+        // totalCop — IVA is stamped on at send time, not stored.
+        emailPaymentBreakdown(opts.totalCop),
         emailKvList([
           { label: 'Pedido', value: `#${orderNo}` },
           ...(etaLabel ? [{ label: 'Entrega estimada', value: etaLabel, bold: true }] : []),
@@ -567,9 +574,12 @@ export class EmailService implements OnModuleInit {
           modelo: opts.listing.modelo,
           dimension: opts.listing.dimension,
           quantity: opts.quantity,
-          totalLabel: 'Total',
-          totalValue: fmtCOP(opts.totalCop),
         }),
+        // Receipt-style breakdown (Subtotal / IVA / Total pagado) so
+        // the email matches the buyer's card statement and the
+        // tracking page Resumen. Computed from the per-order net
+        // totalCop — IVA is stamped on at send time, not stored.
+        emailPaymentBreakdown(opts.totalCop),
         emailKvList([
           { label: 'Pedido',       value: `#${orderNo}` },
           { label: 'Distribuidor', value: opts.distributorName },
@@ -622,9 +632,12 @@ export class EmailService implements OnModuleInit {
           modelo: opts.listing.modelo,
           dimension: opts.listing.dimension,
           quantity: opts.quantity,
-          totalLabel: 'Total',
-          totalValue: fmtCOP(opts.totalCop),
         }),
+        // Receipt-style breakdown (Subtotal / IVA / Total pagado) so
+        // the email matches the buyer's card statement and the
+        // tracking page Resumen. Computed from the per-order net
+        // totalCop — IVA is stamped on at send time, not stored.
+        emailPaymentBreakdown(opts.totalCop),
         emailKvList([
           { label: 'Pedido',         value: `#${orderNo}` },
           { label: 'Estado actual',  value: opts.newStatus, bold: true },
@@ -649,7 +662,7 @@ export class EmailService implements OnModuleInit {
   }) {
     const orderNo = opts.orderId.slice(0, 8).toUpperCase();
     const html = wrapEmail({
-      preheader: `Nuevo pedido en el marketplace por ${fmtCOP(opts.totalCop)}.`,
+      preheader: `Nuevo pedido en el marketplace por ${fmtCOP(Math.round(opts.totalCop * 1.19))} (IVA incluido).`,
       eyebrow: 'Nuevo pedido',
       title: 'Te llegó un pedido nuevo',
       subtitle: `Cliente: ${opts.buyerName}${opts.buyerCity ? ` · ${opts.buyerCity}` : ''}`,
@@ -661,9 +674,12 @@ export class EmailService implements OnModuleInit {
           modelo: opts.listing.modelo,
           dimension: opts.listing.dimension,
           quantity: opts.quantity,
-          totalLabel: 'Total',
-          totalValue: fmtCOP(opts.totalCop),
         }),
+        // Receipt-style breakdown (Subtotal / IVA / Total pagado) so
+        // the email matches the buyer's card statement and the
+        // tracking page Resumen. Computed from the per-order net
+        // totalCop — IVA is stamped on at send time, not stored.
+        emailPaymentBreakdown(opts.totalCop),
         emailKvList([
           { label: 'Pedido',       value: `#${orderNo}` },
           { label: 'Comprador',    value: opts.buyerName },

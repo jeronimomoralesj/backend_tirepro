@@ -186,6 +186,40 @@ export function emailKvList(rows: Array<{ label: string; value: string; bold?: b
 }
 
 /**
+ * Payment breakdown — Subtotal / IVA (19%) / Total pagado. Mirrors
+ * the Resumen block on the cart and order tracking page so the
+ * email receipt matches what the buyer's card statement will show
+ * (gross, with IVA). Pass the per-order net subtotal (totalCop in
+ * the schema); IVA is computed on the fly. The "Total pagado" row
+ * is visually emphasised with a top border to read like a receipt.
+ */
+export function emailPaymentBreakdown(subtotalCop: number, ivaRate = 0.19): string {
+  const iva = Math.round(subtotalCop * ivaRate);
+  const total = subtotalCop + iva;
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px;background:#ffffff;border:1px solid ${BRAND.hairline};border-radius:12px;">
+    <tr><td style="padding:14px 16px 6px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:${BRAND.blue};">Resumen de pago</td></tr>
+    <tr>
+      <td style="padding:0 16px 4px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="padding:4px 0;font-size:13px;color:${BRAND.muted};">Subtotal</td>
+            <td align="right" style="padding:4px 0;font-size:13px;font-weight:700;color:${BRAND.text};">${fmtCOP(subtotalCop)}</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 0;font-size:13px;color:${BRAND.muted};">IVA (19%)</td>
+            <td align="right" style="padding:4px 0;font-size:13px;font-weight:700;color:${BRAND.text};">${fmtCOP(iva)}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 0 12px;font-size:14px;font-weight:800;color:${BRAND.navy};border-top:1px dashed ${BRAND.hairline};">Total pagado</td>
+            <td align="right" style="padding:8px 0 12px;font-size:14px;font-weight:900;color:${BRAND.navy};border-top:1px dashed ${BRAND.hairline};">${fmtCOP(total)}</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>`;
+}
+
+/**
  * Product card — used in order/cancellation/status emails. Renders the
  * cover image, marca/modelo headline, dimension, qty, and total.
  */
