@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 import {
   wrapEmail,
   emailButton,
@@ -28,7 +29,14 @@ const MARKETPLACE_URL = `${APP_URL}/marketplace`;
 @Injectable()
 export class EmailService implements OnModuleInit {
   private readonly logger = new Logger(EmailService.name);
-  private transporter: nodemailer.Transporter;
+  private transporter: nodemailer.Transporter | null = null;
+  // Resend is preferred when RESEND_API_KEY is set: API-based delivery
+  // with proper SPF/DKIM/DMARC alignment via a verified domain. Falls
+  // back to nodemailer/SMTP when not configured. Sending from a
+  // personal Gmail account (the prior default) was the primary cause
+  // of mail landing in junk folders — Gmail flags bulk transactional
+  // mail from individual accounts.
+  private resend: Resend | null = null;
   private emailUser: string;
   private emailPassword: string;
   private fromAddress: string;
@@ -42,6 +50,23 @@ export class EmailService implements OnModuleInit {
     // SMTP auth user (e.g. auth as noreply@, send as info@). Falls back to user.
     this.fromAddress   = (this.configService.get<string>('EMAIL_FROM') || this.emailUser).trim();
 
+    // ── Preferred path: Resend ─────────────────────────────────────
+    // When RESEND_API_KEY is set, use Resend's HTTP API. Drops every
+    // SMTP / TLS edge case and aligns SPF/DKIM/DMARC against a
+    // verified sender domain — the right answer for transactional
+    // mail. The fromAddress must be on a domain you've verified in
+    // the Resend dashboard (e.g. noreply@tirepro.com.co with the
+    // DNS records they prescribe added to your domain).
+    const resendApiKey = (this.configService.get<string>('RESEND_API_KEY') || '').trim();
+    if (resendApiKey) {
+      this.resend = new Resend(resendApiKey);
+      this.logger.log(
+        `Resend transport ready · from=${this.fromAddress} (verify the domain in Resend before use)`,
+      );
+      return;
+    }
+
+    // ── Fallback path: nodemailer SMTP ─────────────────────────────
     if (!this.emailUser || !this.emailPassword) {
       this.logger.error('EMAIL_USER / EMAIL_PASSWORD not set — email disabled');
       throw new Error('Email credentials not configured');
@@ -106,20 +131,46 @@ export class EmailService implements OnModuleInit {
   }
 
   async sendEmail(to: string, subject: string, htmlContent: string) {
+    const text = this.htmlToPlainText(htmlContent);
+
+    // Resend path — preferred. Sender domain must be verified in
+    // dashboard.resend.com (DKIM + SPF + DMARC TXT records on
+    // tirepro.com.co); see SETUP.md or the deploy notes for the
+    // exact DNS rows.
+    if (this.resend) {
+      try {
+        const { data, error } = await this.resend.emails.send({
+          from: `TirePro <${this.fromAddress}>`,
+          to: [to],
+          replyTo: 'info@tirepro.com.co',
+          subject,
+          html: htmlContent,
+          text,
+          headers: {
+            'List-Unsubscribe': '<mailto:info@tirepro.com.co?subject=unsubscribe>',
+            'X-Mailer': 'TirePro',
+          },
+        });
+        if (error) {
+          this.logger.error(`Resend send to ${to} failed: ${JSON.stringify(error)}`);
+          throw new InternalServerErrorException(`Failed to send email: ${error.message ?? 'unknown'}`);
+        }
+        this.logger.log(`Email sent via Resend to ${to} — id=${data?.id}`);
+        return { message: 'Email sent successfully', messageId: data?.id };
+      } catch (err: any) {
+        if (err instanceof InternalServerErrorException) throw err;
+        this.logger.error(`Resend transport error sending to ${to}: ${err?.message ?? err}`, err?.stack);
+        throw new InternalServerErrorException(`Failed to send email: ${err?.message ?? 'unknown'}`);
+      }
+    }
+
+    // SMTP fallback (nodemailer / Gmail). Same deliverability helpers
+    // we already had — kept so the service still works while the
+    // Resend domain verification is pending.
     if (!this.transporter) {
       throw new InternalServerErrorException('Email service not initialized');
     }
 
-    // Deliverability helpers — avoid the spam folder:
-    //  1. multipart/alternative with a real text/plain body. HTML-only
-    //     mail is the single biggest "this is spam" signal Gmail uses.
-    //  2. Reply-To pointing at a real, monitored inbox. The from address
-    //     can be a generic noreply but RFC 5322 wants a deliverable
-    //     reply path or filters get suspicious.
-    //  3. List-Unsubscribe header (RFC 2369). Even on transactional
-    //     mail, having one signals "legit sender" to Gmail/Outlook.
-    //  4. Message-ID host pinned to the sender domain so it lines up
-    //     with SPF/DKIM rather than nodemailer's default `@localhost`.
     const fromDomain = (this.fromAddress.split('@')[1] ?? 'tirepro.com.co').trim();
     const mailOptions: nodemailer.SendMailOptions = {
       from: `"TirePro" <${this.fromAddress}>`,
@@ -127,7 +178,7 @@ export class EmailService implements OnModuleInit {
       replyTo: 'info@tirepro.com.co',
       subject,
       html: htmlContent,
-      text: this.htmlToPlainText(htmlContent),
+      text,
       messageId: `<${Date.now()}-${Math.random().toString(36).slice(2)}@${fromDomain}>`,
       headers: {
         'List-Unsubscribe': '<mailto:info@tirepro.com.co?subject=unsubscribe>',
@@ -137,11 +188,9 @@ export class EmailService implements OnModuleInit {
 
     try {
       const info = await this.transporter.sendMail(mailOptions);
-      this.logger.log(`Email sent to ${to} — messageId=${info.messageId}`);
+      this.logger.log(`Email sent via SMTP to ${to} — messageId=${info.messageId}`);
       return { message: 'Email sent successfully', messageId: info.messageId };
     } catch (error: any) {
-      // Surface the actual SMTP failure — "Failed to send email" alone is
-      // unactionable when diagnosing credentials/TLS/host issues.
       this.logger.error(
         `sendMail to ${to} failed: ${error?.message ?? error} ` +
           `(code=${error?.code ?? 'n/a'}, response=${error?.response ?? 'n/a'})`,

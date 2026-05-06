@@ -1924,6 +1924,101 @@ export class MarketplaceService {
     });
   }
 
+  /**
+   * Buyer-side edit of contact info on a tracked order. Only allowed
+   * while the distributor hasn't accepted yet — once status moves past
+   * `pendiente` (to `confirmado`, `enviado`, `entregado`, etc.) the
+   * contact info is locked, since the dist may already be coordinating
+   * delivery against what they have on file.
+   *
+   * Email-gated like trackOrder: the buyer must supply the email on
+   * the order. No JWT — keeps the email-link flow working for guest
+   * checkouts.
+   *
+   * Updates the order row AND its statusHistory so the buyer's edit
+   * is auditable in the dashboard timeline.
+   */
+  async updateOrderContact(orderId: string, providedEmail: string, edits: {
+    buyerPhone?: string | null;
+    buyerAddress?: string | null;
+    buyerCity?: string | null;
+  }) {
+    if (!orderId) throw new BadRequestException('orderId is required');
+    if (!providedEmail || !providedEmail.trim()) {
+      throw new BadRequestException('email is required');
+    }
+    const order = await this.prisma.marketplaceOrder.findUnique({
+      where: { id: orderId },
+      select: { id: true, buyerEmail: true, status: true, statusHistory: true,
+                buyerPhone: true, buyerAddress: true, buyerCity: true },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const norm = (e: string) => e.trim().toLowerCase();
+    if (norm(order.buyerEmail) !== norm(providedEmail)) {
+      throw new ForbiddenException('Email does not match this order');
+    }
+
+    // Lock contact edits once the distributor has accepted. Statuses
+    // beyond `pendiente` mean a real human is coordinating against
+    // the saved contact — letting the buyer edit silently could send
+    // the dist's truck to the wrong address.
+    const editableStatuses = new Set(['pago_pendiente', 'pendiente']);
+    if (!editableStatuses.has(order.status)) {
+      throw new BadRequestException(
+        'Este pedido ya fue confirmado por el distribuidor. Para cambiar tus datos, contáctalos directamente.',
+      );
+    }
+
+    // Build a minimal patch — only fields the caller actually sent
+    // (and that differ from the current value) get touched. Empty
+    // strings clear a field; undefined leaves it alone.
+    const patch: Record<string, string | null> = {};
+    const changes: string[] = [];
+    if (edits.buyerPhone !== undefined) {
+      const next = edits.buyerPhone?.trim() || null;
+      if (next !== (order.buyerPhone ?? null)) {
+        patch.buyerPhone = next;
+        changes.push(`teléfono → ${next ?? '(vacío)'}`);
+      }
+    }
+    if (edits.buyerAddress !== undefined) {
+      const next = edits.buyerAddress?.trim() || null;
+      if (next !== (order.buyerAddress ?? null)) {
+        patch.buyerAddress = next;
+        changes.push(`dirección → ${next ?? '(vacío)'}`);
+      }
+    }
+    if (edits.buyerCity !== undefined) {
+      const next = edits.buyerCity?.trim() || null;
+      if (next !== (order.buyerCity ?? null)) {
+        patch.buyerCity = next;
+        changes.push(`ciudad → ${next ?? '(vacío)'}`);
+      }
+    }
+    if (Object.keys(patch).length === 0) {
+      return { ok: true, reason: 'No changes' };
+    }
+
+    const prevHistory = Array.isArray(order.statusHistory) ? order.statusHistory as any[] : [];
+    const updated = await this.prisma.marketplaceOrder.update({
+      where: { id: orderId },
+      data: {
+        ...patch,
+        statusHistory: [
+          ...prevHistory,
+          {
+            status: order.status,
+            at: new Date().toISOString(),
+            note: `Comprador actualizó: ${changes.join(', ')}`,
+          },
+        ] as any,
+      },
+      select: { id: true, status: true, buyerPhone: true, buyerAddress: true, buyerCity: true },
+    });
+    return { ok: true, order: updated };
+  }
+
   async updateOrderStatus(
     orderId: string,
     distributorId: string,

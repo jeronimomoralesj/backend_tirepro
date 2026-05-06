@@ -1,7 +1,7 @@
 import {
   Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards,
   UseInterceptors, UploadedFile, Headers, Header, Req, ForbiddenException,
-  HttpCode,
+  HttpCode, HttpStatus,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MarketplaceService } from './marketplace.service';
@@ -449,6 +449,27 @@ export class MarketplaceController {
     @Query('email') email: string,
   ) {
     return this.svc.trackOrder(id, email);
+  }
+
+  /**
+   * Buyer-side edit of contact info on a tracked order. Only works
+   * while status is `pago_pendiente` or `pendiente` — once the dist
+   * accepts (`confirmado` and beyond) the contact is locked. Email-
+   * gated identically to /track: no JWT, the email proves identity.
+   */
+  @Patch('orders/:id/contact')
+  @HttpCode(HttpStatus.OK)
+  updateOrderContact(
+    @Param('id') id: string,
+    @Body() body: {
+      email: string;
+      buyerPhone?: string | null;
+      buyerAddress?: string | null;
+      buyerCity?: string | null;
+    },
+  ) {
+    const { email, ...edits } = body;
+    return this.svc.updateOrderContact(id, email, edits);
   }
 
   @Patch('orders/:id/status')
