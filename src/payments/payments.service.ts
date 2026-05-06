@@ -54,7 +54,8 @@ function collectDistEmails(
 //      transfer manually and marks the Payout as released.
 // =============================================================================
 
-const FEE_RATE = 0.05;          // 5% TirePro commission
+const FEE_RATE = 0.05;          // 5% TirePro commission (on net subtotal)
+const IVA_RATE = 0.19;          // Colombian VAT (added on top of net to bill the buyer)
 const HOLD_DAYS_BEFORE_PAYOUT = 3; // days after `entregado` before payout shows up
 
 @Injectable()
@@ -230,9 +231,18 @@ export class PaymentsService {
       const pickup   = item.pickupPointId ? pickupPointMap.get(item.listingId) ?? null : null;
       return { listing: l, quantity: item.quantity, totalCop, feeCop, netCop, pickup };
     });
-    const grossCop = orderInputs.reduce((s, o) => s + o.totalCop, 0);
-    const feeCop   = orderInputs.reduce((s, o) => s + o.feeCop,   0);
-    const netCop   = orderInputs.reduce((s, o) => s + o.netCop,   0);
+    // Subtotal (net of IVA) drives per-order accounting — feeCop is
+    // 5% of subtotal, netCop is what the distributor receives. The
+    // gateway charge (grossCop) adds 19% IVA on top so the buyer's
+    // Bold checkout total matches the cart's "Pagar $X" line. The
+    // IVA is collected via the Payment row but isn't in netCop —
+    // distributors handle their own IVA remittance against their
+    // monthly invoice.
+    const subtotalCop = orderInputs.reduce((s, o) => s + o.totalCop, 0);
+    const feeCop      = orderInputs.reduce((s, o) => s + o.feeCop,   0);
+    const netCop      = orderInputs.reduce((s, o) => s + o.netCop,   0);
+    const ivaCop      = Math.round(subtotalCop * IVA_RATE);
+    const grossCop    = subtotalCop + ivaCop;
 
     // Wompi reference: a UUID-ish string we can correlate webhook events
     // back to one Payment row. We don't reuse the Payment.id because
@@ -476,9 +486,18 @@ export class PaymentsService {
       const pickup   = item.pickupPointId ? pickupPointMap.get(item.listingId) ?? null : null;
       return { listing: l, quantity: item.quantity, totalCop, feeCop, netCop, pickup };
     });
-    const grossCop = orderInputs.reduce((s, o) => s + o.totalCop, 0);
-    const feeCop   = orderInputs.reduce((s, o) => s + o.feeCop,   0);
-    const netCop   = orderInputs.reduce((s, o) => s + o.netCop,   0);
+    // Subtotal (net of IVA) drives per-order accounting — feeCop is
+    // 5% of subtotal, netCop is what the distributor receives. The
+    // gateway charge (grossCop) adds 19% IVA on top so the buyer's
+    // Bold checkout total matches the cart's "Pagar $X" line. The
+    // IVA is collected via the Payment row but isn't in netCop —
+    // distributors handle their own IVA remittance against their
+    // monthly invoice.
+    const subtotalCop = orderInputs.reduce((s, o) => s + o.totalCop, 0);
+    const feeCop      = orderInputs.reduce((s, o) => s + o.feeCop,   0);
+    const netCop      = orderInputs.reduce((s, o) => s + o.netCop,   0);
+    const ivaCop      = Math.round(subtotalCop * IVA_RATE);
+    const grossCop    = subtotalCop + ivaCop;
 
     const reference = this.bold.generateReference();
 
@@ -654,9 +673,18 @@ export class PaymentsService {
       const pickup   = item.pickupPointId ? pickupPointMap.get(item.listingId) ?? null : null;
       return { listing: l, quantity: item.quantity, totalCop, feeCop, netCop, pickup };
     });
-    const grossCop = orderInputs.reduce((s, o) => s + o.totalCop, 0);
-    const feeCop   = orderInputs.reduce((s, o) => s + o.feeCop,   0);
-    const netCop   = orderInputs.reduce((s, o) => s + o.netCop,   0);
+    // Subtotal (net of IVA) drives per-order accounting — feeCop is
+    // 5% of subtotal, netCop is what the distributor receives. The
+    // gateway charge (grossCop) adds 19% IVA on top so the buyer's
+    // Bold checkout total matches the cart's "Pagar $X" line. The
+    // IVA is collected via the Payment row but isn't in netCop —
+    // distributors handle their own IVA remittance against their
+    // monthly invoice.
+    const subtotalCop = orderInputs.reduce((s, o) => s + o.totalCop, 0);
+    const feeCop      = orderInputs.reduce((s, o) => s + o.feeCop,   0);
+    const netCop      = orderInputs.reduce((s, o) => s + o.netCop,   0);
+    const ivaCop      = Math.round(subtotalCop * IVA_RATE);
+    const grossCop    = subtotalCop + ivaCop;
 
     const reference = this.bold.generateReference();
     const result = await this.prisma.$transaction(async (tx) => {
