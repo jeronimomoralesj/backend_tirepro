@@ -595,13 +595,25 @@ export class MarketplaceService {
     if (!brand) throw new NotFoundException('Brand not found');
 
     const listings = await this.prisma.distributorListing.findMany({
-      where: { isActive: true, marca: { equals: brand.name, mode: 'insensitive' } },
-      // inStock (binary) → inventoryRank (tier 0-50) → image quality →
-      // recency. The binary partition guarantees out-of-stock listings
-      // sink to the bottom regardless of any tier ties; inventoryRank
-      // then sorts among in-stock items so deeper-stock products lead.
+      // Same buyable filter as searchListings(): warehouse OR bodega stock.
+      // Brand pages are SEO-indexed surfaces; we don't want Google
+      // ranking pages full of out-of-stock products.
+      where: {
+        isActive: true,
+        marca: { equals: brand.name, mode: 'insensitive' },
+        OR: [
+          { inStock: true },
+          {
+            retailSource: {
+              is: {
+                isActive: true,
+                pickupPoints: { some: { stockUnits: { gt: 0 } } },
+              },
+            },
+          },
+        ],
+      },
       orderBy: [
-        { inStock: 'desc' },
         { inventoryRank: 'desc' },
         { imageQualityScore: 'desc' },
         { createdAt: 'desc' },
@@ -612,12 +624,34 @@ export class MarketplaceService {
         catalog: { select: { id: true, terreno: true, kmEstimadosReales: true, cpkEstimado: true, crowdAvgCpk: true } },
         _count: { select: { reviews: true, orders: true } },
         reviews: { select: { rating: true }, take: 10 },
+        // Same bodega-stock summary as searchListings — frontend cards
+        // need to know whether a 0-warehouse listing is still buyable
+        // via pickup-points so they don't render "Agotado".
+        retailSource: {
+          select: {
+            isActive: true,
+            pickupPoints: {
+              select: { stockUnits: true },
+              where: { stockUnits: { gt: 0 } },
+            },
+          },
+        },
       },
     });
     const total = await this.prisma.distributorListing.count({
       where: { isActive: true, marca: { equals: brand.name, mode: 'insensitive' } },
     });
-    const result = { ...brand, listings, total };
+    const enrichedListings = listings.map((l: any) => {
+      const points = l.retailSource?.pickupPoints ?? [];
+      const bodegaUnits = points.reduce((sum: number, p: any) => sum + (p.stockUnits ?? 0), 0);
+      return {
+        ...l,
+        retailSource: l.retailSource
+          ? { isActive: l.retailSource.isActive, hasBodegaStock: bodegaUnits > 0, bodegaUnits }
+          : null,
+      };
+    });
+    const result = { ...brand, listings: enrichedListings, total };
     this.cache.set(cacheKey, result, this.BRAND_TTL);
     return result;
   }
@@ -938,15 +972,42 @@ export class MarketplaceService {
     // (cantidadDisponible > 0) — true sorts before false on `desc`,
     // giving us a clean binary partition instead of the count-based
     // zigzag that motivated removing inventoryRank from these branches.
+    // Hide truly-out-of-stock listings: a listing is buyable if it has
+    // at least one unit somewhere — either warehouse (inStock = true)
+    // or a retail bodega with stock (retailSource active + at least one
+    // pickup point with stockUnits > 0). Listings with neither are
+    // hidden entirely. The "Pirelli with 652 bodega units that shows as
+    // agotado" bug came from filtering on warehouse alone. Mutated onto
+    // the existing where via the AND clause so search-token OR + rim
+    // OR clauses above still combine correctly.
+    const inStockFilter = {
+      OR: [
+        { inStock: true },
+        {
+          retailSource: {
+            is: {
+              isActive: true,
+              pickupPoints: { some: { stockUnits: { gt: 0 } } },
+            },
+          },
+        },
+      ],
+    };
+    if (where.AND) {
+      (where.AND as any[]).push(inStockFilter);
+    } else if (where.OR) {
+      where.AND = [{ OR: where.OR }, inStockFilter];
+      delete where.OR;
+    } else {
+      where.OR = inStockFilter.OR;
+    }
+
     let orderBy: any;
     switch (filters.sortBy) {
-      case 'price_asc':  orderBy = [{ inStock: 'desc' }, { precioCop: 'asc'  }, { id: 'asc' }]; break;
-      case 'price_desc': orderBy = [{ inStock: 'desc' }, { precioCop: 'desc' }, { id: 'asc' }]; break;
-      case 'newest':     orderBy = [{ inStock: 'desc' }, { createdAt: 'desc' }, { id: 'asc' }]; break;
+      case 'price_asc':  orderBy = [{ precioCop: 'asc'  }, { id: 'asc' }]; break;
+      case 'price_desc': orderBy = [{ precioCop: 'desc' }, { id: 'asc' }]; break;
+      case 'newest':     orderBy = [{ createdAt: 'desc' }, { id: 'asc' }]; break;
       default: orderBy = [
-        // Default / relevance: stick with inventoryRank because high-stock
-        // listings are objectively more relevant; the binary inStock would
-        // collapse all in-stock items to a tie, then secondary keys decide.
         { inventoryRank:     'desc' },
         { imageQualityScore: 'desc' },
         { createdAt:         'desc' },
@@ -976,27 +1037,64 @@ export class MarketplaceService {
           reviews: { select: { rating: true }, take: 10 },
           // Cheap left-join so card UIs can decide whether to surface a
           // "Recoger en tienda" pill without a per-card round-trip to
-          // /listings/:id/pickup-points. We only expose the boolean
-          // isActive — full pickup-point lists stay on the dedicated
-          // endpoint to keep the search payload small.
-          retailSource: { select: { isActive: true } },
+          // /listings/:id/pickup-points. We pull back only pickup-points
+          // with stock so the frontend can mark a listing as buyable
+          // even when warehouse stock (cantidadDisponible) is 0 — see
+          // the agotado/bodega bug fix in commit history.
+          retailSource: {
+            select: {
+              isActive: true,
+              pickupPoints: {
+                select: { stockUnits: true },
+                where: { stockUnits: { gt: 0 } },
+              },
+            },
+          },
         },
       }),
       this.prisma.distributorListing.count({ where }),
     ]);
 
-    const result = { listings, total, page, limit, pages: Math.ceil(total / limit) };
+    // Post-process: collapse the pickup-points array into a `bodegaUnits`
+    // sum + `hasBodegaStock` boolean. The raw array isn't useful to the
+    // frontend (78 entries per listing × 20 listings = bloat) and the
+    // aggregate is what every consumer actually checks.
+    const enrichedListings = listings.map((l: any) => {
+      const points = l.retailSource?.pickupPoints ?? [];
+      const bodegaUnits = points.reduce((sum: number, p: any) => sum + (p.stockUnits ?? 0), 0);
+      return {
+        ...l,
+        retailSource: l.retailSource
+          ? { isActive: l.retailSource.isActive, hasBodegaStock: bodegaUnits > 0, bodegaUnits }
+          : null,
+      };
+    });
+
+    const result = { listings: enrichedListings, total, page, limit, pages: Math.ceil(total / limit) };
     this.cache.set(cacheKey, result, this.LISTINGS_TTL);
     return result;
   }
 
   async getDistributorListings(distributorId: string) {
     return this.prisma.distributorListing.findMany({
-      where: { distributorId },
-      // Out-of-stock listings sink to the bottom; among in-stock items,
-      // most recently updated wins (matches the buyer's expectation that
-      // freshly restocked / repriced items lead).
-      orderBy: [{ inStock: 'desc' }, { updatedAt: 'desc' }],
+      // Same buyable filter as the public marketplace listings: warehouse
+      // OR bodega stock. A distributor's own storefront page may want to
+      // include agotado SKUs eventually, but for now keep it consistent.
+      where: {
+        distributorId,
+        OR: [
+          { inStock: true },
+          {
+            retailSource: {
+              is: {
+                isActive: true,
+                pickupPoints: { some: { stockUnits: { gt: 0 } } },
+              },
+            },
+          },
+        ],
+      },
+      orderBy: { updatedAt: 'desc' },
       include: {
         catalog: { select: { id: true, skuRef: true, marca: true, modelo: true, dimension: true } },
         _count: { select: { orders: true, reviews: true } },
@@ -1735,7 +1833,14 @@ export class MarketplaceService {
 
   async getDistributorOrders(distributorId: string) {
     return this.prisma.marketplaceOrder.findMany({
-      where: { distributorId },
+      // Only show orders the distributor can act on. `pago_pendiente`
+      // means the buyer has clicked Pagar con Bold but the gateway
+      // hasn't confirmed the payment yet — surfacing those would let
+      // distributors see (and potentially try to ship) abandoned-cart
+      // orders that may never settle. The webhook flips the status to
+      // `pendiente` on SALE_APPROVED, which is when the order
+      // actually enters the distributor's queue.
+      where: { distributorId, status: { not: 'pago_pendiente' } },
       orderBy: { createdAt: 'desc' },
       include: { listing: { select: { marca: true, modelo: true, dimension: true, imageUrls: true, coverIndex: true } } },
     });
@@ -1990,7 +2095,11 @@ export class MarketplaceService {
 
   async getUserRecentOrders(userId: string, limit = 20) {
     return this.prisma.marketplaceOrder.findMany({
-      where: { userId },
+      // Same hide-pago_pendiente policy as getDistributorOrders. A buyer
+      // who abandoned the Bold modal shouldn't see the half-created
+      // "order" in their account history — it's not really an order
+      // until Bold confirms payment via webhook.
+      where: { userId, status: { not: 'pago_pendiente' } },
       orderBy: { createdAt: 'desc' },
       take: limit,
       include: { listing: { select: { id: true, marca: true, modelo: true, dimension: true, imageUrls: true, coverIndex: true, precioCop: true } } },
