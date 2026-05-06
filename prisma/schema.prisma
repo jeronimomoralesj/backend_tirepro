@@ -2071,10 +2071,20 @@ model DistributorPaymentAccount {
 model Payment {
   id String @id @default(uuid())
 
-  // Wompi side
-  wompiTransactionId String? @unique // populated after Wompi creates the txn
-  wompiReference     String  @unique // we generate (one per checkout); lookup key
-  paymentMethod      String? // "CARD" | "PSE" | "NEQUI" | ...
+  // Provider — "wompi" (legacy / in-flight) or "bold" (current).
+  provider String @default("bold")
+
+  // Wompi side (legacy — kept so existing in-flight orders + webhooks keep working)
+  wompiTransactionId String? @unique
+  wompiReference     String? @unique
+
+  // Bold side
+  // boldOrderId is what we send as `reference` to Bold; lookup key on webhook.
+  // boldPaymentId is Bold's internal id (data.payment_id), populated on webhook.
+  boldOrderId   String? @unique
+  boldPaymentId String? @unique
+
+  paymentMethod String? // "CARD" | "PSE" | "NEQUI" | "BANCOLOMBIA_BUTTON" | ...
 
   // pending | approved | declined | voided | error
   status String @default("pending")

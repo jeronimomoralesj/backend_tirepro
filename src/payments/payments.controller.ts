@@ -92,6 +92,63 @@ export class PaymentsController {
   }
 
   // ===========================================================================
+  // BOLD CHECKOUT — same surface as the Wompi endpoint above, but mints a
+  // Bold "API Link de pagos" URL we redirect the buyer to. Public endpoint;
+  // optional Bearer auth so logged-in buyers' orders show up in their
+  // history. The frontend has been switched to call this; the wompi/checkout
+  // route stays alive only so any in-flight redirect/webhook combo from
+  // before the cutover can still complete.
+  // ===========================================================================
+  @Post('bold/checkout')
+  async boldCheckout(@Req() req: any, @Body() body: {
+    items: Array<{
+      listingId: string;
+      quantity: number;
+      pickupPointId?: string;
+    }>;
+    buyerName: string;
+    buyerEmail: string;
+    buyerPhone?: string;
+    buyerAddress?: string;
+    buyerCity?: string;
+    buyerCompany?: string;
+    notas?: string;
+    redirectBaseUrl: string;
+  }) {
+    if (!body?.items?.length) throw new BadRequestException('items required');
+    if (!body.redirectBaseUrl?.startsWith('http')) {
+      throw new BadRequestException('redirectBaseUrl required');
+    }
+
+    let userId: string | undefined;
+    const authHeader: string | undefined = req?.headers?.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const payload = await this.jwt.verifyAsync(authHeader.slice(7));
+        if (payload?.sub && typeof payload.sub === 'string') userId = payload.sub;
+      } catch { /* invalid token — proceed as guest */ }
+    }
+
+    return this.svc.createBoldCheckout({ ...body, userId });
+  }
+
+  // ===========================================================================
+  // BOLD WEBHOOK — Bold pings us on SALE_APPROVED / SALE_REJECTED /
+  // VOID_APPROVED / VOID_REJECTED. Public endpoint, signature-verified
+  // inside the service against `req.rawBody` (set up in main.ts so Bold's
+  // HMAC matches the bytes we received, not a re-stringified copy).
+  // ===========================================================================
+  @Post('bold/webhook')
+  @HttpCode(HttpStatus.OK)
+  async boldWebhook(@Req() req: any, @Body() body: any) {
+    return this.svc.handleBoldWebhook({
+      body,
+      rawBody:         req?.rawBody,
+      signatureHeader: req?.headers?.['x-bold-signature'],
+    });
+  }
+
+  // ===========================================================================
   // DISTRIBUTOR BANK ACCOUNT — onboarding from /dashboard/marketplace/perfil
   // ===========================================================================
 

@@ -8,6 +8,7 @@ import {
 import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
+import { BoldService, BoldWebhookEvent } from './bold.service';
 
 /**
  * Collects + dedupes the distributor's notification recipients. The
@@ -64,6 +65,7 @@ export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly email: EmailService,
+    private readonly bold:  BoldService,
   ) {
     this.wompiBaseUrl = process.env.WOMPI_ENV === 'production'
       ? 'https://production.wompi.co/v1'
@@ -366,6 +368,249 @@ export class PaymentsService {
     // `pago_pendiente` to `pendiente` (waiting on dist confirmation).
     // DECLINED / VOIDED / ERROR → mark them cancelado_pago so the dist
     // doesn't see them in their inbox.
+    if (normalized === 'approved') {
+      await this.advanceOrdersToPendiente(payment.id);
+      await this.notifyBuyerPaymentApproved(payment.id);
+    } else if (normalized === 'declined' || normalized === 'voided' || normalized === 'error') {
+      await this.markOrdersCancelledByPayment(payment.id, normalized);
+    }
+
+    return { ok: true, reason: `Processed ${normalized}` };
+  }
+
+  // ===========================================================================
+  // BOLD — same flow as Wompi but server-to-server. We POST to Bold's "API
+  // Link de pagos" to mint a hosted-checkout URL, store boldOrderId on the
+  // Payment, redirect the buyer to Bold, and reconcile via webhook.
+  //
+  // Differences from Wompi worth flagging:
+  //   - Amounts are integer COP, NOT cents.
+  //   - The "reference" we send is what comes back as data.metadata.reference
+  //     on the webhook (used to find our Payment row).
+  //   - No widget integrity hash — Bold's link is one-shot and amount-locked
+  //     server-side.
+  // ===========================================================================
+  async createBoldCheckout(input: {
+    items: Array<{
+      listingId: string;
+      quantity: number;
+      pickupPointId?: string;
+    }>;
+    userId?: string;
+    buyerName: string;
+    buyerEmail: string;
+    buyerPhone?: string;
+    buyerAddress?: string;
+    buyerCity?: string;
+    buyerCompany?: string;
+    notas?: string;
+    /** Where Bold sends the buyer back after the checkout (frontend URL). */
+    redirectBaseUrl: string;
+  }) {
+    if (!input.items?.length) throw new BadRequestException('Cart is empty');
+    if (!input.buyerName?.trim() || !input.buyerEmail?.trim()) {
+      throw new BadRequestException('Buyer name and email are required');
+    }
+
+    // === Validate listings + stock (mirrors createCheckout — Wompi path) ===
+    const listings = await this.prisma.distributorListing.findMany({
+      where: { id: { in: input.items.map((i) => i.listingId) } },
+      include: {
+        distributor: { select: { id: true, slug: true, name: true, emailAtencion: true } },
+        retailSource: {
+          select: {
+            isActive: true,
+            pickupPoints: { select: { id: true, stockUnits: true } },
+          },
+        },
+      },
+    });
+    if (listings.length !== input.items.length) {
+      throw new BadRequestException('One or more products are no longer available');
+    }
+    for (const item of input.items) {
+      const l = listings.find((x) => x.id === item.listingId)!;
+      if (!l.isActive) throw new BadRequestException(`${l.marca} ${l.modelo} ya no está disponible`);
+      if (item.pickupPointId) continue;
+      const partnerStock = (l.retailSource?.isActive ? l.retailSource.pickupPoints : [])
+        .reduce((s, p) => s + Math.max(0, p.stockUnits), 0);
+      const effectiveStock = l.cantidadDisponible + partnerStock;
+      if (effectiveStock < item.quantity) {
+        const detail = partnerStock > 0
+          ? `Solo ${effectiveStock} unidades disponibles entre nuestro inventario y los puntos aliados`
+          : `Sin unidades disponibles`;
+        throw new BadRequestException(`${detail} de ${l.marca} ${l.modelo}`);
+      }
+    }
+
+    // Pickup-point selections (same validation as Wompi path).
+    const pickupRequests = input.items
+      .map((item) => ({ listingId: item.listingId, pickupPointId: item.pickupPointId }))
+      .filter((p) => !!p.pickupPointId);
+    const pickupPointMap = new Map<string, { id: string; name: string; city: string; cityDisplay: string | null }>();
+    if (pickupRequests.length > 0) {
+      const pps = await this.prisma.retailPickupPoint.findMany({
+        where: { id: { in: pickupRequests.map((p) => p.pickupPointId!) } },
+        include: { source: { select: { listingId: true, isActive: true } } },
+      });
+      for (const req of pickupRequests) {
+        const pp = pps.find((x) => x.id === req.pickupPointId);
+        if (!pp || !pp.source?.isActive || pp.source.listingId !== req.listingId) {
+          throw new BadRequestException('Punto de recogida no válido para este producto');
+        }
+        if (pp.stockUnits <= 0) {
+          throw new BadRequestException(`${pp.name} no tiene unidades disponibles ahora`);
+        }
+        pickupPointMap.set(req.listingId, {
+          id: pp.id, name: pp.name, city: pp.city, cityDisplay: pp.cityDisplay,
+        });
+      }
+    }
+
+    // === Per-order totals + aggregate Payment row ===
+    const orderInputs = input.items.map((item) => {
+      const l = listings.find((x) => x.id === item.listingId)!;
+      const totalCop = l.precioCop * item.quantity;
+      const feeCop   = Math.round(totalCop * FEE_RATE);
+      const netCop   = totalCop - feeCop;
+      const pickup   = item.pickupPointId ? pickupPointMap.get(item.listingId) ?? null : null;
+      return { listing: l, quantity: item.quantity, totalCop, feeCop, netCop, pickup };
+    });
+    const grossCop = orderInputs.reduce((s, o) => s + o.totalCop, 0);
+    const feeCop   = orderInputs.reduce((s, o) => s + o.feeCop,   0);
+    const netCop   = orderInputs.reduce((s, o) => s + o.netCop,   0);
+
+    const reference = this.bold.generateReference();
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.create({
+        data: {
+          provider:       'bold',
+          boldOrderId:    reference,
+          status:         'pending',
+          grossCop,
+          feeCop,
+          netCop,
+          buyerEmail:     input.buyerEmail,
+        },
+      });
+      const orders = await Promise.all(orderInputs.map((o) => tx.marketplaceOrder.create({
+        data: {
+          listingId:      o.listing.id,
+          distributorId:  o.listing.distributorId,
+          quantity:       o.quantity,
+          totalCop:       o.totalCop,
+          feeCop:         o.feeCop,
+          netCop:         o.netCop,
+          paymentId:      payment.id,
+          status:         'pago_pendiente',
+          userId:         input.userId ?? null,
+          buyerName:      input.buyerName,
+          buyerEmail:     input.buyerEmail,
+          buyerPhone:     input.buyerPhone ?? null,
+          buyerAddress:   input.buyerAddress ?? null,
+          buyerCity:      input.buyerCity ?? null,
+          buyerCompany:   input.buyerCompany ?? null,
+          notas:          input.notas ?? null,
+          deliveryMode:   o.pickup ? 'pickup' : 'domicilio',
+          pickupPointId:  o.pickup?.id ?? null,
+          pickupPointName: o.pickup?.name ?? null,
+          pickupCity:     o.pickup?.cityDisplay ?? o.pickup?.city ?? null,
+          statusHistory: [{ status: 'pago_pendiente', at: new Date().toISOString() }] as any,
+        },
+        include: { listing: true, distributor: { select: { name: true } } },
+      })));
+      return { payment, orders };
+    });
+
+    // Build the buyer's redirect target — Bold appends ?bold-order-id=...
+    // &bold-tx-status=... so the order page can show approved/declined UI.
+    const callbackUrl = `${input.redirectBaseUrl}/marketplace/order/${result.orders[0].id}?email=${encodeURIComponent(input.buyerEmail)}`;
+    const description = `TirePro Marketplace · ${result.orders.length} producto${result.orders.length === 1 ? '' : 's'}`.slice(0, 100);
+
+    let link: { paymentLinkId: string; url: string };
+    try {
+      link = await this.bold.createPaymentLink({
+        reference,
+        amountCop:   grossCop,
+        description,
+        callbackUrl,
+        payerEmail:  input.buyerEmail,
+      });
+    } catch (err: any) {
+      // Roll back the half-created Payment / Orders so a Bold outage doesn't
+      // leave permanent `pago_pendiente` rows that never resolve.
+      await this.prisma.marketplaceOrder.deleteMany({ where: { paymentId: result.payment.id } });
+      await this.prisma.payment.delete({ where: { id: result.payment.id } });
+      throw err;
+    }
+
+    return {
+      paymentId:    result.payment.id,
+      reference,
+      amountCop:    grossCop,
+      currency:     'COP',
+      checkoutUrl:  link.url,
+      paymentLinkId: link.paymentLinkId,
+      redirectUrl:  callbackUrl,
+      orderIds:     result.orders.map((o) => o.id),
+    };
+  }
+
+  // ===========================================================================
+  // Bold webhook — fired on every transaction state change (SALE_APPROVED
+  // / SALE_REJECTED / VOID_APPROVED / VOID_REJECTED). Idempotent: replays
+  // for the same (reference, payment_id, status) are a no-op.
+  // ===========================================================================
+  async handleBoldWebhook(args: {
+    body:  BoldWebhookEvent;
+    rawBody?: Buffer | string;
+    signatureHeader?: string;
+  }) {
+    const { body, rawBody, signatureHeader } = args;
+
+    if (!this.bold.verifyWebhookSignature(rawBody, signatureHeader)) {
+      this.logger.warn(
+        `Bold webhook with invalid signature — ref=${body?.data?.metadata?.reference} type=${body?.type}`,
+      );
+      // Don't 401: Bold retries on non-2xx and the link is amount-locked
+      // server-side, so spoofed events can't change the amount anyway.
+      // Same lenient fallback as the Wompi handler.
+    }
+
+    const data = body?.data;
+    if (!data) return { ok: false, reason: 'No data' };
+
+    const reference = data.metadata?.reference;
+    const paymentId = data.payment_id;
+    const eventType = body.type ?? '';
+
+    if (!reference) return { ok: false, reason: 'No reference' };
+
+    const payment = await this.prisma.payment.findUnique({ where: { boldOrderId: reference } });
+    if (!payment) {
+      this.logger.warn(`Bold webhook for unknown reference ${reference}`);
+      return { ok: false, reason: 'Unknown reference' };
+    }
+
+    const normalized = this.bold.normalizeStatus(eventType);
+
+    // Idempotent: same final state + same Bold payment id → no-op.
+    if (payment.status === normalized && payment.boldPaymentId === paymentId) {
+      return { ok: true, reason: 'Already processed' };
+    }
+
+    await this.prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        boldPaymentId:  paymentId ?? payment.boldPaymentId,
+        status:         normalized,
+        paymentMethod:  data.payment_method ?? payment.paymentMethod,
+        paidAt:         normalized === 'approved' ? new Date() : payment.paidAt,
+        rawWebhookData: body as any,
+      },
+    });
+
     if (normalized === 'approved') {
       await this.advanceOrdersToPendiente(payment.id);
       await this.notifyBuyerPaymentApproved(payment.id);

@@ -66,7 +66,20 @@ async function bootstrap() {
   });
 
   // ── Body size limits ────────────────────────────────────────────────────
-  app.use(require('express').json({ limit: '10mb' }));
+  // The `verify` callback runs before JSON.parse and gives us the raw bytes,
+  // which we stash on req for the Bold webhook route. Bold's HMAC-SHA256
+  // signature is computed over the exact request body — re-stringifying the
+  // parsed JSON object would re-order keys / change whitespace and the
+  // signature would never match. Scoped to one route so we don't pay the
+  // memory cost on every /api request.
+  app.use(require('express').json({
+    limit: '10mb',
+    verify: (req: any, _res: any, buf: Buffer) => {
+      if (req.originalUrl === '/api/payments/bold/webhook') {
+        req.rawBody = buf;
+      }
+    },
+  }));
   app.use(require('express').urlencoded({ limit: '10mb', extended: true }));
 
   app.useGlobalPipes(
