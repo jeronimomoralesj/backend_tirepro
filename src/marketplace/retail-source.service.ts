@@ -1,7 +1,75 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
-import { RetailScraperService } from './retail-scraper.service';
+import { RetailScraperService, ScrapedProductSpecs } from './retail-scraper.service';
+
+/**
+ * Map Alkosto's spec-table labels to TireMasterCatalog fields. Lets
+ * a retail-source scrape auto-populate the same fields the admin
+ * fills manually at /dashboard/catalogoSku/:id, so a freshly-imported
+ * SKU with an Alkosto link gets a real ficha técnica without manual
+ * data entry. Returns a partial — fields the scrape can't answer (or
+ * that come back blank) are simply omitted.
+ *
+ * Mapping table (Alkosto label → catalog field):
+ *   Ancho de la Llanta      → anchoMm        (number, parsed)
+ *   Perfil                  → perfil         (string)
+ *   Rin                     → rin            (string)
+ *   Posicion de la Llanta   → posicion       (string)
+ *   Usos de La Llanta       → terreno        (string — "Mixta", "Carretera", …)
+ *   Capacidad de Carga      → indiceCarga    (string — "102 I.C - 850Kg")
+ *   Indice de Velocidad     → indiceVelocidad (string — "H 210 Km/h")
+ *   No. Lonas               → pr             (string — "4 Lonas" / "16PR")
+ *   Tipo de Fabricacion     → tipo           (string — "Radial (Sellomatic)")
+ *
+ * Unmapped Alkosto fields (Labrado, Pais de Origen, Garantía, vehicle
+ * compatibility lists, etc.) stay in the raw productSpecs JSON so the
+ * "Detalles de la llanta" panel still surfaces them.
+ */
+function mapAlkostoSpecsToCatalogFields(specs: ScrapedProductSpecs): {
+  anchoMm?: number | null;
+  perfil?: string | null;
+  rin?: string | null;
+  posicion?: string | null;
+  terreno?: string | null;
+  indiceCarga?: string | null;
+  indiceVelocidad?: string | null;
+  pr?: string | null;
+  tipo?: string | null;
+} {
+  // Flat lookup: lower-cased label → value.
+  const byLabel = new Map<string, string>();
+  for (const sec of specs.sections) {
+    for (const item of sec.items) {
+      const key = item.label.toLowerCase().trim();
+      if (key && !byLabel.has(key)) byLabel.set(key, item.value.trim());
+    }
+  }
+  const get = (label: string): string | undefined => {
+    const v = byLabel.get(label.toLowerCase().trim());
+    return v && v.length > 0 ? v : undefined;
+  };
+  // Pull the leading numeric token from a string (handles "215", "215 mm",
+  // "85.5", "16/18 PR" → 16). Returns undefined if no digit found.
+  const parseNum = (v: string | undefined): number | undefined => {
+    if (!v) return undefined;
+    const m = v.match(/(\d+(?:[.,]\d+)?)/);
+    if (!m) return undefined;
+    const n = parseFloat(m[1].replace(',', '.'));
+    return Number.isFinite(n) ? n : undefined;
+  };
+  return {
+    anchoMm:         parseNum(get('Ancho de la Llanta')),
+    perfil:          get('Perfil'),
+    rin:             get('Rin'),
+    posicion:        get('Posicion de la Llanta') ?? get('Posición de la Llanta'),
+    terreno:         get('Usos de La Llanta') ?? get('Usos de la Llanta'),
+    indiceCarga:     get('Capacidad de Carga'),
+    indiceVelocidad: get('Indice de Velocidad') ?? get('Índice de Velocidad'),
+    pr:              get('No. Lonas') ?? get('Numero de Lonas'),
+    tipo:            get('Tipo de Fabricacion') ?? get('Tipo de Fabricación'),
+  };
+}
 
 /**
  * Owns the lifecycle of RetailSource + RetailPickupPoint rows. Every
@@ -255,26 +323,57 @@ export class RetailSourceService {
         },
       });
 
-      // Cache the scraped product specs on the catalog SKU so the
-      // product page can render them in the "Detalles de la llanta"
-      // block. The catalog is shared across distributors, so whichever
-      // refresh runs last wins. We only write when we actually got a
-      // payload — null means "page had no spec table" (e.g. an Alkosto
-      // accessories listing) and we leave any previously-cached value
-      // alone so a one-off bad scrape doesn't wipe known-good data.
+      // Cache the scraped product specs on the catalog SKU + auto-fill
+      // any structured catalog fields the scrape can answer (anchoMm,
+      // perfil, rin, indiceCarga, indiceVelocidad, …). Same fields the
+      // admin manually edits at /dashboard/catalogoSku/:id, so this
+      // saves a lot of manual data entry. POLICY: never overwrite a
+      // value already on the catalog — admin-curated data wins. We
+      // only fill rows that are still null. Multiple distributors may
+      // sell the same SKU; whichever refresh runs first against a
+      // freshly-minted catalog populates it, subsequent scrapes leave
+      // it alone unless an admin clears the field.
       if (result.productSpecs) {
         const listing = await this.prisma.distributorListing.findUnique({
           where: { id: source.listingId },
-          select: { catalogId: true },
+          select: {
+            catalogId: true,
+            catalog: { select: {
+              anchoMm: true, perfil: true, rin: true,
+              posicion: true, terreno: true,
+              indiceCarga: true, indiceVelocidad: true,
+              pr: true, tipo: true,
+            } },
+          },
         });
         if (listing?.catalogId) {
+          const mapped = mapAlkostoSpecsToCatalogFields(result.productSpecs);
+          const cur = listing.catalog;
+          // Only fill catalog fields that are currently null/empty.
+          const fillData: any = {};
+          const isEmpty = (v: unknown) => v == null || (typeof v === 'string' && v.trim() === '');
+          if (mapped.anchoMm         != null && isEmpty(cur?.anchoMm))         fillData.anchoMm         = mapped.anchoMm;
+          if (mapped.perfil          != null && isEmpty(cur?.perfil))          fillData.perfil          = mapped.perfil;
+          if (mapped.rin             != null && isEmpty(cur?.rin))             fillData.rin             = mapped.rin;
+          if (mapped.posicion        != null && isEmpty(cur?.posicion))        fillData.posicion        = mapped.posicion;
+          if (mapped.terreno         != null && isEmpty(cur?.terreno))         fillData.terreno         = mapped.terreno;
+          if (mapped.indiceCarga     != null && isEmpty(cur?.indiceCarga))     fillData.indiceCarga     = mapped.indiceCarga;
+          if (mapped.indiceVelocidad != null && isEmpty(cur?.indiceVelocidad)) fillData.indiceVelocidad = mapped.indiceVelocidad;
+          if (mapped.pr              != null && isEmpty(cur?.pr))              fillData.pr              = mapped.pr;
+          if (mapped.tipo            != null && isEmpty(cur?.tipo))            fillData.tipo            = mapped.tipo;
           await this.prisma.tireMasterCatalog.update({
             where: { id: listing.catalogId },
             data:  {
               productSpecs:   result.productSpecs as any,
               productSpecsAt: fetchedAt,
+              ...fillData,
             },
           });
+          if (Object.keys(fillData).length > 0) {
+            this.logger.log(
+              `Auto-filled catalog ${listing.catalogId} from Alkosto: ${Object.keys(fillData).join(', ')}`,
+            );
+          }
         }
       }
 
