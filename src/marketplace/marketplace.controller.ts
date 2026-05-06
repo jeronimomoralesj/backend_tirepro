@@ -520,6 +520,34 @@ export class MarketplaceController {
     return this.retail.refreshForDist(id, companyId);
   }
 
+  /**
+   * Admin-only one-shot: re-scrape every active RetailSource right now.
+   * Same logic the daily 4 AM Bogotá cron runs (refreshes pickup-point
+   * stock, prices, product specs, and auto-fills catalog ficha técnica
+   * from Alkosto's spec tables). Useful when:
+   *   - Scraper logic changed and you want to backfill across the
+   *     fleet without waiting overnight.
+   *   - Cleanup migrations (e.g. the legacy duplicate-pickup-point
+   *     dedupe) need to apply to every source on demand.
+   *
+   * Loop takes ~1.5s per source × N sources, so for a non-trivial
+   * fleet this is a several-minute job. We kick it off in the
+   * background and return 200 immediately so the caller doesn't block.
+   * Watch progress in pm2/journalctl.
+   */
+  @Post('admin/retail-sources/refresh-all')
+  @UseGuards(JwtAuthGuard)
+  async refreshAllRetailSources(@Req() req: any) {
+    if (req?.user?.role !== 'tirepro_admin') {
+      throw new ForbiddenException('Admin only');
+    }
+    // Fire-and-forget — return immediately, log progress server-side.
+    // Errors per source don't fail the batch (the cron handler swallows
+    // and logs each failure individually).
+    void this.retail.runDailyRefresh();
+    return { ok: true, message: 'Refresh queued. Check pm2 logs for progress.' };
+  }
+
   @Delete('listings/:id/retail-source')
   @UseGuards(JwtAuthGuard)
   async deleteRetailSource(@Req() req: any, @Param('id') id: string) {
