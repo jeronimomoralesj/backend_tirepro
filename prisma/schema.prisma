@@ -1509,6 +1509,18 @@ model TireMasterCatalog {
   fuente        String?
   url           String?
 
+  // Retailer-scraped product specs — JSON pulled from the connected
+  // retail source's product page (Alkosto's "Especificaciones" table
+  // today). Stored shape:
+  //   { sections: [{ title: "Características Técnicas", items: [
+  //                  { label: "Posicion de la Llanta", value: "..." },
+  //                  ...] }, ...] }
+  // The product page renders this as a "Detalles de la llanta" block.
+  // Scraped on every retail-source refresh; latest write wins. Null
+  // until the first scrape populates it.
+  productSpecs   Json?
+  productSpecsAt DateTime?
+
   // ─── CROWDSOURCE INTELLIGENCE ────────────────────────────────────
   // Populated when SKU is created/enriched from user-submitted tire data.
   // fuente = "crowdsource" marks these entries.

@@ -1674,6 +1674,10 @@ export class MarketplaceService {
             notasColombia: true, fuente: true,
             crowdAvgPrice: true, crowdAvgKm: true,
             crowdConfidence: true, crowdCompanyCount: true,
+            // Retailer-scraped product specs (Alkosto's
+            // "Especificaciones" tables) — drives the "Detalles de la
+            // llanta" section on the product page.
+            productSpecs: true, productSpecsAt: true,
           },
         },
         reviews: { include: { user: { select: { name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },

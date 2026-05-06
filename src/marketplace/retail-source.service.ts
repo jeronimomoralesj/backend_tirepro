@@ -254,9 +254,34 @@ export class RetailSourceService {
           domain:        result.domain,
         },
       });
+
+      // Cache the scraped product specs on the catalog SKU so the
+      // product page can render them in the "Detalles de la llanta"
+      // block. The catalog is shared across distributors, so whichever
+      // refresh runs last wins. We only write when we actually got a
+      // payload — null means "page had no spec table" (e.g. an Alkosto
+      // accessories listing) and we leave any previously-cached value
+      // alone so a one-off bad scrape doesn't wipe known-good data.
+      if (result.productSpecs) {
+        const listing = await this.prisma.distributorListing.findUnique({
+          where: { id: source.listingId },
+          select: { catalogId: true },
+        });
+        if (listing?.catalogId) {
+          await this.prisma.tireMasterCatalog.update({
+            where: { id: listing.catalogId },
+            data:  {
+              productSpecs:   result.productSpecs as any,
+              productSpecsAt: fetchedAt,
+            },
+          });
+        }
+      }
+
       this.logger.log(
         `Refreshed retail source ${sourceId}: ${result.points.length} points, ` +
-        `price ${result.priceCop ?? 'n/a'}`,
+        `price ${result.priceCop ?? 'n/a'}, ` +
+        `specs ${result.productSpecs ? `${result.productSpecs.sections.length} sections` : 'none'}`,
       );
     } catch (err) {
       const msg = (err as Error).message?.slice(0, 800) ?? String(err);

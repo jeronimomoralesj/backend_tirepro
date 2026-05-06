@@ -26,11 +26,34 @@ export interface ScrapedPickupPoint {
   stockUnits: number;
 }
 
+/** One row in a spec table (e.g. "Capacidad de Carga" → "102 I.C - 850Kg"). */
+export interface ScrapedSpecItem {
+  label: string;
+  value: string;
+}
+
+/** A grouped section of specs (e.g. "Características Técnicas"). */
+export interface ScrapedSpecSection {
+  title: string;
+  items: ScrapedSpecItem[];
+}
+
+/** Full spec payload as it lands on tireMasterCatalog.productSpecs. */
+export interface ScrapedProductSpecs {
+  sections: ScrapedSpecSection[];
+}
+
 export interface ScrapedSourceResult {
   url: string;
   domain: string;
   priceCop: number | null;
   points: ScrapedPickupPoint[];
+  /** Parsed product specs from the retail page's "Especificaciones"
+   *  tables. Null when no spec table is present (some Alkosto
+   *  categories render no specs — e.g. accessories — and the upstream
+   *  caller treats that as "leave the existing catalog.productSpecs
+   *  alone" rather than wiping it). */
+  productSpecs: ScrapedProductSpecs | null;
 }
 
 // =============================================================================
@@ -283,7 +306,12 @@ export class RetailScraperService {
     // open the PDP in a browser and intercept the XHR.
     if (!retailer.render) return cheap;
     this.logger.log(`Static HTML had 0 stores for ${url} — falling back to puppeteer render`);
-    return this.renderAndCaptureStores(url, domain, cheap.priceCop, retailer.render);
+    const rendered = await this.renderAndCaptureStores(url, domain, cheap.priceCop, retailer.render);
+    // Spec tables live in the initial SSR'd HTML for Alkosto's PDP
+    // (only the store list is SPA-loaded), so the cheap static parse
+    // captured them before we fell back. Carry them forward so the
+    // render path doesn't lose them.
+    return { ...rendered, productSpecs: rendered.productSpecs ?? cheap.productSpecs };
   }
 
   // -------------------------------------------------------------------
@@ -447,7 +475,68 @@ export class RetailScraperService {
         dedup.set(key, p);
       }
     }
-    return { url, domain, priceCop, points: Array.from(dedup.values()) };
+
+    // ── Product specs ──────────────────────────────────────────────
+    const productSpecs = this.parseAlkostoProductSpecs($);
+
+    return { url, domain, priceCop, points: Array.from(dedup.values()), productSpecs };
+  }
+
+  /**
+   * Parse Alkosto's "Especificaciones" tables into structured JSON.
+   * The page renders four sections (Características Técnicas /
+   * Físicas / Información Adicional Relevante / Otros Atributos)
+   * inside `.new-container__table__classifications--desktop`, each
+   * `__type__wrap` carrying an h3 title + a list of label/value
+   * `__type__item` rows. Some values are <br>-separated lists (years,
+   * vehicle brands, version names — can be 50+ entries) — we replace
+   * <br> with "; " before extracting text so the joined string stays
+   * useful in the UI.
+   *
+   * Returns null when no spec table is on the page (Alkosto renders no
+   * specs for some categories — e.g. accessories — and the caller
+   * treats null as "leave the catalog's existing productSpecs alone"
+   * rather than overwriting it with empty).
+   */
+  private parseAlkostoProductSpecs($: cheerio.CheerioAPI): ScrapedProductSpecs | null {
+    const sections: ScrapedSpecSection[] = [];
+
+    $('.new-container__table__classifications--desktop .new-container__table__classifications___type__wrap').each((_, sectionEl) => {
+      const title = $(sectionEl).find('h3').first().text().trim();
+      if (!title) return; // mobile-summary wraps have no h3
+
+      const items: ScrapedSpecItem[] = [];
+      $(sectionEl).find('.new-container__table__classifications___type__item').each((_, itemEl) => {
+        const $item = $(itemEl);
+        // Skip "void" placeholder cells Alkosto inserts to keep their
+        // 4-up grid balanced — they have no label or value.
+        if ($item.hasClass('new-container__table__classifications___type__item--void')) return;
+
+        const labelText = $item.find('[class*="_item_feature"]').first().text();
+        const label = labelText.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+
+        // Value can include <br>-separated lists (years, brands,
+        // version names). Convert <br> to a sentinel BEFORE pulling
+        // text so we don't run "MITSUBISHIcCHRYSLER" together.
+        const valueHtml = $item.find('[class*="_item_result"]').first().html() ?? '';
+        const value = valueHtml
+          .replace(/<br\s*\/?>/gi, '\u0001')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/gi, ' ')
+          .replace(/\u00a0/g, ' ')
+          .replace(/\u0001/g, '; ')
+          .replace(/\s*;\s*/g, '; ')
+          .replace(/\s+/g, ' ')
+          .replace(/^[\s;]+|[\s;]+$/g, '')
+          .trim();
+
+        if (label && value) items.push({ label, value });
+      });
+
+      if (items.length > 0) sections.push({ title, items });
+    });
+
+    return sections.length > 0 ? { sections } : null;
   }
 
   // -------------------------------------------------------------------
@@ -618,7 +707,13 @@ export class RetailScraperService {
       }
 
       this.logger.log(`Rendered ${url}: ${points.length} stores parsed (source: ${source})`);
-      return { url, domain, priceCop: priceCop ?? fallbackPrice, points };
+      // The render path doesn't (yet) attempt to scrape the spec
+      // tables. The static path catches them on the cheap pass; if we
+      // fell through to render it usually means stores are SPA-loaded
+      // but the spec block tends to be present in the initial HTML.
+      // Return null so the caller leaves any previously-stored specs
+      // intact instead of clearing them.
+      return { url, domain, priceCop: priceCop ?? fallbackPrice, points, productSpecs: null };
     } finally {
       if (browser) {
         await browser.close().catch(() => { /* nothing useful to recover */ });
