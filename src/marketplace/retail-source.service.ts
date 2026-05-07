@@ -129,17 +129,37 @@ export class RetailSourceService {
    *  with stock > 0. Caller passes listingId; the response is safe to
    *  serve uncached because it's read-mostly and tiny. */
   async getForBuyer(listingId: string) {
-    const source = await this.prisma.retailSource.findUnique({
-      where: { listingId },
-      include: {
-        pickupPoints: {
-          where:   { stockUnits: { gt: 0 } },
-          orderBy: [{ stockUnits: 'desc' }, { city: 'asc' }, { name: 'asc' }],
+    // Pull both retail-scraped points AND dist-managed manual
+    // locations in parallel — they share the same buyer-facing
+    // city-grouped shape so the cart's PickupChooser doesn't care
+    // where each row came from.
+    const [source, manualLocations] = await Promise.all([
+      this.prisma.retailSource.findUnique({
+        where: { listingId },
+        include: {
+          pickupPoints: {
+            where:   { stockUnits: { gt: 0 } },
+            orderBy: [{ stockUnits: 'desc' }, { city: 'asc' }, { name: 'asc' }],
+          },
         },
-      },
-    });
-    if (!source || !source.isActive) return null;
-    // Group points by normalised city for the city-first selector UX.
+      }),
+      this.prisma.listingPickupLocation.findMany({
+        where: {
+          distributorListingId: listingId,
+          isActive: true,
+          stockUnits: { gt: 0 },
+        },
+        orderBy: [{ stockUnits: 'desc' }, { city: 'asc' }, { name: 'asc' }],
+      }),
+    ]);
+
+    const sourceActive = source?.isActive ?? false;
+    if (!sourceActive && manualLocations.length === 0) return null;
+
+    // Group both data sources by normalised city for the city-first
+    // selector UX. Order: retail-source rows first (Alkosto already
+    // shows hundreds), manual rows merged on top of the same city
+    // bucket if names match (defensive against accidental dupes).
     const byCity = new Map<string, {
       city: string; cityDisplay: string; totalStock: number;
       points: Array<{
@@ -148,7 +168,24 @@ export class RetailSourceService {
         hours: string | null; stockUnits: number;
       }>;
     }>();
-    for (const p of source.pickupPoints) {
+
+    if (sourceActive && source) {
+      for (const p of source.pickupPoints) {
+        const key = p.city;
+        if (!byCity.has(key)) {
+          byCity.set(key, { city: p.city, cityDisplay: p.cityDisplay ?? p.city, totalStock: 0, points: [] });
+        }
+        const entry = byCity.get(key)!;
+        entry.totalStock += p.stockUnits;
+        entry.points.push({
+          id: p.id, externalId: p.externalId, name: p.name,
+          address: p.address, lat: p.lat, lng: p.lng,
+          hours: p.hours, stockUnits: p.stockUnits,
+        });
+      }
+    }
+
+    for (const p of manualLocations) {
       const key = p.city;
       if (!byCity.has(key)) {
         byCity.set(key, { city: p.city, cityDisplay: p.cityDisplay ?? p.city, totalStock: 0, points: [] });
@@ -156,17 +193,125 @@ export class RetailSourceService {
       const entry = byCity.get(key)!;
       entry.totalStock += p.stockUnits;
       entry.points.push({
-        id: p.id, externalId: p.externalId, name: p.name,
-        address: p.address, lat: p.lat, lng: p.lng,
-        hours: p.hours, stockUnits: p.stockUnits,
+        id: p.id,
+        externalId: null,        // manual locations have no external id
+        name: p.name,
+        address: p.address,
+        lat: p.lat,
+        lng: p.lng,
+        hours: p.hours,
+        stockUnits: p.stockUnits,
       });
     }
+
     return {
-      url: source.url,
-      domain: source.domain,
-      lastSuccessAt: source.lastSuccessAt,
+      url: source?.url ?? null,
+      domain: source?.domain ?? null,
+      lastSuccessAt: source?.lastSuccessAt ?? null,
       cities: Array.from(byCity.values()).sort((a, b) => b.totalStock - a.totalStock),
     };
+  }
+
+  // -------------------------------------------------------------------
+  // Manual pickup-location CRUD — distributor edits their own bodegas
+  // on the listing form when there's no retailer connection.
+  // -------------------------------------------------------------------
+
+  async listManualPickupLocations(listingId: string, companyId: string) {
+    await this.requireOwnedListing(listingId, companyId);
+    return this.prisma.listingPickupLocation.findMany({
+      where:   { distributorListingId: listingId },
+      orderBy: [{ isActive: 'desc' }, { city: 'asc' }, { name: 'asc' }],
+    });
+  }
+
+  async createManualPickupLocation(
+    listingId: string,
+    companyId: string,
+    input: {
+      name: string;
+      address?: string | null;
+      city: string;
+      cityDisplay?: string | null;
+      lat?: number | null;
+      lng?: number | null;
+      hours?: string | null;
+      stockUnits?: number;
+      isActive?: boolean;
+    },
+  ) {
+    await this.requireOwnedListing(listingId, companyId);
+    if (!input.name?.trim()) throw new BadRequestException('Nombre requerido');
+    if (!input.city?.trim()) throw new BadRequestException('Ciudad requerida');
+    return this.prisma.listingPickupLocation.create({
+      data: {
+        distributorListingId: listingId,
+        name:        input.name.trim(),
+        address:     input.address?.trim() || null,
+        city:        this.scraper.publicNormaliseCity(input.city),
+        cityDisplay: (input.cityDisplay ?? input.city).trim(),
+        lat:         input.lat ?? null,
+        lng:         input.lng ?? null,
+        hours:       input.hours?.trim() || null,
+        stockUnits:  Math.max(0, Math.floor(input.stockUnits ?? 0)),
+        isActive:    input.isActive ?? true,
+      },
+    });
+  }
+
+  async updateManualPickupLocation(
+    listingId: string,
+    companyId: string,
+    locationId: string,
+    input: Partial<{
+      name: string;
+      address: string | null;
+      city: string;
+      cityDisplay: string | null;
+      lat: number | null;
+      lng: number | null;
+      hours: string | null;
+      stockUnits: number;
+      isActive: boolean;
+    }>,
+  ) {
+    await this.requireOwnedListing(listingId, companyId);
+    const existing = await this.prisma.listingPickupLocation.findUnique({
+      where: { id: locationId },
+    });
+    if (!existing || existing.distributorListingId !== listingId) {
+      throw new NotFoundException('Punto de recogida no encontrado');
+    }
+    const data: any = {};
+    if (input.name !== undefined)       data.name        = input.name.trim();
+    if (input.address !== undefined)    data.address     = input.address?.trim() || null;
+    if (input.city !== undefined)       data.city        = this.scraper.publicNormaliseCity(input.city);
+    if (input.cityDisplay !== undefined) data.cityDisplay = input.cityDisplay?.trim() || null;
+    if (input.lat !== undefined)        data.lat         = input.lat;
+    if (input.lng !== undefined)        data.lng         = input.lng;
+    if (input.hours !== undefined)      data.hours       = input.hours?.trim() || null;
+    if (input.stockUnits !== undefined) data.stockUnits  = Math.max(0, Math.floor(input.stockUnits));
+    if (input.isActive !== undefined)   data.isActive    = input.isActive;
+    return this.prisma.listingPickupLocation.update({
+      where: { id: locationId },
+      data,
+    });
+  }
+
+  async deleteManualPickupLocation(
+    listingId: string,
+    companyId: string,
+    locationId: string,
+  ) {
+    await this.requireOwnedListing(listingId, companyId);
+    const existing = await this.prisma.listingPickupLocation.findUnique({
+      where: { id: locationId },
+    });
+    if (!existing || existing.distributorListingId !== listingId) {
+      throw new NotFoundException('Punto de recogida no encontrado');
+    }
+    await this.prisma.listingPickupLocation.delete({ where: { id: locationId } });
+    return { ok: true };
   }
 
   // -------------------------------------------------------------------

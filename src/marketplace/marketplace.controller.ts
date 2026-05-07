@@ -592,6 +592,79 @@ export class MarketplaceController {
     return this.retail.getForBuyer(id);
   }
 
+  // ───────────────────────────────────────────────────────────────
+  // Manual pickup locations — distributor's own bodegas managed by
+  // hand from the listing edit form (used when no retail source is
+  // connected and deliveryMode is pickup or both). The buyer-facing
+  // /pickup-points endpoint above merges these with retail-scraped
+  // points so the cart's PickupChooser sees one combined list.
+  // ───────────────────────────────────────────────────────────────
+
+  @Get('listings/:id/pickup-locations')
+  @UseGuards(JwtAuthGuard)
+  async listManualPickupLocations(@Req() req: any, @Param('id') id: string) {
+    const companyId = req.user?.companyId;
+    if (!companyId) throw new ForbiddenException('Auth required');
+    return this.retail.listManualPickupLocations(id, companyId);
+  }
+
+  @Post('listings/:id/pickup-locations')
+  @UseGuards(JwtAuthGuard)
+  async createManualPickupLocation(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() body: {
+      name: string;
+      address?: string | null;
+      city: string;
+      cityDisplay?: string | null;
+      lat?: number | null;
+      lng?: number | null;
+      hours?: string | null;
+      stockUnits?: number;
+      isActive?: boolean;
+    },
+  ) {
+    const companyId = req.user?.companyId;
+    if (!companyId) throw new ForbiddenException('Auth required');
+    return this.retail.createManualPickupLocation(id, companyId, body);
+  }
+
+  @Patch('listings/:id/pickup-locations/:locationId')
+  @UseGuards(JwtAuthGuard)
+  async updateManualPickupLocation(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Param('locationId') locationId: string,
+    @Body() body: Partial<{
+      name: string;
+      address: string | null;
+      city: string;
+      cityDisplay: string | null;
+      lat: number | null;
+      lng: number | null;
+      hours: string | null;
+      stockUnits: number;
+      isActive: boolean;
+    }>,
+  ) {
+    const companyId = req.user?.companyId;
+    if (!companyId) throw new ForbiddenException('Auth required');
+    return this.retail.updateManualPickupLocation(id, companyId, locationId, body);
+  }
+
+  @Delete('listings/:id/pickup-locations/:locationId')
+  @UseGuards(JwtAuthGuard)
+  async deleteManualPickupLocation(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Param('locationId') locationId: string,
+  ) {
+    const companyId = req.user?.companyId;
+    if (!companyId) throw new ForbiddenException('Auth required');
+    return this.retail.deleteManualPickupLocation(id, companyId, locationId);
+  }
+
   // Buyer requests a return on a delivered/shipped order
   @Post('orders/:id/return-request')
   @UseGuards(JwtAuthGuard)

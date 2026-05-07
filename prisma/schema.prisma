@@ -1799,6 +1799,11 @@ model DistributorListing {
   // so buyers can choose to pick up at one of the retailer's
   // physical locations. One source per listing.
   retailSource RetailSource?
+  // Distributor-managed pickup locations (the dist's own physical
+  // stores). Used when deliveryMode is "pickup" or "both" AND there's
+  // no retailSource connection — the dist enters their own bodegas
+  // by hand on the listing edit form.
+  pickupLocations ListingPickupLocation[]
 
   @@index([distributorId, isActive])
   @@index([dimension, isActive])
@@ -2289,6 +2294,41 @@ model RetailSource {
 // from the cron (insert / update by externalId). Inactive points
 // (the retailer removed the store) get stockUnits=0 but the row stays
 // so historical orders that referenced it can still be displayed.
+// Distributor-managed pickup point — the dist's own physical bodega.
+// Differs from RetailPickupPoint in that there's no retailer URL or
+// scrape: the dist types these in by hand on the listing edit form.
+// Used when a listing's deliveryMode is "pickup" or "both" AND no
+// retailSource is connected.
+//
+// City normalisation matches RetailPickupPoint (lowercase ascii in
+// `city`, pretty form in `cityDisplay`) so the buyer's PickupChooser
+// can group manual + retailer locations by the same key.
+//
+// Soft FK pattern from MarketplaceOrder.pickupPointId: the order
+// snapshots pickupPointName + pickupCity at checkout time, so a
+// later edit/delete on this row doesn't break order display.
+model ListingPickupLocation {
+  id                   String   @id @default(uuid())
+  distributorListingId String
+  name                 String   // "TirePro Norte", "Bodega Centro"
+  address              String?  // street + number
+  city                 String   // normalised lowercase
+  cityDisplay          String?  // pretty form
+  lat                  Float?   // map pin
+  lng                  Float?
+  hours                String?  // "Lun–Vie 8am–6pm"
+  stockUnits           Int      @default(0)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  listing DistributorListing @relation(fields: [distributorListingId], references: [id], onDelete: Cascade)
+
+  @@index([distributorListingId, isActive])
+  @@index([distributorListingId, city])
+  @@map("listing_pickup_locations")
+}
+
 model RetailPickupPoint {
   id           String  @id @default(uuid())
   sourceId     String
