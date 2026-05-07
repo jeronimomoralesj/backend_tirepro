@@ -54,12 +54,21 @@ BEGIN
   GET DIAGNOSTICS rc = ROW_COUNT;
   RAISE NOTICE 'Company.promoBannerImage:    % rows', rc;
 
-  -- ── Tire.imageUrl (legacy single-image field) ────────────────────────
-  UPDATE "Tire"
-     SET "imageUrl" = REPLACE("imageUrl", old_host, new_host)
-   WHERE "imageUrl" LIKE old_host || '%';
-  GET DIAGNOSTICS rc = ROW_COUNT;
-  RAISE NOTICE 'Tire.imageUrl:               % rows', rc;
+  -- ── Tire.imageUrl (legacy single-image field, may not exist) ─────────
+  -- Schema declares this column for backward compat with older rows but
+  -- it was never present in the prod DB (drift between schema.prisma
+  -- and the live migration history). Wrapped in EXCEPTION so the
+  -- migration doesn't blow up if the column is genuinely absent.
+  BEGIN
+    UPDATE "Tire"
+       SET "imageUrl" = REPLACE("imageUrl", old_host, new_host)
+     WHERE "imageUrl" LIKE old_host || '%';
+    GET DIAGNOSTICS rc = ROW_COUNT;
+    RAISE NOTICE 'Tire.imageUrl:               % rows', rc;
+  EXCEPTION
+    WHEN undefined_column THEN
+      RAISE NOTICE 'Tire.imageUrl:               skipped (column missing in DB)';
+  END;
 
   -- ── Tire.imageUrls (Postgres TEXT[]) ─────────────────────────────────
   UPDATE "Tire"
@@ -160,8 +169,6 @@ UNION ALL
 SELECT 'Company.bannerImage',                COUNT(*)             FROM "Company"        WHERE "bannerImage"      LIKE 'https://tireproimages.s3.us-east-1.amazonaws.com/%'
 UNION ALL
 SELECT 'Company.promoBannerImage',           COUNT(*)             FROM "Company"        WHERE "promoBannerImage" LIKE 'https://tireproimages.s3.us-east-1.amazonaws.com/%'
-UNION ALL
-SELECT 'Tire.imageUrl',                       COUNT(*)             FROM "Tire"           WHERE "imageUrl"         LIKE 'https://tireproimages.s3.us-east-1.amazonaws.com/%'
 UNION ALL
 SELECT 'Tire.imageUrls',                      COUNT(*)             FROM "Tire"           WHERE EXISTS (SELECT 1 FROM unnest("imageUrls") AS u WHERE u LIKE 'https://tireproimages.s3.us-east-1.amazonaws.com/%')
 UNION ALL
