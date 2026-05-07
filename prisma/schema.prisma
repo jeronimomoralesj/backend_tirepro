@@ -2131,11 +2131,18 @@ model Payment {
   paidAt         DateTime?
   rawWebhookData Json?
 
+  // Abandoned-cart recovery — set by the recovery cron the first
+  // time we email the buyer about a `pending` payment that's been
+  // sitting unfunded for >24h. Stays NULL on payments that complete
+  // normally so we never spam buyers who actually paid.
+  recoveryEmailSentAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   orders MarketplaceOrder[]
 
+  @@index([status, createdAt])
   @@map("marketplace_payments")
 }
 

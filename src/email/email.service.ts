@@ -593,6 +593,55 @@ export class EmailService implements OnModuleInit {
     return this.sendEmail(opts.buyerEmail, `Pedido cancelado — ${opts.listing.marca} ${opts.listing.modelo}`, html);
   }
 
+  /**
+   * Abandoned-cart recovery email. Sent once per payment by the
+   * AbandonedCartCron when a `pending` payment is older than 24h
+   * and the buyer never completed the Bold checkout. The CTA goes
+   * straight to the order tracking page (where they can re-trigger
+   * the Bold redirect from the "Pago pendiente" banner) — we don't
+   * regenerate a fresh checkout link here because the original Bold
+   * link is still valid for 7 days.
+   */
+  async sendCartRecovery(opts: {
+    buyerEmail: string;
+    buyerName: string;
+    orderId: string;
+    distributorName: string;
+    listing: { marca: string; modelo: string; dimension: string; imageUrl?: string | null };
+    quantity: number;
+    totalCop: number;
+  }) {
+    const orderNo = opts.orderId.slice(0, 8).toUpperCase();
+    const trackUrl = this.buildOrderTrackingUrl(opts.orderId, opts.buyerEmail);
+    const firstName = opts.buyerName.split(' ')[0] || 'hola';
+    const html = wrapEmail({
+      preheader: `Tu pedido #${orderNo} de ${opts.listing.marca} ${opts.listing.modelo} sigue esperándote.`,
+      eyebrow: 'Tu pedido te espera',
+      title: `${firstName}, tu compra quedó a un paso`,
+      subtitle: `Vimos que comenzaste tu pedido en TirePro pero no completaste el pago.`,
+      body: [
+        emailLead('Aún puedes finalizar tu compra: tus llantas siguen apartadas y el precio se mantiene.'),
+        emailProductCard({
+          imageUrl: opts.listing.imageUrl,
+          marca: opts.listing.marca,
+          modelo: opts.listing.modelo,
+          dimension: opts.listing.dimension,
+          quantity: opts.quantity,
+        }),
+        emailPaymentBreakdown(opts.totalCop),
+        emailKvList([
+          { label: 'Pedido',       value: `#${orderNo}` },
+          { label: 'Distribuidor', value: opts.distributorName },
+        ]),
+        emailButton('Completar mi pago', trackUrl, { size: 'lg' }),
+        emailFallbackLink(trackUrl),
+        emailDivider(),
+        emailText('Si ya pagaste, ignora este mensaje — el sistema se actualiza automáticamente cuando Bold confirma la transacción.'),
+      ].join(''),
+    });
+    return this.sendEmail(opts.buyerEmail, `Tu pedido #${orderNo} sigue esperándote — TirePro`, html);
+  }
+
   async sendOrderStatusChanged(opts: {
     buyerEmail: string;
     buyerName: string;
