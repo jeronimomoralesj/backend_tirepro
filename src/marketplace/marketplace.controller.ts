@@ -736,8 +736,8 @@ export class MarketplaceController {
   }
 
   @Post('brands/cache/invalidate')
-  invalidateBrandCache() {
-    this.svc.invalidateBrandCaches();
+  async invalidateBrandCache() {
+    await this.svc.invalidateBrandCaches();
     return { ok: true };
   }
 

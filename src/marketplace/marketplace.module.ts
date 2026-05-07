@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { MarketplaceController } from './marketplace.controller';
 import { MarketplaceService } from './marketplace.service';
+import { MarketplaceCache } from './marketplace-cache.service';
 import { MarketplaceStatsService } from './marketplace-stats.service';
 import { RetailScraperService } from './retail-scraper.service';
 import { RetailSourceService } from './retail-source.service';
@@ -16,7 +17,7 @@ import { AuthModule } from '../auth/auth.module';
   imports: [PrismaModule, ConfigModule, forwardRef(() => AuthModule)],
   controllers: [MarketplaceController],
   providers: [
-    MarketplaceService, MarketplaceStatsService,
+    MarketplaceService, MarketplaceCache, MarketplaceStatsService,
     RetailScraperService, RetailSourceService,
     S3Service, EmailService, PlateLookupService, WompiService,
   ],

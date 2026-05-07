@@ -2,30 +2,8 @@ import { Injectable, NotFoundException, BadRequestException, ForbiddenException,
 import { PrismaService } from '../prisma/prisma.service';
 import { BidRequestStatus, BidResponseStatus, Prisma } from '@prisma/client';
 import { EmailService } from '../email/email.service';
+import { MarketplaceCache } from './marketplace-cache.service';
 import { normalizeDimension } from '../common/normalize-dimension';
-
-// Simple in-memory cache with TTL
-class MemCache {
-  private store = new Map<string, { data: any; expires: number }>();
-
-  get<T>(key: string): T | null {
-    const entry = this.store.get(key);
-    if (!entry || Date.now() > entry.expires) { this.store.delete(key); return null; }
-    return entry.data as T;
-  }
-
-  set(key: string, data: any, ttlMs: number) {
-    this.store.set(key, { data, expires: Date.now() + ttlMs });
-  }
-
-  invalidate(prefix: string) {
-    for (const key of this.store.keys()) {
-      if (key.startsWith(prefix)) this.store.delete(key);
-    }
-  }
-
-  clear() { this.store.clear(); }
-}
 
 // Classic iterative Levenshtein distance — O(n*m) time, O(min(n,m)) space.
 // Used for fuzzy brand matching in searchListings so typos like
@@ -57,9 +35,8 @@ function levenshtein(a: string, b: string): number {
 @Injectable()
 export class MarketplaceService {
   private readonly logger = new Logger(MarketplaceService.name);
-  private readonly cache = new MemCache();
 
-  // Cache TTLs
+  // Cache TTLs (ms). Backed by MarketplaceCache → Redis in prod, LRU in dev.
   private readonly FILTERS_TTL  = 5 * 60 * 1000;   // 5 min
   private readonly LISTINGS_TTL = 2 * 60 * 1000;   // 2 min
   private readonly PRODUCT_TTL  = 3 * 60 * 1000;   // 3 min
@@ -72,6 +49,7 @@ export class MarketplaceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly email: EmailService,
+    private readonly cache: MarketplaceCache,
   ) {}
 
   // ===========================================================================
@@ -567,7 +545,7 @@ export class MarketplaceService {
   private readonly BRAND_TTL = 15 * 60 * 1000;
 
   async listBrands() {
-    const cached = this.cache.get<any>('brands:list');
+    const cached = await this.cache.get<any>('brands:list');
     if (cached) return cached;
     const brands = await this.prisma.brandInfo.findMany({
       orderBy: { name: 'asc' },
@@ -582,13 +560,13 @@ export class MarketplaceService {
       ...b,
       listingCount: countByMarca.get(b.name.toLowerCase()) ?? 0,
     }));
-    this.cache.set('brands:list', result, this.BRAND_TTL);
+    await this.cache.set('brands:list', result, this.BRAND_TTL);
     return result;
   }
 
   async getBrandBySlug(slug: string) {
     const cacheKey = `brands:slug:${slug}`;
-    const cached = this.cache.get<any>(cacheKey);
+    const cached = await this.cache.get<any>(cacheKey);
     if (cached) return cached;
 
     const brand = await this.prisma.brandInfo.findUnique({ where: { slug } });
@@ -652,12 +630,12 @@ export class MarketplaceService {
       };
     });
     const result = { ...brand, listings: enrichedListings, total };
-    this.cache.set(cacheKey, result, this.BRAND_TTL);
+    await this.cache.set(cacheKey, result, this.BRAND_TTL);
     return result;
   }
 
-  invalidateBrandCaches() {
-    this.cache.invalidate('brands:');
+  async invalidateBrandCaches() {
+    await this.cache.invalidate('brands:');
   }
 
   // -- Admin brand editor ----------------------------------------------------
@@ -701,20 +679,20 @@ export class MarketplaceService {
     const created = await this.prisma.brandInfo.create({
       data: { ...payload, source: payload.source ?? 'manual' },
     });
-    this.invalidateBrandCaches();
+    await this.invalidateBrandCaches();
     return created;
   }
 
   async adminUpdateBrand(id: string, data: Record<string, any>) {
     const payload = this.pickBrand(data);
     const updated = await this.prisma.brandInfo.update({ where: { id }, data: payload });
-    this.invalidateBrandCaches();
+    await this.invalidateBrandCaches();
     return updated;
   }
 
   async adminDeleteBrand(id: string) {
     await this.prisma.brandInfo.delete({ where: { id } });
-    this.invalidateBrandCaches();
+    await this.invalidateBrandCaches();
     return { ok: true };
   }
 
@@ -789,7 +767,7 @@ export class MarketplaceService {
     limit?: number;
   }) {
     const cacheKey = `listings:${JSON.stringify(filters)}`;
-    const cached = this.cache.get(cacheKey);
+    const cached = await this.cache.get(cacheKey);
     if (cached) return cached;
 
     const where: any = { isActive: true };
@@ -1071,7 +1049,7 @@ export class MarketplaceService {
     });
 
     const result = { listings: enrichedListings, total, page, limit, pages: Math.ceil(total / limit) };
-    this.cache.set(cacheKey, result, this.LISTINGS_TTL);
+    await this.cache.set(cacheKey, result, this.LISTINGS_TTL);
     return result;
   }
 
@@ -1231,7 +1209,7 @@ export class MarketplaceService {
       }).catch(() => { /* non-fatal: listing exists, sub will heal on next create */ });
     }
 
-    this.invalidateListingCaches();
+    await this.invalidateListingCaches();
     return result;
   }
 
@@ -1334,10 +1312,10 @@ export class MarketplaceService {
       where: { id: { in: ids } },
       data,
     });
-    this.invalidateListingCaches();
+    await this.invalidateListingCaches();
     // Per-listing product:<id> cache lives in the marketplace cache;
     // wipe entries en bloc.
-    for (const id of ids) this.cache.invalidate(`product:${id}`);
+    await Promise.all(ids.map((id) => this.cache.invalidate(`product:${id}`)));
     return { updated: ids.length, ids };
   }
 
@@ -1407,11 +1385,11 @@ export class MarketplaceService {
     return { created: created.length, errors, createdIds: created };
   }
 
-  private invalidateListingCaches() {
-    this.cache.invalidate('listings:');
-    this.cache.invalidate('filters');
-    this.cache.invalidate('recs:');
-    this.cache.invalidate('product:');
+  private async invalidateListingCaches() {
+    await this.cache.invalidate('listings:');
+    await this.cache.invalidate('filters');
+    await this.cache.invalidate('recs:');
+    await this.cache.invalidate('product:');
   }
 
   async updateListing(id: string, distributorId: string, data: Partial<{
@@ -1446,8 +1424,8 @@ export class MarketplaceService {
     }
 
     const result = await this.prisma.distributorListing.update({ where: { id }, data: updateData });
-    this.invalidateListingCaches();
-    this.cache.invalidate(`product:${id}`);
+    await this.invalidateListingCaches();
+    await this.cache.invalidate(`product:${id}`);
     return result;
   }
 
@@ -1460,7 +1438,7 @@ export class MarketplaceService {
       where: { id },
       data: { isActive: false },
     });
-    this.invalidateListingCaches();
+    await this.invalidateListingCaches();
     return result;
   }
 
@@ -1469,7 +1447,7 @@ export class MarketplaceService {
   // ===========================================================================
 
   async getMarketplaceFilters() {
-    const cached = this.cache.get('filters');
+    const cached = await this.cache.get('filters');
     if (cached) return cached;
 
     const [dimensions, marcas, distributorIds] = await Promise.all([
@@ -1501,7 +1479,7 @@ export class MarketplaceService {
       : [];
 
     const result = { dimensions: dimensions.map((d) => d.dimension), marcas: marcas.map((m) => m.marca), distributors };
-    this.cache.set('filters', result, this.FILTERS_TTL);
+    await this.cache.set('filters', result, this.FILTERS_TTL);
     return result;
   }
 
@@ -1518,7 +1496,7 @@ export class MarketplaceService {
 
   async getDistributorProfile(distributorIdOrSlug: string) {
     const cacheKey = `distprofile:${distributorIdOrSlug}`;
-    const cached = this.cache.get(cacheKey);
+    const cached = await this.cache.get(cacheKey);
     if (cached) return cached;
 
     const where = this.UUID_RE.test(distributorIdOrSlug)
@@ -1561,7 +1539,7 @@ export class MarketplaceService {
       });
     }
     const out = { ...company, pinnedListing };
-    this.cache.set(cacheKey, out, this.PROFILE_TTL);
+    await this.cache.set(cacheKey, out, this.PROFILE_TTL);
     return out;
   }
 
@@ -1612,9 +1590,9 @@ export class MarketplaceService {
     // entry alive for the full TTL — which is exactly the path the
     // public storefront uses, so saved changes wouldn't show up there
     // for up to 5 minutes. Drop both keys.
-    this.cache.invalidate(`distprofile:${distributorId}`);
-    if (result.slug) this.cache.invalidate(`distprofile:${result.slug}`);
-    this.cache.invalidate('distmap');
+    await this.cache.invalidate(`distprofile:${distributorId}`);
+    if (result.slug) await this.cache.invalidate(`distprofile:${result.slug}`);
+    await this.cache.invalidate('distmap');
     return result;
   }
 
@@ -1630,7 +1608,7 @@ export class MarketplaceService {
       create: { listingId: data.listingId, userId: data.userId, rating: data.rating, comment: data.comment ?? null },
       update: { rating: data.rating, comment: data.comment ?? null },
     });
-    this.cache.invalidate(`product:${data.listingId}`);
+    await this.cache.invalidate(`product:${data.listingId}`);
     return result;
   }
 
@@ -1654,7 +1632,7 @@ export class MarketplaceService {
 
   async getListingById(id: string) {
     const cacheKey = `product:${id}`;
-    const cached = this.cache.get(cacheKey);
+    const cached = await this.cache.get(cacheKey);
     if (cached) return cached;
 
     const listing = await this.prisma.distributorListing.findUnique({
@@ -1699,7 +1677,7 @@ export class MarketplaceService {
     });
 
     const result = { ...listing, totalSold: salesCount._sum.quantity ?? 0 };
-    this.cache.set(cacheKey, result, this.PRODUCT_TTL);
+    await this.cache.set(cacheKey, result, this.PRODUCT_TTL);
     return result;
   }
 
@@ -1802,8 +1780,8 @@ export class MarketplaceService {
       this.logger.warn(`Failed to send distributor notification: ${err}`);
     }
 
-    this.cache.invalidate(`product:${data.listingId}`);
-    this.cache.invalidate('recs:');
+    await this.cache.invalidate(`product:${data.listingId}`);
+    await this.cache.invalidate('recs:');
     return order;
   }
 
@@ -2239,10 +2217,10 @@ export class MarketplaceService {
 
   async getRecommendations(userId?: string, limit = 8) {
     const cacheKey = `recs:${userId ?? 'guest'}:${limit}`;
-    const cached = this.cache.get(cacheKey);
+    const cached = await this.cache.get(cacheKey);
     if (cached) return cached;
 
-    const wrapAndCache = (data: any) => { this.cache.set(cacheKey, data, this.RECS_TTL); return data; };
+    const wrapAndCache = async (data: any) => { await this.cache.set(cacheKey, data, this.RECS_TTL); return data; };
 
     // If logged in, find what dimensions/brands they've bought and suggest similar
     if (userId) {
@@ -2361,7 +2339,7 @@ export class MarketplaceService {
   // ===========================================================================
 
   async getDistributorMapData() {
-    const cached = this.cache.get('distmap');
+    const cached = await this.cache.get('distmap');
     if (cached) return cached;
 
     const distributors = await this.prisma.company.findMany({
@@ -2420,7 +2398,7 @@ export class MarketplaceService {
       return { ...rest, categories: [...cats].sort() };
     });
 
-    this.cache.set('distmap', result, this.MAP_TTL);
+    await this.cache.set('distmap', result, this.MAP_TTL);
     return result;
   }
 
