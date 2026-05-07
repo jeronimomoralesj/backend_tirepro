@@ -8,10 +8,23 @@ export class S3Service {
   private readonly s3: S3Client;
   private readonly bucket: string;
   private readonly region: string;
+  // Optional CloudFront distribution domain. When set, all newly
+  // uploaded assets return CDN URLs (lower TTFB from CO/LATAM than
+  // direct S3 us-east-1) and S3 data-transfer-out is offset by the
+  // free CloudFront tier. Existing rows in the DB still point at
+  // the raw S3 host; both URLs work in parallel until we run the
+  // host-rewrite migration.
+  private readonly cdnBase: string | null;
 
   constructor(private readonly config: ConfigService) {
     this.region = this.config.getOrThrow<string>('AWS_REGION');
     this.bucket = this.config.getOrThrow<string>('AWS_BUCKET_NAME');
+    // Accept the env value with or without trailing slash and with or
+    // without protocol — normalise to "https://host" once at boot.
+    const raw = (this.config.get<string>('CDN_BASE_URL') ?? '').trim();
+    this.cdnBase = raw
+      ? raw.replace(/\/+$/, '').replace(/^http:\/\//, 'https://').replace(/^(?!https:\/\/)/, 'https://')
+      : null;
 
     this.s3 = new S3Client({
       region: this.region,
@@ -20,6 +33,17 @@ export class S3Service {
         secretAccessKey: this.config.getOrThrow<string>('AWS_SECRET_ACCESS_KEY'),
       },
     });
+  }
+
+  /**
+   * Returns the public URL for an S3 object key, preferring the
+   * CloudFront distribution if configured. Single source of truth so
+   * every uploadX method emits a consistent URL — flipping CDN_BASE_URL
+   * on/off rotates the next batch of uploads without code changes.
+   */
+  publicUrl(key: string): string {
+    if (this.cdnBase) return `${this.cdnBase}/${key}`;
+    return this.publicUrl(key);
   }
 
   private validateImage(buffer: Buffer): void {
@@ -65,7 +89,7 @@ export class S3Service {
       throw new InternalServerErrorException('Failed to upload image');
     }
 
-    return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
+    return this.publicUrl(key);
   }
 
   async uploadMarketplaceImage(
@@ -92,7 +116,7 @@ export class S3Service {
       throw new InternalServerErrorException('Failed to upload image');
     }
 
-    return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
+    return this.publicUrl(key);
   }
 
   private validateVideo(buffer: Buffer, mime: string | undefined): void {
@@ -135,7 +159,7 @@ export class S3Service {
       throw new InternalServerErrorException('Failed to upload video');
     }
 
-    return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
+    return this.publicUrl(key);
   }
 
   /**
@@ -143,18 +167,25 @@ export class S3Service {
    * signed-in user can fetch their catalog uploads via the API, avoiding
    * browser CORS on the bucket.
    *
-   * Permissive on purpose: accept any `*.amazonaws.com` hostname. S3
-   * supports at least four URL styles (virtual-hosted regional, legacy
-   * us-east-1, path-style, legacy regional) and the exact AWS_REGION /
-   * AWS_BUCKET_NAME env may not match the URL byte-for-byte. The endpoint
-   * is already authenticated + gated to distribuidor plans, so allowing
-   * fetch of any amazonaws.com host is not an SSRF risk for us (internal
+   * Permissive on purpose: accept any `*.amazonaws.com` hostname plus
+   * the configured CloudFront distribution. S3 supports at least four
+   * URL styles (virtual-hosted regional, legacy us-east-1, path-style,
+   * legacy regional) and the exact AWS_REGION / AWS_BUCKET_NAME env
+   * may not match the URL byte-for-byte. The endpoint is already
+   * authenticated + gated to distribuidor plans, so allowing fetch of
+   * any amazonaws.com host is not an SSRF risk for us (internal
    * metadata is at 169.254.169.254, not amazonaws.com).
    */
   isOwnBucketUrl(url: string): boolean {
     try {
       const u = new URL(url);
-      return u.protocol === 'https:' && u.hostname.endsWith('.amazonaws.com');
+      if (u.protocol !== 'https:') return false;
+      if (u.hostname.endsWith('.amazonaws.com')) return true;
+      if (this.cdnBase) {
+        const cdnHost = new URL(this.cdnBase).hostname;
+        if (u.hostname === cdnHost) return true;
+      }
+      return false;
     } catch {
       return false;
     }
@@ -185,7 +216,7 @@ export class S3Service {
       throw new InternalServerErrorException('Failed to upload image');
     }
 
-    return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
+    return this.publicUrl(key);
   }
 
   async deleteObject(key: string): Promise<void> {
