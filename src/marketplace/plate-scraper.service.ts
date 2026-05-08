@@ -194,10 +194,23 @@ class ConsultaDePlacaScraper implements PlateScraper {
         modelo:   grab('Modelo|A[ñn]o'),
         clase:    grab('Clase|Tipo'),
         servicio: grab('Servicio'),
+        // Debug fingerprint of what we actually saw — first 400 chars
+        // of visible text. Only consumed by the MISS log below; not
+        // returned to the caller.
+        _debugSample: text.slice(0, 400),
+        _debugUrl: window.location.href,
       };
     });
 
-    if (!data.marca && !data.linea && !data.modelo && !data.clase) return null;
+    if (!data.marca && !data.linea && !data.modelo && !data.clase) {
+      // Surface the debug fingerprint via a thrown error message —
+      // the orchestrator catches it and logs it via Logger.warn,
+      // which lands in pm2 stdout. Lets us tell apart "plate not on
+      // this site" vs "DOM redesigned, our labels are wrong".
+      throw new Error(
+        `MISS_DEBUG finalUrl=${data._debugUrl} sample="${data._debugSample.replace(/"/g, "'").slice(0, 300)}"`,
+      );
+    }
     return data;
   }
 }
