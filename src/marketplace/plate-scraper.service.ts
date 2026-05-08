@@ -164,7 +164,16 @@ class ConsultaDePlacaScraper implements PlateScraper {
       waitUntil: 'domcontentloaded',
       timeout: NAV_TIMEOUT_MS,
     });
-    if (!resp || !resp.ok()) return null;
+    if (!resp) {
+      throw new Error(`MISS_DEBUG no response from goto url=${url}`);
+    }
+    if (!resp.ok()) {
+      // Surface the actual HTTP status so we can tell 404 / 403 / 5xx
+      // apart from "page loaded but no data". consultadeplaca returning
+      // 404 for a missing plate vs 403 for geo-block needs different
+      // fixes (selector / URL change vs swap source).
+      throw new Error(`MISS_DEBUG status=${resp.status()} url=${resp.url()}`);
+    }
 
     // Wait for the results card. The site renders client-side after a
     // short query, so we give it up to 6s before giving up.
@@ -175,7 +184,14 @@ class ConsultaDePlacaScraper implements PlateScraper {
         { timeout: 6_000 },
       );
     } catch {
-      return null;
+      // Even on timeout, dump what we have so we can see why the page
+      // never showed any of the expected labels.
+      const sample = await page.evaluate(() =>
+        document.body?.innerText?.replace(/\s+/g, ' ')?.slice(0, 300) ?? '(no body)',
+      );
+      throw new Error(
+        `MISS_DEBUG waitForFunction timed out after 6s url=${page.url()} sample="${sample.replace(/"/g, "'")}"`,
+      );
     }
 
     // Extract by Spanish label scan. Looks for "Marca: X" / "Modelo: X"
