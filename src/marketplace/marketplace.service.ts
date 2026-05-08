@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { BidRequestStatus, BidResponseStatus, Prisma } from '@prisma/client';
 import { EmailService } from '../email/email.service';
 import { MarketplaceCache } from './marketplace-cache.service';
+import { IndexNowService } from './indexnow.service';
 import { normalizeDimension } from '../common/normalize-dimension';
 
 // Classic iterative Levenshtein distance — O(n*m) time, O(min(n,m)) space.
@@ -50,7 +51,23 @@ export class MarketplaceService {
     private readonly prisma: PrismaService,
     private readonly email: EmailService,
     private readonly cache: MarketplaceCache,
+    private readonly indexNow: IndexNowService,
   ) {}
+
+  /**
+   * Build the canonical product URL the marketplace uses on the
+   * frontend, mirroring `productHref()` in src/app/marketplace/
+   * product/_lib/url.ts so IndexNow pings hit exactly the URL
+   * Bing/Yandex will eventually crawl.
+   */
+  private listingPublicUrl(l: { id: string; marca: string; modelo: string; dimension: string }): string {
+    const slug = `${l.marca}-${l.modelo}-${l.dimension}`
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+    return `https://www.tirepro.com.co/marketplace/product/${slug}-${l.id.slice(0, 8)}`;
+  }
 
   // ===========================================================================
   // IMAGE QUALITY SCORING
@@ -1210,6 +1227,11 @@ export class MarketplaceService {
     }
 
     await this.invalidateListingCaches();
+    // Push the new product URL to IndexNow so Bing/Yandex pick it up
+    // within minutes instead of waiting for the next sitemap crawl.
+    // Fire-and-forget — the buyer-facing return value doesn't depend
+    // on the search engine ping completing.
+    this.indexNow.pingAsync([this.listingPublicUrl(result)]);
     return result;
   }
 
@@ -1426,6 +1448,9 @@ export class MarketplaceService {
     const result = await this.prisma.distributorListing.update({ where: { id }, data: updateData });
     await this.invalidateListingCaches();
     await this.cache.invalidate(`product:${id}`);
+    // Re-ping IndexNow so Bing/Yandex re-crawl the updated product
+    // page (price change, new image, status flip).
+    this.indexNow.pingAsync([this.listingPublicUrl(result)]);
     return result;
   }
 
