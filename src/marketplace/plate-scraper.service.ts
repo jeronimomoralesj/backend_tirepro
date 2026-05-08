@@ -72,6 +72,9 @@ export class PlateScraperService {
     const normalized = placa.toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (!normalized) return null;
 
+    const t0 = Date.now();
+    this.logger.log(`[plate-scraper] start placa=${normalized} scrapers=${this.scrapers.map((s) => s.name).join(',')}`);
+
     let browser: Browser | null = null;
     const overall = new AbortController();
     const overallTimer = setTimeout(() => overall.abort(), TOTAL_TIMEOUT_MS);
@@ -90,9 +93,14 @@ export class PlateScraperService {
         // overall timeout is dead time the caller doesn't get back.
         timeout: NAV_TIMEOUT_MS,
       })) as unknown as Browser;
+      this.logger.log(`[plate-scraper] browser launched in ${Date.now() - t0}ms`);
 
       for (const scraper of this.scrapers) {
-        if (overall.signal.aborted) break;
+        if (overall.signal.aborted) {
+          this.logger.warn(`[plate-scraper] overall timeout (${TOTAL_TIMEOUT_MS}ms) reached, skipping remaining scrapers`);
+          break;
+        }
+        const tScraper = Date.now();
         const page = await browser.newPage();
         try {
           await page.setUserAgent(USER_AGENT);
@@ -106,23 +114,30 @@ export class PlateScraperService {
             return req.continue().catch(() => {});
           });
 
+          this.logger.log(`[plate-scraper] trying ${scraper.name} for ${normalized}`);
           const result = await scraper.scrape(page, normalized);
+          const elapsed = Date.now() - tScraper;
           if (result && (result.marca || result.linea || result.modelo || result.clase)) {
-            this.logger.log(`Plate ${normalized} resolved via ${scraper.name}`);
+            this.logger.log(
+              `[plate-scraper] HIT ${scraper.name} for ${normalized} in ${elapsed}ms ` +
+              `(marca=${result.marca ?? '-'} linea=${result.linea ?? '-'} modelo=${result.modelo ?? '-'} clase=${result.clase ?? '-'})`,
+            );
             return result;
           }
+          this.logger.warn(`[plate-scraper] MISS ${scraper.name} for ${normalized} in ${elapsed}ms (no fields extracted)`);
         } catch (err) {
           this.logger.warn(
-            `Scraper "${scraper.name}" failed for ${normalized}: ${(err as Error)?.message ?? err}`,
+            `[plate-scraper] ERROR ${scraper.name} for ${normalized}: ${(err as Error)?.message ?? err}`,
           );
         } finally {
           await page.close().catch(() => {});
         }
       }
 
+      this.logger.warn(`[plate-scraper] all scrapers missed for ${normalized} after ${Date.now() - t0}ms`);
       return null;
     } catch (err) {
-      this.logger.warn(`Browser launch failed for ${normalized}: ${(err as Error)?.message ?? err}`);
+      this.logger.error(`[plate-scraper] browser launch FAILED for ${normalized}: ${(err as Error)?.message ?? err}`);
       return null;
     } finally {
       clearTimeout(overallTimer);
