@@ -727,9 +727,14 @@ export class MarketplaceController {
   @Post('plate-lookup/:placa/community')
   saveCommunityPlate(
     @Param('placa') placa: string,
-    @Body('clase') clase: string,
+    @Body() body: { clase: string; marca?: string; linea?: string; modelo?: string; dimensions?: string[] },
   ) {
-    return this.plateLookup.saveCommunityLookup(placa, clase);
+    return this.plateLookup.saveCommunityLookup(placa, body.clase, {
+      marca:      body.marca,
+      linea:      body.linea,
+      modelo:     body.modelo,
+      dimensions: body.dimensions,
+    });
   }
 
   @Get('distributors/map')

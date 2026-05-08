@@ -69,6 +69,17 @@ const DATOS_GOV_DATASETS = [
   { id: '5ue6-jtmx', plateField: 'placa',     region: 'Vehiculos GNV (nacional)' },
   { id: 'a6et-uhjn', plateField: 'placa',     region: 'Carros GLP distribuidor' },
   { id: 'kvf9-pwe6', plateField: 'placas',    region: 'Copacabana pico y placa' },
+  // Second-pass verification (May 2026) — these IDs returned a row
+  // when probed with `$limit=1` and contain a `placa` field. Marca
+  // / modelo coverage varies per dataset; the parallel fan-out in
+  // queryDatosGov picks the first hit anywhere.
+  { id: '72nf-y4v3', plateField: 'placa',     region: 'Multas Bucaramanga' },
+  { id: 'tfrd-amb4', plateField: 'placa',     region: 'Registro vehicular regional' },
+  { id: 'isnx-a8fc', plateField: 'placa',     region: 'Vehículos servicio público' },
+  { id: 'wmr7-xdpj', plateField: 'placa',     region: 'Vehículos institucionales' },
+  { id: 'ghej-cwz5', plateField: 'placa',     region: 'Multas regional A' },
+  { id: 'atkg-vhpp', plateField: 'placa',     region: 'Multas regional B' },
+  { id: 'bptt-m74m', plateField: 'placa',     region: 'Registro automotor' },
   // p29a-y4rc dropped — Socrata returns 404 ("Not found") for this
   // dataset id since early 2026. Re-add if it comes back online.
 ];
@@ -197,25 +208,70 @@ export class PlateLookupService {
   }
 
   /**
-   * Called by the frontend when a user manually selects their vehicle type.
-   * This builds the crowdsourced DB so the next person gets instant results.
+   * Called by the frontend when a user manually identifies their
+   * vehicle. Two callers today:
+   *
+   * 1. Community vehicle-class fallback (legacy) — caller sends just
+   *    `clase` (AUTOMOVIL / CAMIONETA / TRACTOMULA / …) and the
+   *    backend infers generic dimensions from TIRE_MAP.
+   * 2. Vehicle-name autocomplete (the marketplace hero plate-fallback
+   *    flow) — caller resolves the vehicle against the client-side
+   *    VEHICLE_DB and sends marca + linea + dimensions[] alongside
+   *    clase. We persist all of it so the next buyer with the same
+   *    plate gets the full vehicle resolution back, not just a
+   *    generic class.
+   *
+   * Either path lands the row in plate_cache so future cache hits
+   * skip the gov-source fan-out entirely.
    */
-  async saveCommunityLookup(placa: string, clase: string): Promise<LookupResult> {
+  async saveCommunityLookup(
+    placa: string,
+    clase: string,
+    extras?: { marca?: string; linea?: string; modelo?: string; dimensions?: string[] },
+  ): Promise<LookupResult> {
     const normalized = placa.toUpperCase().replace(/[^A-Z0-9]/g, '');
     const upperClase = clase.toUpperCase().trim();
+    const marca = extras?.marca?.toUpperCase().trim() || null;
+    const linea = extras?.linea?.toUpperCase().trim() || null;
+    const modelo = extras?.modelo?.toString().trim() || null;
+    // Trust the client-supplied dimensions when present (more precise
+    // — keyed off the actual model). Fall back to the class-level
+    // TIRE_MAP when the caller only sent `clase`.
+    const dimensions = extras?.dimensions && extras.dimensions.length > 0
+      ? extras.dimensions
+      : matchVehicleType(upperClase);
 
     await this.prisma.plateCache.upsert({
-      where: { placa: normalized },
-      create: { placa: normalized, clase: upperClase, source: 'community' },
-      update: { clase: upperClase, lookups: { increment: 1 } },
+      where:  { placa: normalized },
+      create: {
+        placa:    normalized,
+        clase:    upperClase,
+        marca,
+        linea,
+        modelo,
+        source:   'community',
+      },
+      update: {
+        clase:    upperClase,
+        // Only overwrite marca/linea/modelo when the new payload has
+        // them — so a user-class-only follow-up doesn't blow away
+        // richer data we already had.
+        ...(marca  ? { marca }  : {}),
+        ...(linea  ? { linea }  : {}),
+        ...(modelo ? { modelo } : {}),
+        lookups:  { increment: 1 },
+      },
     });
 
     const result: LookupResult = {
-      found: true,
-      source: 'community',
-      placa: normalized,
-      clase: upperClase,
-      dimensions: matchVehicleType(upperClase),
+      found:      true,
+      source:     'community',
+      placa:      normalized,
+      clase:      upperClase,
+      marca:      marca ?? undefined,
+      linea:      linea ?? undefined,
+      modelo:     modelo ?? undefined,
+      dimensions,
     };
 
     void this.cache.set(`${this.CACHE_PREFIX}${normalized}`, result, this.CACHE_TTL);
