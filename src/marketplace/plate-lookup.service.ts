@@ -43,7 +43,11 @@ function matchVehicleType(clase: string): string[] {
   if (upper.includes('AUTO') || upper.includes('SEDAN') || upper.includes('HATCH')) return TIRE_MAP['AUTOMOVIL'];
   if (upper.includes('MOTO') && upper.includes('CARRO')) return TIRE_MAP['MOTOCARRO'];
   if (upper.includes('MOTO')) return TIRE_MAP['MOTOCICLETA'];
-  return ['295/80R22.5', '11R22.5'];
+  // Empty fallback — anything we couldn't classify falls through to
+  // the marketplace hero's vehicle-name autocomplete, which gives the
+  // buyer a precise per-model resolution. The previous default of
+  // tractomula sizes (295/80R22.5) was actively misleading for cars.
+  return [];
 }
 
 // Regional datasets on datos.gov.co with real vehicle plate data.
@@ -155,10 +159,21 @@ export class PlateLookupService {
       }
     } catch { /* */ }
 
-    // 4. Query datos.gov.co regional datasets in parallel
+    // 4. Query datos.gov.co regional datasets in parallel.
+    //    Several of the catalog's plate-bearing datasets are FINES /
+    //    multas registries — they contain a `placa` column but no
+    //    marca / modelo / clase. A plate-only "hit" tells us nothing
+    //    useful and previously fell through to a hardcoded
+    //    tractomula-default in matchVehicleType(''), which surfaced
+    //    295/80R22.5 dimensions for cars. Treat any hit without
+    //    actual vehicle metadata as a miss so the upstream caller
+    //    routes the user to the community autocomplete instead.
     try {
       const govResult = await this.queryDatosGov(normalized);
-      if (govResult) {
+      const hasUsefulData = govResult && (
+        govResult.marca || govResult.linea || govResult.modelo || govResult.clase
+      );
+      if (hasUsefulData) {
         // Save to plate_cache for future lookups
         this.savePlateCache(normalized, govResult, 'runt');
         return this.cacheAndReturn({
@@ -168,6 +183,9 @@ export class PlateLookupService {
           servicio: govResult.servicio,
           dimensions: matchVehicleType(govResult.clase ?? ''),
         });
+      }
+      if (govResult) {
+        this.logger.log(`datos.gov.co matched ${normalized} but only on the plate column — skipping useless hit`);
       }
     } catch (err) {
       this.logger.warn(`datos.gov.co failed for ${normalized}: ${err}`);
