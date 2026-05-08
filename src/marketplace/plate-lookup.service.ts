@@ -46,16 +46,31 @@ function matchVehicleType(clase: string): string[] {
   return ['295/80R22.5', '11R22.5'];
 }
 
-// Regional datasets on datos.gov.co with real vehicle plate data
+// Regional datasets on datos.gov.co with real vehicle plate data.
+// Only free / EC2-friendly path that actually works in 2026 — every
+// other free option (Sura, Falabella, ComparaOnline, RUNT, SIMIT)
+// either WAF-blocks AWS IPs, requires a paid key, or sits behind
+// captcha. The list below is verified against the live Socrata API
+// (May 2026); each dataset has been tested with `$where=<field>='ABC123'`
+// and confirmed to return at least clase + marca + modelo data.
 const DATOS_GOV_DATASETS = [
-  { id: 'x9pp-pcn5', plateField: 'placa', region: 'Risaralda' },
-  { id: 'g7i9-xkxz', plateField: 'placa', region: 'Floridablanca' },
-  { id: 'p29a-y4rc', plateField: 'placa', region: 'Cucuta' },
-  { id: 'dkxf-ikd7', plateField: 'placa', region: 'Caldas' },
-  { id: 'syiu-8mvf', plateField: 'placa', region: 'Barbosa' },
-  { id: 'fvnt-frpb', plateField: 'placa', region: 'Transporte publico' },
+  { id: 'x9pp-pcn5', plateField: 'placa',     region: 'Risaralda' },
+  { id: 'g7i9-xkxz', plateField: 'placa',     region: 'Floridablanca' },
+  { id: 'dkxf-ikd7', plateField: 'placa',     region: 'Caldas' },
+  { id: 'syiu-8mvf', plateField: 'placa',     region: 'Barbosa' },
+  { id: 'fvnt-frpb', plateField: 'placa',     region: 'Transporte publico' },
   { id: '5in3-nedb', plateField: 'nro_placa', region: 'Barbosa (actualizado)' },
-  { id: '2vr3-dink', plateField: 'placa', region: 'Malambo' },
+  { id: '2vr3-dink', plateField: 'placa',     region: 'Malambo' },
+  // Added May 2026 after auditing the Socrata catalog for additional
+  // searchable plate datasets. Coverage is still narrow per dataset
+  // (each is one municipality / one vehicle category), but in
+  // aggregate the parallel fan-out hits roughly twice as many
+  // plates as the previous list.
+  { id: '5ue6-jtmx', plateField: 'placa',     region: 'Vehiculos GNV (nacional)' },
+  { id: 'a6et-uhjn', plateField: 'placa',     region: 'Carros GLP distribuidor' },
+  { id: 'kvf9-pwe6', plateField: 'placas',    region: 'Copacabana pico y placa' },
+  // p29a-y4rc dropped — Socrata returns 404 ("Not found") for this
+  // dataset id since early 2026. Re-add if it comes back online.
 ];
 
 interface LookupResult {

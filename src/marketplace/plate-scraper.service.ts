@@ -57,10 +57,17 @@ export class PlateScraperService {
   private readonly logger = new Logger(PlateScraperService.name);
 
   // Order = priority. First scraper to return a non-null wins.
-  private readonly scrapers: PlateScraper[] = [
-    new ConsultaDePlacaScraper(),
-    // Add SuraSoatScraper, FalabellaQuoterScraper, etc. as future tiers.
-  ];
+  //
+  // NOTE: empty as of 2026-05-08. Audit results: Sura's SOAT cotizador
+  // domain (soat.sura.com.co) is dead, Falabella SOAT WAF-blocks AWS
+  // us-east-1 IPs, Bolívar / AXA / Liberty / Mapfre expose no public
+  // plate-to-vehicle JSON endpoint, RUNT and SIMIT both have captchas,
+  // and consultadeplaca.com/.net both 404 on plate URLs. Re-enable
+  // once a working free target appears. Until then PlateLookupService's
+  // datos.gov.co tier (now 10 parallel datasets) does the heavy
+  // lifting, with the community fallback in the marketplace hero
+  // catching anything those don't have.
+  private readonly scrapers: PlateScraper[] = [];
 
   /**
    * Headless-scrape a plate. Returns null when no source resolved it.
@@ -71,6 +78,10 @@ export class PlateScraperService {
   async scrapePlate(placa: string): Promise<ScrapedPlateInfo | null> {
     const normalized = placa.toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (!normalized) return null;
+
+    // Short-circuit when there are no scrapers registered — saves
+    // 500-2000ms of wasted browser-launch time on every miss.
+    if (this.scrapers.length === 0) return null;
 
     const t0 = Date.now();
     this.logger.log(`[plate-scraper] start placa=${normalized} scrapers=${this.scrapers.map((s) => s.name).join(',')}`);
