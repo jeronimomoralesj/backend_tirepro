@@ -704,8 +704,24 @@ export class MarketplaceController {
   }
 
   @Get('plate-lookup/:placa')
-  lookupPlate(@Param('placa') placa: string) {
-    return this.plateLookup.lookupPlate(placa);
+  async lookupPlate(@Param('placa') placa: string) {
+    const result = await this.plateLookup.lookupPlate(placa);
+    // The legacy contract (LookupResult) is preserved for the
+    // frontend's existing PlateSearch widget. We also expose a
+    // canonical { success, source, placa, data } envelope for new
+    // callers — both are returned in the same response so neither
+    // side has to coordinate a deploy.
+    return {
+      ...result,
+      success: result.found,
+      data: result.found ? {
+        make:  result.marca ?? null,
+        model: result.linea ?? null,
+        year:  result.modelo ? Number(result.modelo) || result.modelo : null,
+        clase: result.clase ?? null,
+        dimensions: result.dimensions,
+      } : null,
+    };
   }
 
   @Post('plate-lookup/:placa/community')

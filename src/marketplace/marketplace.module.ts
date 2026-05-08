@@ -10,6 +10,7 @@ import { S3Service } from '../companies/s3.service';
 import { ConfigModule } from '@nestjs/config';
 import { EmailService } from '../email/email.service';
 import { PlateLookupService } from './plate-lookup.service';
+import { PlateScraperService } from './plate-scraper.service';
 import { WompiService } from './wompi.service';
 import { AuthModule } from '../auth/auth.module';
 
@@ -19,7 +20,7 @@ import { AuthModule } from '../auth/auth.module';
   providers: [
     MarketplaceService, MarketplaceCache, MarketplaceStatsService,
     RetailScraperService, RetailSourceService,
-    S3Service, EmailService, PlateLookupService, WompiService,
+    S3Service, EmailService, PlateLookupService, PlateScraperService, WompiService,
   ],
   exports: [MarketplaceService, MarketplaceStatsService, RetailSourceService],
 })

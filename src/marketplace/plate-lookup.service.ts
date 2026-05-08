@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { MarketplaceCache } from './marketplace-cache.service';
+import { PlateScraperService } from './plate-scraper.service';
 
 // Colombian vehicle type → common tire dimensions
 const TIRE_MAP: Record<string, string[]> = {
@@ -71,19 +73,23 @@ interface LookupResult {
 @Injectable()
 export class PlateLookupService {
   private readonly logger = new Logger(PlateLookupService.name);
-  private memCache = new Map<string, { data: LookupResult; ts: number }>();
   private readonly CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
+  private readonly CACHE_PREFIX = 'plate:';
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: MarketplaceCache,
+    private readonly scraper: PlateScraperService,
+  ) {}
 
   async lookupPlate(placa: string): Promise<LookupResult> {
     const normalized = placa.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-    // 1. Memory cache
-    const memCached = this.memCache.get(normalized);
-    if (memCached && Date.now() - memCached.ts < this.CACHE_TTL) {
-      return memCached.data;
-    }
+    // 1. Redis cache (cross-instance — every Node behind the LB shares
+    //    the same cached plate result for 24h). Beats hitting Postgres
+    //    or the scrapers on every page reload.
+    const cached = await this.cache.get<LookupResult>(`${this.CACHE_PREFIX}${normalized}`);
+    if (cached) return cached;
 
     // 2. Check our vehicles DB
     try {
@@ -141,7 +147,28 @@ export class PlateLookupService {
       this.logger.warn(`datos.gov.co failed for ${normalized}: ${err}`);
     }
 
-    // 5. Motorcycle plate format detection
+    // 5. Headless scrape — last-resort tier for plates the gov sources
+    //    don't have (commercial, recently registered, etc.). Wrapped in
+    //    try/catch so a scraper outage never bubbles up as a 500.
+    try {
+      const scraped = await this.scraper.scrapePlate(normalized);
+      if (scraped && (scraped.marca || scraped.linea || scraped.modelo || scraped.clase)) {
+        this.savePlateCache(normalized, scraped, 'scraper');
+        return this.cacheAndReturn({
+          found: true, source: 'scraper', placa: normalized,
+          marca: scraped.marca, linea: scraped.linea,
+          modelo: scraped.modelo, clase: scraped.clase,
+          servicio: scraped.servicio,
+          dimensions: matchVehicleType(scraped.clase ?? ''),
+        });
+      }
+    } catch (err) {
+      this.logger.warn(`Scraper failed for ${normalized}: ${err}`);
+    }
+
+    // 6. Motorcycle plate format detection (cheaper than tier 5, but
+    //    only fires on format match — kept here as a final-final
+    //    fallback for bikes the scraper also missed).
     if (/^[A-Z]{3}\d{2}[A-Z]$/.test(normalized)) {
       return this.cacheAndReturn({
         found: true, source: 'formato', placa: normalized,
@@ -150,7 +177,7 @@ export class PlateLookupService {
       });
     }
 
-    // 6. Not found
+    // 7. Not found
     return { found: false, source: 'none', placa: normalized, dimensions: [] };
   }
 
@@ -176,12 +203,16 @@ export class PlateLookupService {
       dimensions: matchVehicleType(upperClase),
     };
 
-    this.memCache.set(normalized, { data: result, ts: Date.now() });
+    void this.cache.set(`${this.CACHE_PREFIX}${normalized}`, result, this.CACHE_TTL);
     return result;
   }
 
   private cacheAndReturn(result: LookupResult): LookupResult {
-    this.memCache.set(result.placa, { data: result, ts: Date.now() });
+    // Fire-and-forget Redis write — the call site doesn't need to
+    // await persistence to return the lookup synchronously to the
+    // user. MarketplaceCache.set is already exception-swallowing so a
+    // Redis blip never bubbles up as a 500 here.
+    void this.cache.set(`${this.CACHE_PREFIX}${result.placa}`, result, this.CACHE_TTL);
     return result;
   }
 
