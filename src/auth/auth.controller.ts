@@ -1,11 +1,14 @@
 import {
   Controller,
   Post,
+  Get,
   Body,
   HttpCode,
   HttpStatus,
   UsePipes,
   ValidationPipe,
+  UseGuards,
+  UnauthorizedException,
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
@@ -14,6 +17,7 @@ import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 interface AuthUser {
   id:        string;
@@ -57,6 +61,26 @@ export class AuthController {
     const ip  = fwd || req.ip || (req.socket as any)?.remoteAddress || null;
     const userAgent = (req.headers['user-agent'] as string | undefined) ?? null;
     return this.authService.login(dto.email, dto.password, { ip, userAgent });
+  }
+
+  // ── Session verification ──────────────────────────────────────────────────
+  // Frontend calls this on app load (and on tab focus) to verify the
+  // stored JWT still maps to a live user. Returns the canonical user
+  // record on success; throws 401 if the user was deleted or the token
+  // is otherwise invalid. The 401 is what triggers the auto-logout
+  // path on the AuthProvider.
+  @UseGuards(JwtAuthGuard)
+  @Get('me')
+  @HttpCode(HttpStatus.OK)
+  async me(@Req() req: Request): Promise<AuthUser> {
+    // JwtAuthGuard attaches the decoded payload to req.user, but
+    // express's Request type has no `user` field by default. Cast
+    // through unknown so the typing matches what Passport actually
+    // produces (see jwt.strategy.ts validate()).
+    const principal = (req as unknown as { user?: { userId?: string } }).user;
+    const userId = principal?.userId;
+    if (!userId) throw new UnauthorizedException('Invalid session');
+    return this.authService.me(userId);
   }
 
   // ── Blog password ─────────────────────────────────────────────────────────

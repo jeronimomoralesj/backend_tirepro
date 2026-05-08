@@ -31,6 +31,7 @@ interface AuthUser {
   name: string;
   role: UserRole;
   companyId: string;
+  userPlan: string;
   company: {
     id: string;
     name: string;
@@ -158,6 +159,46 @@ export class AuthService {
         ? envUrl.replace(/\/$/, '')
         : 'https://www.tirepro.com.co';
     return `${baseUrl}/verify?token=${token}`;
+  }
+
+  // -------------------------------------------------------------------------
+  // me — verify a JWT-bearing user still exists in the DB
+  //
+  // The JWT decodes locally without any DB hit, which means a stale token
+  // (user deleted, password rotated elsewhere) still passes JwtAuthGuard.
+  // This method does the missing DB-level check and lets the frontend
+  // log itself out cleanly when the token no longer maps to a real user.
+  // Throws 401 on missing user so the standard auth-failure handler
+  // applies on the frontend.
+  // -------------------------------------------------------------------------
+
+  async me(userId: string): Promise<AuthUser> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        companyId: true,
+        userPlan: true,
+        company: {
+          select: { id: true, name: true, plan: true, profileImage: true },
+        },
+      },
+    });
+    if (!user) {
+      throw new UnauthorizedException('Sesión inválida — vuelve a iniciar sesión.');
+    }
+    return {
+      id:        user.id,
+      email:     user.email,
+      name:      user.name,
+      role:      user.role,
+      companyId: user.companyId ?? '',
+      userPlan:  user.userPlan ?? '',
+      company:   user.company,
+    };
   }
 
   // -------------------------------------------------------------------------
