@@ -4123,6 +4123,37 @@ export class TireService {
       await this.prisma.tire.update({ where: { id: tireId }, data: updateData });
     }
 
+    // Identity sync into the latest vida snapshot. When buscar/buscarDist
+    // edits the tire's marca/diseno/dimension/eje, we want the
+    // current-life vida row to reflect the new identity too — otherwise
+    // the historial tab still surfaces the stale value alongside the
+    // updated tire.marca and the buyer thinks the edit didn't take.
+    // Only the most recent snapshot is touched (by createdAt desc) so
+    // older closed-life snapshots stay frozen as historical records.
+    const identityChanged =
+      dto.marca !== undefined ||
+      dto.diseno !== undefined ||
+      dto.dimension !== undefined ||
+      dto.eje !== undefined;
+    if (identityChanged) {
+      const latestSnapshot = await this.prisma.tireVidaSnapshot.findFirst({
+        where: { tireId },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true },
+      });
+      if (latestSnapshot) {
+        const snapshotPatch: Prisma.TireVidaSnapshotUpdateInput = {};
+        if (dto.marca     !== undefined) snapshotPatch.marca     = dto.marca;
+        if (dto.diseno    !== undefined) snapshotPatch.diseno    = dto.diseno;
+        if (dto.dimension !== undefined) snapshotPatch.dimension = normalizeDimensionCanonical(dto.dimension);
+        if (dto.eje       !== undefined) snapshotPatch.eje       = dto.eje;
+        await this.prisma.tireVidaSnapshot.update({
+          where: { id: latestSnapshot.id },
+          data:  snapshotPatch,
+        });
+      }
+    }
+
     // BUG-FIX: invalidate AFTER the update commits.
     // If companyId changed, invalidate both old and new company caches.
     const invalidations: Promise<any>[] = [
