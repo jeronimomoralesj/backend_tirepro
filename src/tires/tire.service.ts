@@ -4002,6 +4002,134 @@ export class TireService {
   }
 
   // ===========================================================================
+  // RECORD DESMOUNT DATA
+  //
+  // Captures "what was the vehicle's km when this tire came off" — the
+  // anchor projections and CPK readers downstream depend on. We materialize
+  // this as a synthetic Inspeccion at the desmount moment (copying the
+  // tire's last known depths so the rest of the analytics pipeline keeps
+  // working unchanged), update the vehicle's odometer if the new reading
+  // is higher, and recompute tire.kilometrosRecorridos.
+  //
+  // If neither field is supplied, the tire is flagged as
+  // desmountDataPending so the inventory bucket UI can prompt the user
+  // to fill in the data later. Supplying either field clears the flag.
+  // ===========================================================================
+  async recordDesmountData(
+    tireId: string,
+    dto: { vehicleKmAtDesmount?: number; tireKm?: number },
+  ) {
+    const tire = await this.prisma.tire.findUnique({
+      where:  { id: tireId },
+      select: {
+        id:                   true,
+        companyId:            true,
+        vehicleId:            true,
+        kilometrosRecorridos: true,
+        profundidadInicial:   true,
+        vidaActual:           true,
+        vehicle: { select: { id: true, kilometrajeActual: true } },
+        inspecciones: {
+          orderBy: { fecha: 'desc' },
+          take:    1,
+          select:  {
+            profundidadInt: true,
+            profundidadCen: true,
+            profundidadExt: true,
+            kmActualVehiculo: true,
+          },
+        },
+      },
+    });
+    if (!tire) throw new NotFoundException('Tire not found');
+
+    const km = typeof dto.vehicleKmAtDesmount === 'number' && isFinite(dto.vehicleKmAtDesmount) && dto.vehicleKmAtDesmount > 0
+      ? Math.round(dto.vehicleKmAtDesmount)
+      : undefined;
+    const tireKm = typeof dto.tireKm === 'number' && isFinite(dto.tireKm) && dto.tireKm >= 0
+      ? Math.round(dto.tireKm)
+      : undefined;
+
+    // No data supplied → just flag and return. The tire stays where it
+    // is; the UI handles whatever bucket / position move comes next.
+    if (km === undefined && tireKm === undefined) {
+      await this.prisma.tire.update({
+        where: { id: tireId },
+        data:  { desmountDataPending: true },
+      });
+      await this.invalidateCompanyCache(tire.companyId);
+      return { message: 'Tire flagged as missing desmount data' };
+    }
+
+    // Resolve depths for the synthetic Inspeccion. Prefer the tire's last
+    // real inspection — that's the freshest measurement of the same tire,
+    // so its CPK/projection math stays consistent. Fall back to the
+    // initial spec depth when the tire has never been inspected (rare
+    // but happens for newly-installed tires desmounted on day 1).
+    const last = tire.inspecciones[0];
+    const profundidadInt = last?.profundidadInt ?? tire.profundidadInicial ?? 0;
+    const profundidadCen = last?.profundidadCen ?? tire.profundidadInicial ?? 0;
+    const profundidadExt = last?.profundidadExt ?? tire.profundidadInicial ?? 0;
+
+    // Recompute tire.kilometrosRecorridos. Explicit tireKm wins (the
+    // technician is asserting the absolute total). Otherwise we add the
+    // delta between the vehicle's last known km and the new reading,
+    // matching what a regular inspection would do.
+    let newKilometrosRecorridos: number = tire.kilometrosRecorridos ?? 0;
+    if (tireKm !== undefined) {
+      newKilometrosRecorridos = tireKm;
+    } else if (km !== undefined && tire.vehicle) {
+      const prevVehicleKm = tire.vehicle.kilometrajeActual ?? 0;
+      const delta = km - prevVehicleKm;
+      if (delta > 0) newKilometrosRecorridos = (tire.kilometrosRecorridos ?? 0) + delta;
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      // Synthetic inspection — anchors the tire's "latest km" so the
+      // analytics that read kmActualVehiculo + fecha see a real row.
+      if (km !== undefined) {
+        await tx.inspeccion.create({
+          data: {
+            tireId,
+            fecha:            new Date(),
+            profundidadInt,
+            profundidadCen,
+            profundidadExt,
+            kmActualVehiculo: km,
+            vidaAlMomento:    tire.vidaActual ?? 'nueva',
+            source:           'manual',
+          },
+        });
+      }
+
+      // Bump the vehicle's odometer if we got a higher reading. Never
+      // walk it backward — that would corrupt all downstream km diffs.
+      if (km !== undefined && tire.vehicle && km > (tire.vehicle.kilometrajeActual ?? 0)) {
+        await tx.vehicle.update({
+          where: { id: tire.vehicle.id },
+          data:  { kilometrajeActual: km },
+        });
+      }
+
+      await tx.tire.update({
+        where: { id: tireId },
+        data:  {
+          kilometrosRecorridos: newKilometrosRecorridos,
+          desmountDataPending:  false,
+        },
+      });
+    });
+
+    await Promise.allSettled([
+      this.invalidateCompanyCache(tire.companyId),
+      tire.vehicleId ? this.invalidateVehicleCache(tire.vehicleId) : Promise.resolve(),
+      tire.vehicleId ? this.cache.del(`analysis:${tire.vehicleId}`) : Promise.resolve(),
+    ]);
+
+    return { message: 'Desmount data recorded' };
+  }
+
+  // ===========================================================================
   // EDIT TIRE  (bug-fix: cache invalidation order corrected)
   // ===========================================================================
 

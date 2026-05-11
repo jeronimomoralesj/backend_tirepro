@@ -260,6 +260,21 @@ export class TireController {
     return this.tireService.updatePositions(body.updates, body.vehicleId, body.placa);
   }
 
+  // Record the vehicle km (and optionally the tire's absolute km) at the
+  // moment a tire was desmounted. Omitting both flags the tire so the
+  // inventory bucket UI can surface a "Datos faltantes" badge for the
+  // fill-in flow. Called twice from the inspection flow: once when the
+  // technician hits Desmontar, and again from /dashboard/inventario when
+  // a previously-flagged tire is updated.
+  @Post(':id/desmount-data')
+  @HttpCode(HttpStatus.OK)
+  recordDesmountData(
+    @Param('id') tireId: string,
+    @Body() body: { vehicleKmAtDesmount?: number; tireKm?: number },
+  ) {
+    return this.tireService.recordDesmountData(tireId, body);
+  }
+
   // ── Tire mutations ────────────────────────────────────────────────────────
 
   @Patch(':id/inspection')

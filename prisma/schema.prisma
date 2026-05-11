@@ -611,6 +611,13 @@ model Tire {
   lastPosicion       Int?
   inventoryEnteredAt DateTime?
 
+  // When a tire is desmounted without capturing the vehicle's km at that
+  // moment, we set this to true so the inventory-bucket UI can surface
+  // a "Datos faltantes" badge and let the user fill the missing values
+  // later. Cleared the moment the desmount km is recorded (either at
+  // desmount time, or via the fill-in flow in /dashboard/inventario).
+  desmountDataPending Boolean @default(false)
+
   // External system dedup key — same contract as Vehicle.externalSourceId.
   externalSourceId String? @unique
 
