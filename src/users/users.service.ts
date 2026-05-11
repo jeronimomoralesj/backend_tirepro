@@ -68,7 +68,7 @@ export class UsersService {
   // ===========================================================================
 
   async createUser(dto: CreateUserDto) {
-    const { email, name, password, companyId, role, preferredLanguage } = dto;
+    const { email, name, password, companyId, role, preferredLanguage, vehicleIds } = dto;
 
     const existing = await this.prisma.user.findUnique({
       where:  { email },
@@ -80,6 +80,34 @@ export class UsersService {
       role && Object.values(UserRole).includes(role as UserRole)
         ? (role as UserRole)
         : UserRole.admin;
+
+    // If the admin scoped this user to specific vehicles, verify each one
+    // is inspectable from the user's company — for distribuidores that
+    // includes client-company vehicles reachable via DistributorAccess.
+    // We don't want a typo / forged payload silently granting access to
+    // vehicles outside the admin's reach.
+    const scopedVehicleIds = (vehicleIds ?? []).filter((v) => typeof v === 'string' && v.length > 0);
+    if (scopedVehicleIds.length > 0) {
+      const company = await this.prisma.company.findUnique({
+        where:  { id: companyId },
+        select: { plan: true },
+      });
+      let allowedCompanyIds: string[] = [companyId];
+      if (company?.plan === 'distribuidor') {
+        const accesses = await this.prisma.distributorAccess.findMany({
+          where:  { distributorId: companyId },
+          select: { companyId: true },
+        });
+        allowedCompanyIds = [companyId, ...accesses.map((a) => a.companyId)];
+      }
+      const matched = await this.prisma.vehicle.findMany({
+        where:  { id: { in: scopedVehicleIds }, companyId: { in: allowedCompanyIds } },
+        select: { id: true },
+      });
+      if (matched.length !== scopedVehicleIds.length) {
+        throw new BadRequestException('Uno o más vehículos no son accesibles desde esta empresa');
+      }
+    }
 
     const hashedPassword    = await bcrypt.hash(password, 12);
     const verificationToken = randomBytes(32).toString('hex');
@@ -105,6 +133,14 @@ export class UsersService {
         verificationToken,
         verificationTokenExpiresAt,
         preferredLanguage: preferredLanguage || 'es',
+        // Optional per-user vehicle scoping. Empty array → no records →
+        // user inherits the existing "all company vehicles" default at the
+        // authorization layer (vehicle.controller.getByPlaca).
+        ...(scopedVehicleIds.length > 0 && {
+          vehicleAccess: {
+            create: scopedVehicleIds.map((vehicleId) => ({ vehicleId })),
+          },
+        }),
       },
       select: USER_PUBLIC_SELECT,
     });

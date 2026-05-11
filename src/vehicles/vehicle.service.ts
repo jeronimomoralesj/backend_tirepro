@@ -197,6 +197,33 @@ export class VehicleService {
     });
   }
 
+  // Vehicles that users belonging to `companyId` are authorized to inspect.
+  // - Pro / fleet company: just the company's own vehicles.
+  // - Distribuidor: own vehicles PLUS every client vehicle reachable via
+  //   DistributorAccess. Matches the same authorization expansion the
+  //   by-placa endpoint already does for the inspection flow, so the
+  //   admin picker shows exactly the set their new user will be able to
+  //   scope against.
+  async findInspectableVehicles(companyId: string) {
+    const company = await this.prisma.company.findUnique({
+      where:  { id: companyId },
+      select: { plan: true },
+    });
+    let companyIds: string[] = [companyId];
+    if (company?.plan === 'distribuidor') {
+      const accesses = await this.prisma.distributorAccess.findMany({
+        where:  { distributorId: companyId },
+        select: { companyId: true },
+      });
+      companyIds = [companyId, ...accesses.map((a) => a.companyId)];
+    }
+    return this.prisma.vehicle.findMany({
+      where:   { companyId: { in: companyIds }, archivedAt: null },
+      select:  { id: true, placa: true, tipovhc: true, companyId: true },
+      orderBy: { placa: 'asc' },
+    });
+  }
+
   async findByPlaca(placa: string, companyId?: string, accessibleCompanyIds?: string[]) {
     // A placa is only unique WITHIN a company — same sticker number can live
     // on two physical vehicles across different fleets. If the caller knows

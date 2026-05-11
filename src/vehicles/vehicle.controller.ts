@@ -13,6 +13,7 @@ import {
   UsePipes,
   ValidationPipe,
   BadRequestException,
+  ForbiddenException,
   Req,
 } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
@@ -52,9 +53,19 @@ export class VehicleController {
     return this.vehicleService.findAllVehicles();
   }
 
+  // Vehicles the caller's company can inspect (own + distribuidor client
+  // vehicles). Powers the admin's "scope new user to specific vehicles"
+  // picker in /dashboard/ajustes; the same expansion the by-placa
+  // endpoint uses, so the picker shows exactly the inspectable set.
+  @Get('inspectable')
+  findInspectable(@Query('companyId') companyId: string) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    return this.vehicleService.findInspectableVehicles(companyId);
+  }
+
   @Get('by-placa')
   async getByPlaca(
-    @Req() req: { user?: { companyId?: string } },
+    @Req() req: { user?: { userId?: string; companyId?: string; role?: string } },
     @Query('placa')     placa: string,
     @Query('companyId') companyId?: string,
   ) {
@@ -67,6 +78,7 @@ export class VehicleController {
     // frontend agregarDist flows rely on this to look up a client's vehicle
     // without having to pre-select a client.
     const userCompanyId = req.user?.companyId;
+    let vehicle;
     if (userCompanyId && companyId === userCompanyId) {
       const caller = await this.prisma.company.findUnique({
         where:  { id: userCompanyId },
@@ -83,11 +95,35 @@ export class VehicleController {
           userCompanyId,
           ...accesses.map((a) => a.companyId),
         ];
-        return this.vehicleService.findByPlaca(placa, undefined, accessibleCompanyIds);
+        vehicle = await this.vehicleService.findByPlaca(placa, undefined, accessibleCompanyIds);
+      } else {
+        vehicle = await this.vehicleService.findByPlaca(placa, companyId);
+      }
+    } else {
+      vehicle = await this.vehicleService.findByPlaca(placa, companyId);
+    }
+
+    // Per-user vehicle scoping: when a regular user (non-admin) was given an
+    // explicit vehicle list at creation, they can only inspect those exact
+    // vehicles. Users with zero UserVehicleAccess records fall through to the
+    // existing company-scoped behavior — that's how the rest of the team
+    // (admins, technicians provisioned before this feature, etc.) keep
+    // working with no migration needed.
+    const requestingUserId = req.user?.userId;
+    const requestingRole   = req.user?.role;
+    if (requestingUserId && requestingRole !== 'admin') {
+      const scope = await this.prisma.userVehicleAccess.findMany({
+        where:  { userId: requestingUserId },
+        select: { vehicleId: true },
+      });
+      if (scope.length > 0 && !scope.some((s) => s.vehicleId === vehicle.id)) {
+        throw new ForbiddenException(
+          'No tienes acceso para inspeccionar este vehículo. Contacta al administrador.',
+        );
       }
     }
 
-    return this.vehicleService.findByPlaca(placa, companyId);
+    return vehicle;
   }
 
 
