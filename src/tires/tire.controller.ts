@@ -149,6 +149,26 @@ export class TireController {
     });
   }
 
+  // Aggregated payload for the "Descargar reporte de inspecciones del día"
+  // CTA in /dashboard/resumen (and distribuidor view). Returns the totals
+  // + per-vehicle breakdown for every inspection performed on `date`
+  // (YYYY-MM-DD) within the caller's company. The PDF renderer is in the
+  // frontend; this endpoint only ships the data so the heavy chart layout
+  // stays out of the server.
+  //
+  // MUST stay above @Get(':id') — NestJS matches top-down, so leaving
+  // this below the wildcard makes the request route into findTireById
+  // with id="inspections-day-report" and throw "Tire not found".
+  @Get('inspections-day-report')
+  inspectionsDayReport(
+    @Query('companyId') companyId: string,
+    @Query('date')      date: string,
+  ) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    if (!date)      throw new BadRequestException('date is required (YYYY-MM-DD)');
+    return this.tireService.inspectionsDayReport(companyId, date);
+  }
+
   @Get(':id')
   getTireById(@Param('id') id: string) {
     return this.tireService.findTireById(id);
@@ -273,22 +293,6 @@ export class TireController {
     @Body() body: { vehicleKmAtDesmount?: number; tireKm?: number },
   ) {
     return this.tireService.recordDesmountData(tireId, body);
-  }
-
-  // Aggregated payload for the "Descargar reporte de inspecciones del día"
-  // CTA in /dashboard/resumen (and distribuidor view). Returns the totals
-  // + per-vehicle breakdown for every inspection performed on `date`
-  // (YYYY-MM-DD) within the caller's company. The PDF renderer is in the
-  // frontend; this endpoint only ships the data so the heavy chart layout
-  // stays out of the server.
-  @Get('inspections-day-report')
-  inspectionsDayReport(
-    @Query('companyId') companyId: string,
-    @Query('date')      date: string,
-  ) {
-    if (!companyId) throw new BadRequestException('companyId is required');
-    if (!date)      throw new BadRequestException('date is required (YYYY-MM-DD)');
-    return this.tireService.inspectionsDayReport(companyId, date);
   }
 
   // ── Tire mutations ────────────────────────────────────────────────────────
