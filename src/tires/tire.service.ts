@@ -4130,6 +4130,236 @@ export class TireService {
   }
 
   // ===========================================================================
+  // INSPECTIONS DAY REPORT — aggregated data for the day-of-inspections PDF
+  // ===========================================================================
+  //
+  // Powers the "Descargar reporte de inspecciones del día" CTA. Pulls every
+  // Inspeccion row whose fecha lands inside the requested day (server-local
+  // — Colombia is single-TZ so we don't need to negotiate with the client),
+  // and groups them per-vehicle so the frontend can render the layout
+  // matching the existing CPK report template (header → totals →
+  // composición de flotas → per-vehicle pages).
+  //
+  // The endpoint is read-only and cheap on cold cache: indexed by
+  // Inspeccion.fecha + the tire→vehicle join, plus a tight VEHICLE_SELECT.
+  // No caching layer — the date is parameterized and the report is a
+  // one-off download, not a repeat-fetch hotspot.
+  async inspectionsDayReport(companyId: string, date: string) {
+    const dayStart = new Date(`${date}T00:00:00`);
+    const dayEnd   = new Date(`${date}T23:59:59.999`);
+    if (isNaN(dayStart.getTime()) || isNaN(dayEnd.getTime())) {
+      throw new BadRequestException('Invalid date (expected YYYY-MM-DD)');
+    }
+
+    const company = await this.prisma.company.findUnique({
+      where:  { id: companyId },
+      select: { id: true, name: true, profileImage: true, plan: true },
+    });
+    if (!company) throw new NotFoundException('Company not found');
+
+    // Distributors inspect client vehicles, so the "company" filter on
+    // Inspeccion has to expand to every client reachable via
+    // DistributorAccess. Pro accounts just stay in their own scope.
+    let companyIds: string[] = [companyId];
+    if (company.plan === 'distribuidor') {
+      const accesses = await this.prisma.distributorAccess.findMany({
+        where:  { distributorId: companyId },
+        select: { companyId: true },
+      });
+      companyIds = [companyId, ...accesses.map((a) => a.companyId)];
+    }
+
+    const inspecciones = await this.prisma.inspeccion.findMany({
+      where: {
+        fecha: { gte: dayStart, lte: dayEnd },
+        tire:  { companyId: { in: companyIds } },
+      },
+      select: {
+        id:                true,
+        fecha:             true,
+        profundidadInt:    true,
+        profundidadCen:    true,
+        profundidadExt:    true,
+        presionPsi:        true,
+        presionRecomendadaPsi: true,
+        kmActualVehiculo:  true,
+        kmEfectivos:       true,
+        cpkProyectado:     true,
+        vidaAlMomento:     true,
+        inspeccionadoPorNombre: true,
+        inspeccionadoPor:  { select: { name: true } },
+        tire: {
+          select: {
+            id:        true,
+            placa:     true,
+            marca:     true,
+            diseno:    true,
+            dimension: true,
+            posicion:  true,
+            vidaActual: true,
+            profundidadInicial: true,
+            vehicle: {
+              select: {
+                id:                true,
+                placa:             true,
+                tipovhc:           true,
+                kilometrajeActual: true,
+                configuracion:     true,
+                tipoOperacion:     true,
+                company: { select: { name: true } },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { fecha: 'asc' },
+    });
+
+    // Bucket by vehicle. A tire without a vehicle (already in inventory
+    // when its inspection landed) goes into a synthetic "Sin vehículo"
+    // group so it's not silently dropped from the count.
+    type VehicleAgg = {
+      vehicleId: string | null;
+      placa:     string;
+      tipovhc:   string | null;
+      kilometraje: number | null;
+      tipoServicio: string | null;
+      configuracion: string | null;
+      clientCompany: string | null;
+      tires: Array<{
+        tireId: string;
+        placa: string;
+        marca: string;
+        diseno: string;
+        dimension: string;
+        posicion: number;
+        vidaActual: string;
+        minDepth: number;
+        avgDepth: number;
+        presionPsi: number | null;
+        presionRecomendada: number | null;
+        // Semáforo bucket — same thresholds the frontend "semáforo"
+        // cards use so the PDF matches what the user sees on the
+        // dashboard:
+        //  ≥ 6 mm                  → "buen estado"
+        //  4–6 mm                  → "proyectado 60 días"
+        //  2–4 mm                  → "proyectado 30 días"
+        //  < 2 mm                  → "cambio inmediato"
+        semaforo: 'buen_estado' | 'proyectado_60' | 'proyectado_30' | 'cambio_inmediato';
+        // Pressure bucket — within ±10% of recomendada is "correcta",
+        // below is "baja", above is "alta". Null when no recomendada
+        // is configured (skipped from the totals so the % is honest).
+        presionBucket: 'correcta' | 'baja' | 'alta' | null;
+      }>;
+    };
+
+    const byVehicle = new Map<string, VehicleAgg>();
+    const inspectorNames = new Set<string>();
+
+    for (const insp of inspecciones) {
+      const t = insp.tire;
+      const v = t?.vehicle ?? null;
+      const key = v?.id ?? '__no_vehicle__';
+      if (!byVehicle.has(key)) {
+        byVehicle.set(key, {
+          vehicleId:     v?.id ?? null,
+          placa:         v?.placa ?? 'Sin vehículo',
+          tipovhc:       v?.tipovhc ?? null,
+          kilometraje:   v?.kilometrajeActual ?? null,
+          tipoServicio:  v?.tipoOperacion ?? null,
+          configuracion: v?.configuracion ?? null,
+          clientCompany: v?.company?.name ?? null,
+          tires:         [],
+        });
+      }
+      const minDepth = Math.min(insp.profundidadInt, insp.profundidadCen, insp.profundidadExt);
+      const avgDepth = (insp.profundidadInt + insp.profundidadCen + insp.profundidadExt) / 3;
+      const semaforo: VehicleAgg['tires'][number]['semaforo'] =
+        minDepth >= 6 ? 'buen_estado'
+        : minDepth >= 4 ? 'proyectado_60'
+        : minDepth >= 2 ? 'proyectado_30'
+        : 'cambio_inmediato';
+
+      let presionBucket: VehicleAgg['tires'][number]['presionBucket'] = null;
+      if (insp.presionPsi != null && insp.presionRecomendadaPsi != null && insp.presionRecomendadaPsi > 0) {
+        const ratio = insp.presionPsi / insp.presionRecomendadaPsi;
+        presionBucket = ratio < 0.9 ? 'baja' : ratio > 1.1 ? 'alta' : 'correcta';
+      }
+      byVehicle.get(key)!.tires.push({
+        tireId:    t.id,
+        placa:     t.placa,
+        marca:     t.marca,
+        diseno:    t.diseno,
+        dimension: t.dimension,
+        posicion:  t.posicion,
+        vidaActual: t.vidaActual,
+        minDepth,
+        avgDepth,
+        presionPsi:         insp.presionPsi,
+        presionRecomendada: insp.presionRecomendadaPsi,
+        semaforo,
+        presionBucket,
+      });
+
+      const inspectorName = insp.inspeccionadoPor?.name ?? insp.inspeccionadoPorNombre;
+      if (inspectorName) inspectorNames.add(inspectorName);
+    }
+
+    const vehicles = Array.from(byVehicle.values()).sort((a, b) => a.placa.localeCompare(b.placa));
+
+    // Top-level totals (mirror the sample report's stat cards).
+    let totalTires = 0;
+    const semaforoTotals = { cambio_inmediato: 0, proyectado_30: 0, proyectado_60: 0, buen_estado: 0 };
+    const vidaTotals = { nueva: 0, reencauche: 0 };
+    const presionTotals = { baja: 0, alta: 0, correcta: 0, sin_medida: 0 };
+    const marcaDimMap = new Map<string, Map<string, number>>(); // marca → dimension → count
+
+    for (const v of vehicles) {
+      for (const t of v.tires) {
+        totalTires++;
+        semaforoTotals[t.semaforo]++;
+        if ((t.vidaActual ?? '').toLowerCase().startsWith('reencauche')) {
+          vidaTotals.reencauche++;
+        } else {
+          vidaTotals.nueva++;
+        }
+        if (t.presionBucket === null) presionTotals.sin_medida++;
+        else presionTotals[t.presionBucket]++;
+        if (!marcaDimMap.has(t.marca)) marcaDimMap.set(t.marca, new Map());
+        const dimMap = marcaDimMap.get(t.marca)!;
+        dimMap.set(t.dimension, (dimMap.get(t.dimension) ?? 0) + 1);
+      }
+    }
+
+    const composicionFlota = Array.from(marcaDimMap.entries())
+      .map(([marca, dimMap]) => ({
+        marca,
+        total: Array.from(dimMap.values()).reduce((s, n) => s + n, 0),
+        dimensiones: Array.from(dimMap.entries()).map(([dimension, count]) => ({ dimension, count })),
+      }))
+      .sort((a, b) => b.total - a.total);
+
+    return {
+      date,
+      company: {
+        id:         company.id,
+        name:       company.name,
+        profileImage: company.profileImage,
+      },
+      inspectorNames: Array.from(inspectorNames),
+      totals: {
+        vehiclesInspected: vehicles.length,
+        totalTires,
+        semaforo: semaforoTotals,
+        vida:     vidaTotals,
+        presion:  presionTotals,
+      },
+      composicionFlota,
+      vehicles,
+    };
+  }
+
+  // ===========================================================================
   // EDIT TIRE  (bug-fix: cache invalidation order corrected)
   // ===========================================================================
 
