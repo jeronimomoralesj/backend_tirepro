@@ -2981,6 +2981,27 @@ export class TireService {
     });
     if (!tire) throw new NotFoundException('Tire not found');
 
+    // ── Idempotency guard ────────────────────────────────────────────────
+    // A double-tap on the modal "Guardar inspección" button (or any
+    // retry-on-network-glitch path) used to write two Inspeccion rows
+    // for the same tire seconds apart with the same depths. Reject the
+    // duplicate when the most recent inspection for THIS tire landed
+    // within the last 10s and reports the exact same Int/Cen/Ext —
+    // returning the tire as if the write had succeeded so the client
+    // doesn't see an error UX for a click that was already saved.
+    if (dto.source === undefined || dto.source === 'manual') {
+      const last = tire.inspecciones[tire.inspecciones.length - 1];
+      if (
+        last &&
+        Date.now() - new Date(last.fecha).getTime() < 10_000 &&
+        last.profundidadInt === dto.profundidadInt &&
+        last.profundidadCen === dto.profundidadCen &&
+        last.profundidadExt === dto.profundidadExt
+      ) {
+        return this.prisma.tire.findUnique({ where: { id: tireId } });
+      }
+    }
+
     // ── Data-quality guards ──────────────────────────────────────────────
     // These catch typo / double-unit / unwear-impossibility classes of bad
     // inspections that corrupted the Merquepro dataset. Only apply to
@@ -3031,11 +3052,20 @@ export class TireService {
       kilometrosRecorridos = dto.forceKm;
     } else if (kmDelta > 0) {
       kilometrosRecorridos = priorTireKm + kmDelta;
-    } else if (odometerSent && tire.inspecciones.length > 0) {
-      const lastKnownVehicleKm =
-        tire.inspecciones[tire.inspecciones.length - 1].kmActualVehiculo
-        ?? vehicle.kilometrajeActual
-        ?? 0;
+    } else if (odometerSent) {
+      // Compute the baseline vehicle km from the tire's last inspection,
+      // OR fall back to the vehicle's current odometer when this is the
+      // tire's first inspection. The previous code required
+      // `tire.inspecciones.length > 0` here and silently skipped the
+      // odometer signal for brand-new tires (modo rápido path) — which
+      // dropped them straight into the wear-based estimate below and
+      // produced phantom "14 815 km after 7 000 km of real use" the user
+      // hit on a fresh fleet.
+      const lastKnownVehicleKm = tire.inspecciones.length > 0
+        ? (tire.inspecciones[tire.inspecciones.length - 1].kmActualVehiculo
+           ?? vehicle?.kilometrajeActual
+           ?? 0)
+        : (vehicle?.kilometrajeActual ?? 0);
       const rawDelta = Math.max(newVehicleKm - lastKnownVehicleKm, 0);
 
       const KM_PER_MM_SANITY = 10_000; // above this ratio the delta is suspect
