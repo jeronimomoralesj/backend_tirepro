@@ -260,6 +260,29 @@ export class UsersController {
     return this.usersService.revokeVehicleAccess(userId, vehicleId);
   }
 
+  // Distribuidor-only: assign / unassign one of the distribuidor's clients
+  // to a regular user. Service-side validation checks the client is linked
+  // via DistributorAccess so admins can't inject foreign company ids.
+  @Patch(':id/clients/grant')
+  @UseGuards(JwtAuthGuard)
+  grantClientAccess(
+    @Param('id') userId: string,
+    @Body('clientCompanyId') clientCompanyId: string,
+  ) {
+    if (!clientCompanyId) throw new BadRequestException('clientCompanyId is required');
+    return this.usersService.grantClientAccess(userId, clientCompanyId);
+  }
+
+  @Patch(':id/clients/revoke')
+  @UseGuards(JwtAuthGuard)
+  revokeClientAccess(
+    @Param('id') userId: string,
+    @Body('clientCompanyId') clientCompanyId: string,
+  ) {
+    if (!clientCompanyId) throw new BadRequestException('clientCompanyId is required');
+    return this.usersService.revokeClientAccess(userId, clientCompanyId);
+  }
+
   @Patch('add-plate/:id')
   @UseGuards(JwtAuthGuard)
   async addPlate(

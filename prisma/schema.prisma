@@ -237,6 +237,7 @@ model User {
   messages          Message[]
   incomes           Income[]
   vehicleAccess     UserVehicleAccess[]
+  clientAccess      UserClientAccess[]  // distribuidor-side per-user client scoping
   inspecciones      Inspeccion[] // inspections this user performed
   reviews           DistributorReview[]
   marketplaceOrders MarketplaceOrder[]
@@ -261,6 +262,25 @@ model UserVehicleAccess {
   @@index([userId])
   @@index([vehicleId])
   @@map("user_vehicle_access")
+}
+
+// Per-user client scoping for distribuidor accounts. A regular user gets
+// assigned one or more client companies (each row = one client). Their
+// inspectable-vehicle set is the union of every assigned client's vehicles,
+// regardless of whether they're individually listed in UserVehicleAccess.
+// Pro/plus accounts don't use this table — they scope through
+// UserVehicleAccess directly.
+model UserClientAccess {
+  userId          String
+  clientCompanyId String
+
+  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientCompany Company @relation("UserClientAccessClients", fields: [clientCompanyId], references: [id], onDelete: Cascade)
+
+  @@id([userId, clientCompanyId])
+  @@index([userId])
+  @@index([clientCompanyId])
+  @@map("user_client_access")
 }
 
 // One row per successful login — used for cohort / retention analysis in
@@ -343,6 +363,11 @@ model Company {
   distributors        DistributorAccess[]   @relation("CompanyDistributors")
   clients             DistributorAccess[]   @relation("DistributorClients")
   users               User[]
+  // Inverse of UserClientAccess.clientCompany — every distribuidor-side
+  // regular user that's been scoped to *this* company as one of their
+  // assigned clients. Only meaningful when this company is a client of
+  // some distribuidor (i.e. appears on the client side of DistributorAccess).
+  clientUserAccess    UserClientAccess[]    @relation("UserClientAccessClients")
   vehicles            Vehicle[]
   tires               Tire[]
   notifications       Notification[]

@@ -31,4 +31,13 @@ export class CreateUserDto {
   @IsArray()
   @IsUUID('all', { each: true })
   vehicleIds?: string[];
+
+  // Distribuidor-side per-user scoping. Each id is a Company linked to the
+  // admin's distribuidor via DistributorAccess. The user can inspect any
+  // vehicle belonging to any of these clients, via UserClientAccess. Empty
+  // or omitted preserves the existing "all clients in reach" default.
+  @IsOptional()
+  @IsArray()
+  @IsUUID('all', { each: true })
+  clientIds?: string[];
 }

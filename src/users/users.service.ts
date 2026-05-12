@@ -68,7 +68,7 @@ export class UsersService {
   // ===========================================================================
 
   async createUser(dto: CreateUserDto) {
-    const { email, name, password, companyId, role, preferredLanguage, vehicleIds } = dto;
+    const { email, name, password, companyId, role, preferredLanguage, vehicleIds, clientIds } = dto;
 
     const existing = await this.prisma.user.findUnique({
       where:  { email },
@@ -87,7 +87,8 @@ export class UsersService {
     // We don't want a typo / forged payload silently granting access to
     // vehicles outside the admin's reach.
     const scopedVehicleIds = (vehicleIds ?? []).filter((v) => typeof v === 'string' && v.length > 0);
-    if (scopedVehicleIds.length > 0) {
+    const scopedClientIds = (clientIds ?? []).filter((v) => typeof v === 'string' && v.length > 0);
+    if (scopedVehicleIds.length > 0 || scopedClientIds.length > 0) {
       const company = await this.prisma.company.findUnique({
         where:  { id: companyId },
         select: { plan: true },
@@ -100,12 +101,28 @@ export class UsersService {
         });
         allowedCompanyIds = [companyId, ...accesses.map((a) => a.companyId)];
       }
-      const matched = await this.prisma.vehicle.findMany({
-        where:  { id: { in: scopedVehicleIds }, companyId: { in: allowedCompanyIds } },
-        select: { id: true },
-      });
-      if (matched.length !== scopedVehicleIds.length) {
-        throw new BadRequestException('Uno o más vehículos no son accesibles desde esta empresa');
+      if (scopedVehicleIds.length > 0) {
+        const matched = await this.prisma.vehicle.findMany({
+          where:  { id: { in: scopedVehicleIds }, companyId: { in: allowedCompanyIds } },
+          select: { id: true },
+        });
+        if (matched.length !== scopedVehicleIds.length) {
+          throw new BadRequestException('Uno o más vehículos no son accesibles desde esta empresa');
+        }
+      }
+      // Client scoping is distribuidor-only and must map to companies linked
+      // via DistributorAccess. Reject if anyone tries it on pro/plus (the
+      // admin's company list there contains only itself, which isn't a
+      // useful "client" of itself).
+      if (scopedClientIds.length > 0) {
+        if (company?.plan !== 'distribuidor') {
+          throw new BadRequestException('La asignación por cliente solo aplica a planes distribuidor');
+        }
+        const allowedClientIds = new Set(allowedCompanyIds.filter((id) => id !== companyId));
+        const invalid = scopedClientIds.filter((id) => !allowedClientIds.has(id));
+        if (invalid.length > 0) {
+          throw new BadRequestException('Uno o más clientes no están vinculados a esta distribuidora');
+        }
       }
     }
 
@@ -139,6 +156,14 @@ export class UsersService {
         ...(scopedVehicleIds.length > 0 && {
           vehicleAccess: {
             create: scopedVehicleIds.map((vehicleId) => ({ vehicleId })),
+          },
+        }),
+        // Distribuidor-side client scoping. The user's inspectable-vehicle
+        // set will be the union of every assigned client's vehicles, resolved
+        // at read time in getAccessibleVehicles.
+        ...(scopedClientIds.length > 0 && {
+          clientAccess: {
+            create: scopedClientIds.map((clientCompanyId) => ({ clientCompanyId })),
           },
         }),
       },
@@ -580,26 +605,40 @@ export class UsersService {
     // Not cached — this is a join query that changes whenever vehicle access
     // is granted/revoked. Those mutations already invalidate the user record,
     // but the vehicle list shape is different — simpler to just always read live.
+    const VEHICLE_FIELDS = {
+      id:                true,
+      placa:             true,
+      tipovhc:           true,
+      kilometrajeActual: true,
+      companyId:         true,
+    } as const;
+
     const user = await this.prisma.user.findUnique({
       where:  { id: userId },
       select: {
-        vehicleAccess: {
-          select: {
-            vehicle: {
-              select: {
-                id:                true,
-                placa:             true,
-                tipovhc:           true,
-                kilometrajeActual: true,
-                companyId:         true,
-              },
-            },
-          },
-        },
+        vehicleAccess: { select: { vehicle: { select: VEHICLE_FIELDS } } },
+        clientAccess:  { select: { clientCompanyId: true } },
       },
     });
     if (!user) throw new NotFoundException('User not found');
-    return user.vehicleAccess.map(a => a.vehicle);
+
+    // Distribuidor-side client scoping returns the union of every assigned
+    // client's vehicles. Resolved at read time so a vehicle newly added to
+    // a client company is automatically inspectable, without re-syncing
+    // every assigned user.
+    const directVehicles = user.vehicleAccess.map((a) => a.vehicle);
+    if (user.clientAccess.length === 0) return directVehicles;
+
+    const clientVehicles = await this.prisma.vehicle.findMany({
+      where:  { companyId: { in: user.clientAccess.map((a) => a.clientCompanyId) } },
+      select: VEHICLE_FIELDS,
+    });
+
+    // Dedupe — a vehicle could appear in both lists if an admin granted both
+    // direct vehicle access AND assigned the client owning that vehicle.
+    const merged = new Map<string, typeof directVehicles[number]>();
+    for (const v of [...directVehicles, ...clientVehicles]) merged.set(v.id, v);
+    return Array.from(merged.values());
   }
 
   // ---------------------------------------------------------------------------
@@ -628,5 +667,55 @@ export class UsersService {
     // revokeVehicleAccess already handles cache invalidation
     await this.revokeVehicleAccess(userId, vehicle.id);
     return { message: 'Plate access revoked', placa };
+  }
+
+  // ===========================================================================
+  // CLIENT ACCESS (distribuidor-only)
+  // ===========================================================================
+
+  async grantClientAccess(userId: string, clientCompanyId: string) {
+    const user = await this.prisma.user.findUnique({
+      where:  { id: userId },
+      select: { id: true, companyId: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    if (!user.companyId) throw new BadRequestException('User has no company');
+
+    // The target client must already be linked to the user's distribuidor
+    // via DistributorAccess — we don't want admins inventing client ids.
+    const link = await this.prisma.distributorAccess.findUnique({
+      where:  { companyId_distributorId: { companyId: clientCompanyId, distributorId: user.companyId } },
+      select: { companyId: true },
+    });
+    if (!link) throw new BadRequestException('Client is not linked to this distribuidor');
+
+    await this.prisma.userClientAccess.upsert({
+      where:  { userId_clientCompanyId: { userId, clientCompanyId } },
+      create: { userId, clientCompanyId },
+      update: {},
+    });
+
+    await this.invalidateUserCache(userId, user.companyId);
+    return { message: 'Client access granted' };
+  }
+
+  async revokeClientAccess(userId: string, clientCompanyId: string) {
+    const access = await this.prisma.userClientAccess.findUnique({
+      where:  { userId_clientCompanyId: { userId, clientCompanyId } },
+      select: { userId: true },
+    });
+    if (!access) throw new NotFoundException('Access record not found');
+
+    const user = await this.prisma.user.findUnique({
+      where:  { id: userId },
+      select: { companyId: true },
+    });
+
+    await this.prisma.userClientAccess.delete({
+      where: { userId_clientCompanyId: { userId, clientCompanyId } },
+    });
+
+    if (user) await this.invalidateUserCache(userId, user.companyId);
+    return { message: 'Client access revoked' };
   }
 }
