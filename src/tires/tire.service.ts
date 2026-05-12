@@ -1034,16 +1034,48 @@ export class TireService {
   private static readonly TTL_VEHICLE   = 10 * 60 * 1000;
   private static readonly TTL_BENCHMARK = 24 * 60 * 60 * 1000;
 
+  // Versioned page cache. Each company has a "version" key; read/write of
+  // any page bakes that version into the cache key. Bumping the version
+  // invalidates every page in O(1) without needing to enumerate keys —
+  // critical because the previous SCAN-based cleanup only fired when the
+  // underlying store was ioredis with scanStream exposed, and silently
+  // no-op'd otherwise. That left the resumen / detalle / distribuidor
+  // pages reading stale data for the full 10-min page TTL after every
+  // inspection write.
+  private companyPageVerKey(companyId: string): string {
+    return `${this.tireKey(companyId)}:pg:ver`;
+  }
+  private async getCompanyPageVer(companyId: string): Promise<string> {
+    const v = await this.cache.get<string>(this.companyPageVerKey(companyId));
+    return typeof v === 'string' && v ? v : '0';
+  }
+  private async bumpCompanyPageVer(companyId: string): Promise<void> {
+    // 24h TTL — way longer than the page TTL so the version never ages
+    // out before its pages do (which would re-collide cursors against
+    // stale data after a process restart).
+    await this.cache.set(
+      this.companyPageVerKey(companyId),
+      String(Date.now()),
+      24 * 60 * 60 * 1000,
+    );
+  }
+
   private async invalidateCompanyCache(companyId: string | null | undefined) {
     if (!companyId) return; // orphan tires aren't in any company cache
-    // Wipe the 3 main caches for this company: the full /tires payload, the
-    // slim projection, and every cursor page. We can't easily enumerate all
-    // :pg:<cursor>:<limit> keys from Nest's cache-manager API, so when Redis
-    // is the store we fall back to a SCAN-based delete; otherwise the page
-    // entries simply age out at their 10-min TTL.
+    // Wipe the monolithic /tires payload + slim projection, then bump the
+    // page version so every paged read after this returns fresh data on
+    // the next request. Old page entries age out at their TTL — fine,
+    // they're orphans and nothing references them anymore.
     const base = this.tireKey(companyId);
-    await Promise.all([this.cache.del(base), this.cache.del(`${base}:slim`)]);
+    await Promise.all([
+      this.cache.del(base),
+      this.cache.del(`${base}:slim`),
+      this.bumpCompanyPageVer(companyId),
+    ]);
 
+    // Belt-and-suspenders: when the underlying store IS ioredis, also
+    // proactively SCAN + UNLINK the orphaned page keys so they free
+    // Redis memory immediately instead of waiting for TTL eviction.
     const redis = (this.cache as any)?.store?.client;
     if (redis?.scanStream) {
       // cache-manager-ioredis-yet exposes the underlying ioredis client here.
@@ -1767,7 +1799,15 @@ export class TireService {
           if (vehicleMap.has(placaVehiculo)) {
             vehicle = vehicleMap.get(placaVehiculo);
           } else {
-            vehicle = await this.prisma.vehicle.findFirst({ where: { placa: placaVehiculo } });
+            // Insensitive match — placas in the DB may still be from
+            // before normalization, so an exact-case lookup against the
+            // already-lowercased placaVehiculo would miss "ABC123" in
+            // the DB and create a stray duplicate vehicle below. Scope
+            // to the upload's company so we never silently link a tire
+            // to a placa that belongs to a different tenant.
+            vehicle = await this.prisma.vehicle.findFirst({
+              where: { placa: { equals: placaVehiculo, mode: 'insensitive' }, companyId },
+            });
             if (!vehicle) {
               vehicle = await this.vehicleService.createVehicle({
                 placa: placaVehiculo, kilometrajeActual: kmVehiculo,
@@ -2565,7 +2605,12 @@ export class TireService {
     // latency, small enough to keep each JSON response under ~3 MB gzipped.
     const limit = Math.min(Math.max(params.limit ?? 2000, 1), 2000);
     const cursor = params.cursor?.trim() || null;
-    const cacheKey = `${this.tireKey(params.companyId)}:pg:${cursor ?? 'first'}:${limit}`;
+    // Version-prefixed key — bumping the version on inspection-write
+    // invalidates every page atomically, so resumen/detalle/distribuidor
+    // see the new inspection on their next refresh instead of waiting
+    // for the 10-min page TTL.
+    const ver = await this.getCompanyPageVer(params.companyId);
+    const cacheKey = `${this.tireKey(params.companyId)}:pg:v${ver}:${cursor ?? 'first'}:${limit}`;
 
     const cached = await this.cache.get(cacheKey);
     if (cached) return cached;

@@ -56,14 +56,27 @@ export class VehicleService {
 
   async createVehicle(dto: CreateVehicleDto) {
     const {
-      placa, kilometrajeActual, carga, pesoCarga, tipovhc, companyId,
+      kilometrajeActual, carga, pesoCarga, tipovhc, companyId,
       cliente, tipoOperacion, configuracion, drivers,
       marca, kmMensualEstimado,
     } = dto;
+    // Normalize the placa once at the boundary so every downstream
+    // lookup, link, and dedupe sees the same casing. Without this the
+    // same physical vehicle could be created twice as "ABC123" and
+    // "abc123" — the @@unique([companyId, placa]) index treats those
+    // as different rows.
+    const placa = (dto.placa ?? '').trim().toLowerCase();
+    if (!placa) throw new BadRequestException('placa is required');
 
     const [company, duplicate] = await Promise.all([
       this.prisma.company.findUnique({ where: { id: companyId }, select: { id: true } }),
-      this.prisma.vehicle.findFirst({ where: { placa }, select: { id: true } }),
+      // Insensitive match — older rows might still be uppercase from
+      // before this normalization, and we don't want to let a duplicate
+      // slip in just because the casings differ.
+      this.prisma.vehicle.findFirst({
+        where:  { placa: { equals: placa, mode: 'insensitive' }, companyId },
+        select: { id: true },
+      }),
     ]);
 
     if (!company)  throw new BadRequestException('Invalid companyId provided');
@@ -113,12 +126,15 @@ export class VehicleService {
     const companyIdsTouched = new Set<string>();
 
     // Pre-fetch existing placas for all unique companies in the payload so
-    // we can dedupe in O(1) per row instead of one query each.
-    const placas = dtos.map((d) => d.placa).filter(Boolean);
+    // we can dedupe in O(1) per row instead of one query each. Compare
+    // lowercased so an existing row "ABC123" still blocks a new "abc123".
+    const placas = dtos
+      .map((d) => (d.placa ?? '').trim().toLowerCase())
+      .filter(Boolean);
     const existing = placas.length > 0
       ? await this.prisma.vehicle.findMany({ where: { placa: { in: placas } }, select: { placa: true } })
       : [];
-    const existingSet = new Set(existing.map((v) => v.placa));
+    const existingSet = new Set(existing.map((v) => v.placa.toLowerCase()));
     const seenInBatch = new Set<string>();
 
     // Validate companies in one shot
@@ -129,7 +145,7 @@ export class VehicleService {
     const validCompanyIds = new Set(validCompanies.map((c) => c.id));
 
     for (const dto of dtos) {
-      const placa = (dto.placa ?? '').trim();
+      const placa = (dto.placa ?? '').trim().toLowerCase();
       if (!placa) { failed.push({ placa: '(vacío)', error: 'Sin placa' }); continue; }
       if (!validCompanyIds.has(dto.companyId)) { failed.push({ placa, error: 'companyId inválido' }); continue; }
       if (existingSet.has(placa) || seenInBatch.has(placa)) {
@@ -287,7 +303,7 @@ export class VehicleService {
     const updated = await this.prisma.vehicle.update({
   where: { id: vehicleId },
   data:  {
-    ...(dto.placa             !== undefined && { placa:             dto.placa             }),
+    ...(dto.placa             !== undefined && { placa:             dto.placa.trim().toLowerCase() }),
     ...(dto.kilometrajeActual !== undefined && { kilometrajeActual: dto.kilometrajeActual }),
     ...(dto.carga             !== undefined && { carga:             dto.carga             }),
     ...(dto.pesoCarga         !== undefined && { pesoCarga:         dto.pesoCarga         }),
@@ -359,14 +375,25 @@ await this.invalidateVehicleCache(vehicle.companyId);
   // ── Union (trailer coupling) ──────────────────────────────────────────────
 
   async addToUnion(vehicleId: string, otherPlaca: string) {
+    // Normalize at the boundary so the case-sensitive "abc123" stored in
+    // v1.union still matches against a future "ABC123" remove request.
+    // Previously addToUnion stored whatever the caller sent ("ABC123")
+    // and removeFromUnion filtered on the same caller string — if the
+    // user removed via "abc123" the filter never matched and the link
+    // stuck permanently with no UI path to clear it.
+    const target = (otherPlaca ?? '').trim().toLowerCase();
+    if (!target) throw new BadRequestException('placa is required');
+
     const [v1, v2] = await Promise.all([
       this.prisma.vehicle.findUnique({
         where:  { id: vehicleId },
-        select: { id: true, placa: true, union: true, companyId: true }, // ← companyId added
+        select: { id: true, placa: true, union: true, companyId: true },
       }),
       this.prisma.vehicle.findFirst({
-        where:  { placa: otherPlaca },
-        select: { id: true, placa: true, union: true, companyId: true }, // ← companyId added
+        // Insensitive in case the partner row is still upper-cased from
+        // the pre-normalization era.
+        where:  { placa: { equals: target, mode: 'insensitive' } },
+        select: { id: true, placa: true, union: true, companyId: true },
       }),
     ]);
 
@@ -374,22 +401,24 @@ await this.invalidateVehicleCache(vehicle.companyId);
     if (!v2) throw new NotFoundException(`Vehicle with placa "${otherPlaca}" not found`);
     if (v1.id === v2.id) throw new BadRequestException('Cannot union a vehicle with itself');
 
-    const union1 = v1.union as string[];
-    const union2 = v2.union as string[];
+    const v1Placa = v1.placa.toLowerCase();
+    const v2Placa = v2.placa.toLowerCase();
+    const union1 = (v1.union as string[]).map((p) => p.toLowerCase());
+    const union2 = (v2.union as string[]).map((p) => p.toLowerCase());
 
-    if (union1.includes(v2.placa) || union2.includes(v1.placa)) {
+    if (union1.includes(v2Placa) || union2.includes(v1Placa)) {
       throw new BadRequestException('These vehicles are already united');
     }
 
     const [updated] = await this.prisma.$transaction([
       this.prisma.vehicle.update({
         where:  { id: v1.id },
-        data:   { union: [...union1, v2.placa] },
+        data:   { union: [...union1, v2Placa] },
         select: VEHICLE_SELECT,
       }),
       this.prisma.vehicle.update({
         where: { id: v2.id },
-        data:  { union: [...union2, v1.placa] },
+        data:  { union: [...union2, v1Placa] },
       }),
     ]);
 
@@ -446,36 +475,45 @@ await this.invalidateVehicleCache(vehicle.companyId);
   // ── Union (trailer coupling) ──────────────────────────────────────────────
 
   async removeFromUnion(vehicleId: string, otherPlaca: string) {
+    const target = (otherPlaca ?? '').trim().toLowerCase();
+    if (!target) throw new BadRequestException('placa is required');
+
     const [v1, v2] = await Promise.all([
       this.prisma.vehicle.findUnique({
         where:  { id: vehicleId },
-        select: { id: true, placa: true, union: true, companyId: true }, // ← companyId added
+        select: { id: true, placa: true, union: true, companyId: true },
       }),
       this.prisma.vehicle.findFirst({
-        where:  { placa: otherPlaca },
-        select: { id: true, placa: true, union: true, companyId: true }, // ← companyId added
+        where:  { placa: { equals: target, mode: 'insensitive' } },
+        select: { id: true, placa: true, union: true, companyId: true },
       }),
     ]);
 
     if (!v1) throw new NotFoundException(`Vehicle ${vehicleId} not found`);
     if (!v2) throw new NotFoundException(`Vehicle with placa "${otherPlaca}" not found`);
 
-    const union1 = v1.union as string[];
-    const union2 = v2.union as string[];
+    // Compare lowercased — stale rows from before normalization may
+    // still hold mixed-case placas in the union arrays. Without this,
+    // a UI "Quitar enlace" click silently no-ops and the user can
+    // never unlink the pair.
+    const v1Placa = v1.placa.toLowerCase();
+    const v2Placa = v2.placa.toLowerCase();
+    const union1 = (v1.union as string[]);
+    const union2 = (v2.union as string[]);
 
-    if (!union1.includes(v2.placa)) {
+    if (!union1.some((p) => p.toLowerCase() === v2Placa)) {
       throw new BadRequestException('These vehicles are not currently united');
     }
 
     const [updated] = await this.prisma.$transaction([
       this.prisma.vehicle.update({
         where:  { id: v1.id },
-        data:   { union: union1.filter(p => p !== v2.placa) },
+        data:   { union: union1.filter((p) => p.toLowerCase() !== v2Placa) },
         select: VEHICLE_SELECT,
       }),
       this.prisma.vehicle.update({
         where: { id: v2.id },
-        data:  { union: union2.filter(p => p !== v1.placa) },
+        data:  { union: union2.filter((p) => p.toLowerCase() !== v1Placa) },
       }),
     ]);
 
