@@ -1601,6 +1601,46 @@ export class TireService {
       return a.idx - b.idx;
     });
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // PER-VEHICLE POSITION OFFSET DETECTION
+    // Some clients count tire positions in "union" terms — they hand us
+    // a trailer with positions 11-14 because they're imagining the
+    // cabezote is taking 1-10. The vehicle in TirePro is the trailer
+    // alone, so storing 11/12/13/14 leaves the trailer with phantom
+    // positions and an empty diagram (none of those fall inside its
+    // configuracion's slot range).
+    //
+    // Heuristic: per placa_vehiculo we compute the MIN position seen in
+    // the upload. If the min is > 1 we shift every position for that
+    // vehicle down by (min - 1) so the block starts at 1 — matches what
+    // the diagram and the rest of the dashboard expect. Disabled for
+    // any vehicle that already has positions starting at 1 (mixed
+    // upload — shouldn't second-guess the user there) and for any
+    // vehicle whose min is reachable inside its own configuracion's
+    // slot count (the user really did mean position 11 on a 14-tire
+    // dobletroque).
+    const positionOffsets = new Map<string, number>();
+    {
+      const minByPlaca = new Map<string, number>();
+      for (const ir of indexedRows) {
+        const placa = getCell(ir.row, 'placa_vehiculo', headerMap)?.trim().toLowerCase();
+        if (!placa) continue;
+        const pos = safeInt(getCell(ir.row, 'posicion', headerMap), 0);
+        if (pos <= 0) continue;
+        const cur = minByPlaca.get(placa);
+        if (cur === undefined || pos < cur) minByPlaca.set(placa, pos);
+      }
+      for (const [placa, minPos] of minByPlaca) {
+        if (minPos > 1) {
+          positionOffsets.set(placa, minPos - 1);
+          warnings.push(
+            `Vehículo ${placa.toUpperCase()}: posiciones empiezan en ${minPos}; ` +
+            `se reasignan automáticamente desde la posición 1 (offset -${minPos - 1}).`,
+          );
+        }
+      }
+    }
+
     let lastTipoVHC = '';
     let lastPlaca   = '';
 
@@ -1702,7 +1742,19 @@ export class TireService {
           dimension = normalizeDimensionCanonical(dimension);
         }
 
-        const posicion  = safeInt(get(row, 'posicion'), 0);
+        // Resolve the placa here (instead of further down) so we can apply
+        // the per-vehicle position offset detected in the pre-pass before
+        // anything else uses `posicion`. The dedicated placa block below
+        // still runs to handle vehicleMap caching.
+        const placaForOffset = (fmtB
+          ? (get(row, 'placa_vehiculo')?.trim() || lastPlaca)
+          : get(row, 'placa_vehiculo')?.trim()
+        )?.toLowerCase();
+        const offsetForVehicle = placaForOffset ? (positionOffsets.get(placaForOffset) ?? 0) : 0;
+        const posicionRaw = safeInt(get(row, 'posicion'), 0);
+        const posicion = posicionRaw > 0 && offsetForVehicle > 0
+          ? posicionRaw - offsetForVehicle
+          : posicionRaw;
         const eje       = normalizeEje(fmtB ? get(row, 'tipollanta') : get(row, 'eje'));
 
         let tipovhc = fmtB
@@ -1872,36 +1924,43 @@ export class TireService {
           kmEstimados = 0; // will be re-estimated below after date resolution
         }
 
-        // fechaInstalacion: estimate if not provided
+        // fechaInstalacion: estimate ONLY when there's a real signal to base
+        // it on (caller-supplied km or measurable wear). Without that the
+        // previous code defaulted to "1 month back" and then re-estimated
+        // km from that default, which fabricated 6 000 km and a fake
+        // 30-day install date for tires the user just registered as
+        // "brand new, no inspection yet". Keep the ESTIMATED flag so we
+        // can suppress the time-based km re-estimate downstream — combining
+        // two guesses into one number is worse than just leaving km at 0.
         let fechaInstalacion: Date;
+        let fechaInstalacionEstimated = false;
         if (rawFechaInstalacion) {
           fechaInstalacion = parseExcelDate(rawFechaInstalacion) ?? now;
-        } else {
-          // Estimate how long ago the tire was mounted:
-          // 1. From km: divide by avg monthly km to get months back
-          // 2. From wear: mm worn ÷ avg wear rate gives months
-          // 3. Fallback: 1 month before inspection date for new tires
+        } else if (kmEstimados > 0 || (hasInsp && mmWorn > 0)) {
           let estimatedMonthsBack = 0;
-
           if (kmEstimados > 0) {
             estimatedMonthsBack = kmEstimados / C.KM_POR_MES;
-          } else if (hasInsp && mmWorn > 0) {
-            // Typical wear: ~1mm per 5000km → ~0.83mm/month at 6000km/month
+          } else {
+            // hasInsp && mmWorn > 0 by the elif guard
             const mmPerMonth = C.KM_POR_MES / 5000;
             estimatedMonthsBack = mmWorn / mmPerMonth;
-          } else {
-            // Brand new tire with no data — assume installed 1 month ago
-            estimatedMonthsBack = 1;
           }
-
           // Cap at 5 years back (60 months) as a sanity check
           estimatedMonthsBack = Math.min(estimatedMonthsBack, 60);
           const msBack = Math.round(estimatedMonthsBack * 30 * C.MS_POR_DIA);
           fechaInstalacion = new Date(fechaInspeccion.getTime() - msBack);
+          fechaInstalacionEstimated = true;
           warnings.push(
             `Row ${rowNum}: fechaInstalacion estimated as ${fechaInstalacion.toISOString().slice(0, 10)} ` +
             `(~${Math.round(estimatedMonthsBack)} months before inspection)`,
           );
+        } else {
+          // No date, no km, no wear → no basis for an estimate. Pin
+          // fechaInstalacion to the inspection date so diasEnUso = 0
+          // and downstream analytics treat the tire as "just installed,
+          // no use yet" instead of inventing a month-old install + 6 000
+          // km of phantom mileage.
+          fechaInstalacion = fechaInspeccion;
         }
 
         // Ensure fechaInstalacion is not after fechaInspeccion
@@ -1917,8 +1976,11 @@ export class TireService {
         );
         const mesesEnUso = diasEnUso / 30;
 
-        // Re-estimate KM from time if it was 0 and we now have a real date span
-        if (kmEstimados <= 0 && mesesEnUso > 0.5) {
+        // Re-estimate KM from time only when the install date was a real
+        // user-supplied signal. Skipping this path when the date itself
+        // was estimated stops the "two guesses become one confident
+        // number" failure mode the user hit in bulk upload.
+        if (kmEstimados <= 0 && !fechaInstalacionEstimated && rawFechaInstalacion && mesesEnUso > 0.5) {
           kmEstimados = Math.round(mesesEnUso * C.KM_POR_MES);
           warnings.push(`Row ${rowNum}: KM estimated from time — ${kmEstimados} km`);
         }
