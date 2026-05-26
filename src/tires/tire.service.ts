@@ -429,10 +429,12 @@ function normalizeTipoVHC(t: string): string {
 
 function normalizeEje(raw: string): EjeType {
   const n = normalize(raw);
-  if (n.includes('direcc'))  return EjeType.direccion;
-  if (n.includes('tracc'))   return EjeType.traccion;
-  if (n.includes('remolq'))  return EjeType.remolque;
-  if (n.includes('repuest')) return EjeType.repuesto;
+  const mapped = EJE_NORMALIZE[n];
+  if (mapped) return mapped as EjeType;
+  if (n.includes('direcc') || n.includes('front') || n.includes('delant')) return EjeType.direccion;
+  if (n.includes('tracc') || n.includes('traser') || n.includes('rear') || n.includes('poster')) return EjeType.traccion;
+  if (n.includes('remolq') || n.includes('trailer')) return EjeType.remolque;
+  if (n.includes('repuest') || n.includes('spare') || n.includes('auxil')) return EjeType.repuesto;
   return EjeType.libre;
 }
 
@@ -882,26 +884,82 @@ function buildVidaSnapshotPayload(params: {
 const HEADER_MAP_A: Record<string, string> = {
   'llanta':               'llanta',
   'numero de llanta':     'llanta',
+  'numero llanta':        'llanta',
   'id':                   'llanta',
+  'id llanta':            'llanta',
+  'id registro':          'llanta',
   'placa vehiculo':       'placa_vehiculo',
   'placa':                'placa_vehiculo',
+  'placa nro':            'placa_vehiculo',
+  'placa numero':         'placa_vehiculo',
+  'plate':                'placa_vehiculo',
   'marca':                'marca',
+  'fabricante':           'marca',
+  'manufacturer':         'marca',
+  'brand':                'marca',
   'diseno':               'diseno_original',
   'diseño':               'diseno_original',
+  'modelo':               'diseno_original',
+  'modelo diseno':        'diseno_original',
+  'model':                'diseno_original',
+  'design':               'diseno_original',
   'dimension':            'dimension',
   'dimensión':            'dimension',
+  'medida':               'dimension',
+  'medida llanta':        'dimension',
+  'size':                 'dimension',
+  'tamano':               'dimension',
   'eje':                  'eje',
+  'ubicacion eje':        'eje',
+  'ubicacion':            'eje',
+  'axle':                 'eje',
   'posicion':             'posicion',
+  'posicion rueda':       'posicion',
+  'pos':                  'posicion',
+  'position':             'posicion',
   'vida':                 'vida',
+  'estado vida':          'vida',
+  'estado':               'vida',
+  'vida actual':          'vida',
+  'life':                 'vida',
   'kilometros llanta':    'kilometros_llanta',
+  'kms acumulados':       'kilometros_llanta',
+  'km llanta':            'kilometros_llanta',
+  'km acumulados':        'kilometros_llanta',
+  'mileage':              'kilometros_llanta',
   'kilometraje vehiculo': 'kilometros_vehiculo',
+  'odometro':             'kilometros_vehiculo',
+  'odometro actual':      'kilometros_vehiculo',
+  'km actual':            'kilometros_vehiculo',
+  'km vehiculo':          'kilometros_vehiculo',
+  'odometer':             'kilometros_vehiculo',
   'profundidad int':      'profundidad_int',
+  'prof int':             'profundidad_int',
+  'prof interna':         'profundidad_int',
+  'prf int':              'profundidad_int',
+  'interior':             'profundidad_int',
   'profundidad cen':      'profundidad_cen',
+  'prof cen':             'profundidad_cen',
+  'prof central':         'profundidad_cen',
+  'pro cent':             'profundidad_cen',
+  'centro':               'profundidad_cen',
+  'center':               'profundidad_cen',
   'profundidad ext':      'profundidad_ext',
+  'prof ext':             'profundidad_ext',
+  'prof externa':         'profundidad_ext',
+  'pro ext':              'profundidad_ext',
+  'exterior':             'profundidad_ext',
   'profundidad inicial':  'profundidad_inicial',
+  'prof original':        'profundidad_inicial',
+  'prof inicial':         'profundidad_inicial',
+  'rtd':                  'profundidad_inicial',
+  'initial':              'profundidad_inicial',
   'costo':                'costo',
   'cost':                 'costo',
   'precio':               'costo',
+  'precio compra':        'costo',
+  'price':                'costo',
+  'valor':                'costo',
   'costo furgon':         'costo',
   'fecha instalacion':    'fecha_instalacion',
   'fecha montaje':        'fecha_instalacion',
@@ -914,9 +972,51 @@ const HEADER_MAP_A: Record<string, string> = {
   'tipovhc':              'tipovhc',
   'tipo de vehiculo':     'tipovhc',
   'tipo vhc':             'tipovhc',
+  'clase vehiculo':       'tipovhc',
+  'clase':                'tipovhc',
+  'vehicle type':         'tipovhc',
   'presion psi':          'presion_psi',
   'presión psi':          'presion_psi',
   'presion':              'presion_psi',
+};
+
+// Fuzzy keyword fallback: if exact match fails, check if the normalized
+// header CONTAINS any of these keywords (checked in order — first match wins).
+const HEADER_KEYWORD_FALLBACK: [RegExp, string][] = [
+  [/prof.*int|prf.*int|int.*prof/,    'profundidad_int'],
+  [/prof.*cen|pro.*cen|cen.*prof/,    'profundidad_cen'],
+  [/prof.*ext|pro.*ext|ext.*prof/,    'profundidad_ext'],
+  [/prof.*ini|prof.*orig|rtd/,        'profundidad_inicial'],
+  [/placa|plate/,                     'placa_vehiculo'],
+  [/fabrican|manufact|brand/,         'marca'],
+  [/modelo|diseno|design|model/,      'diseno_original'],
+  [/medida|dimension|size|tamano/,    'dimension'],
+  [/posicion|position|pos.*rueda/,    'posicion'],
+  [/vida|estado.*vida|life.*stage/,   'vida'],
+  [/ubicacion.*eje|axle|eje.*tipo/,   'eje'],
+  [/km.*acum|mileage|km.*llanta/,     'kilometros_llanta'],
+  [/odomet|km.*actual|km.*vehic/,     'kilometros_vehiculo'],
+  [/costo|precio|price|cost|valor/,   'costo'],
+  [/clase.*veh|tipo.*veh|tipo.*equipo|vehicle.*type/, 'tipovhc'],
+  [/presion|pressure|psi/,            'presion_psi'],
+  [/fecha.*ins|fecha.*ult/,           'fecha_inspeccion'],
+  [/fecha.*mont|fecha.*inst|install/, 'fecha_instalacion'],
+];
+
+// Value normalization for vida and eje fields
+const VIDA_NORMALIZE: Record<string, string> = {
+  nueva: 'nueva', new: 'nueva', n: 'nueva', '0': 'nueva',
+  're-1': 'reencauche1', 'r1': 'reencauche1', 're1': 'reencauche1', 'reencauche1': 'reencauche1', 'reencauche 1': 'reencauche1', '1r': 'reencauche1',
+  're-2': 'reencauche2', 'r2': 'reencauche2', 're2': 'reencauche2', 'reencauche2': 'reencauche2', 'reencauche 2': 'reencauche2', '2r': 'reencauche2',
+  're-3': 'reencauche3', 'r3': 'reencauche3', 're3': 'reencauche3', 'reencauche3': 'reencauche3', 'reencauche 3': 'reencauche3', '3r': 'reencauche3',
+  fin: 'fin', end: 'fin', desecho: 'fin',
+};
+const EJE_NORMALIZE: Record<string, string> = {
+  frontal: 'direccion', front: 'direccion', direccion: 'direccion', dir: 'direccion', steer: 'direccion', steering: 'direccion', delantero: 'direccion',
+  trasero: 'traccion', rear: 'traccion', traccion: 'traccion', tra: 'traccion', drive: 'traccion', posterior: 'traccion',
+  libre: 'libre', free: 'libre',
+  remolque: 'remolque', trailer: 'remolque',
+  repuesto: 'repuesto', spare: 'repuesto', auxilio: 'repuesto',
 };
 
 const HEADER_MAP_B: Record<string, string> = {
@@ -953,10 +1053,10 @@ const HEADER_MAP_B: Record<string, string> = {
 
 function isFormatB(rows: Record<string, string>[]): boolean {
   if (!rows.length) return false;
-  return Object.keys(rows[0]).some(k =>
-    k.toLowerCase().includes('numero de llanta') ||
-    k.toLowerCase().includes('tipo de equipo'),
-  );
+  return Object.keys(rows[0]).some(k => {
+    const lo = k.toLowerCase();
+    return lo.includes('numero de llanta') || lo.includes('tipo de equipo');
+  });
 }
 
 function getCell(
@@ -965,8 +1065,12 @@ function getCell(
   headerMap: Record<string, string>,
 ): string {
   const key = Object.keys(row).find(k => {
-    const mapped = headerMap[normalize(k)];
-    return mapped === field || normalize(k) === field;
+    const n = normalize(k);
+    const mapped = headerMap[n];
+    if (mapped === field || n === field) return true;
+    // Fuzzy keyword fallback
+    const fb = HEADER_KEYWORD_FALLBACK.find(([re]) => re.test(n));
+    return fb ? fb[1] === field : false;
   });
   return key ? String(row[key] ?? '') : '';
 }
@@ -1850,13 +1954,14 @@ export class TireService {
 
           // Format B: check if there's a "Vida" column override, else default 'nueva'
           const vidaOverride = normalize(get(row, 'vida_override'));
-          if (vidaOverride === 'original' || vidaOverride === 'nueva' || !vidaOverride) {
+          const vidaMapped = VIDA_NORMALIZE[vidaOverride] ?? vidaOverride;
+          if (vidaMapped === 'original' || vidaMapped === 'nueva' || !vidaMapped) {
             vidaValor = 'nueva';
-          } else if (vidaOverride.includes('reencauche') || vidaOverride.includes('rencauche')) {
-            vidaValor = 'reencauche1';
+          } else if (vidaMapped.includes('reencauche') || vidaMapped.includes('rencauche')) {
+            vidaValor = vidaMapped.startsWith('reencauche') ? vidaMapped : 'reencauche1';
             needsReencauche = true;
-          } else if (isVidaValue(vidaOverride)) {
-            vidaValor = vidaOverride;
+          } else if (isVidaValue(vidaMapped)) {
+            vidaValor = vidaMapped;
           } else {
             vidaValor = 'nueva';
           }
@@ -1870,7 +1975,8 @@ export class TireService {
             }
           }
         } else {
-          vidaValor = get(row, 'vida').trim().toLowerCase();
+          const rawVida = get(row, 'vida').trim().toLowerCase();
+          vidaValor = VIDA_NORMALIZE[rawVida] ?? rawVida;
           if (vidaValor === 'rencauche' || vidaValor === 'reencauche') vidaValor = 'reencauche1';
         }
 
