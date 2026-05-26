@@ -3,16 +3,19 @@ import {
   Post,
   Body,
   Req,
+  UseGuards,
   HttpCode,
   HttpStatus,
   InternalServerErrorException,
   BadRequestException,
 } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AnaService } from './ana.service';
 import { AnaMessageDto } from './dto/ana-message.dto';
 
 @Controller('ana')
+@UseGuards(JwtAuthGuard)
 export class AnaController {
   constructor(private readonly anaSvc: AnaService) {}
 
