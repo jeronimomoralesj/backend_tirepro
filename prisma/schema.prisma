@@ -751,6 +751,9 @@ model Inspeccion {
   // External system dedup key — populated by integrations.
   externalSourceId String? @unique
 
+  // Free-text observation — completely optional field for inspectors
+  observacion String?
+
   // Lossless catch-all for per-inspection source fields (alert, operationType,
   // owner/driver, consecutives, report IDs) so nothing is ever dropped.
   sourceMetadata Json?

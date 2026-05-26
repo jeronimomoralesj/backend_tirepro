@@ -57,4 +57,8 @@ export class EditInspectionDto {
   @ArrayMaxSize(3, { message: 'Maximum 3 photos allowed' })
   @IsString({ each: true })
   imageUrls?: string[];
+
+  @IsOptional()
+  @IsString()
+  observacion?: string;
 }

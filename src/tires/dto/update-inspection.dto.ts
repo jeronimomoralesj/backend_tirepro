@@ -147,4 +147,7 @@ export class UpdateInspectionDto {
   @IsString()
   fechaInstalacion?: string;
 
+  @IsOptional()
+  @IsString()
+  observacion?: string;
 }

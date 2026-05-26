@@ -3231,6 +3231,7 @@ export class TireService {
         cvProfundidadExt,
         cvConfidence,
         cvModelVersion,
+        observacion:           dto.observacion?.trim() || null,
       },
     });
 
@@ -3842,6 +3843,7 @@ export class TireService {
       data.kilometrosEstimados = updates.kilometrosEstimados;
       data.kmEfectivos = updates.kilometrosEstimados;
     }
+    if (updates.observacion !== undefined) data.observacion = updates.observacion.trim() || null;
 
     // Replace the photo set. Accepts existing S3 URLs (preserved) and
     // data:image/... payloads (uploaded here). Any URL present on the old

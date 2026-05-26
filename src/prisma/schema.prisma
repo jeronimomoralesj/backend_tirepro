@@ -261,6 +261,8 @@ model Inspeccion {
 
   imageUrl String?
 
+  observacion String?
+
   createdAt DateTime @default(now())
 
   tire Tire @relation(fields: [tireId], references: [id], onDelete: Cascade)
