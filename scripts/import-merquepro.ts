@@ -54,7 +54,7 @@ const prisma = new PrismaClient({
 // P2024 = pool-fetch timeout (transient under load — backoff lets siblings
 // release connections). P1001/P1002/P1008/P1017 = connection-loss codes.
 const TRANSIENT_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017', 'P2024']);
-const TRANSIENT_MSG_FRAGS = ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'Connection terminated', 'Connection timed out', 'server closed the connection', 'connection pool'];
+const TRANSIENT_MSG_FRAGS = ['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'Connection terminated', 'Connection timed out', 'server closed the connection', 'connection pool', 'deadlock detected'];
 function isTransient(err: unknown): boolean {
   const anyErr = err as { code?: string; message?: string };
   if (anyErr?.code && TRANSIENT_CODES.has(anyErr.code)) return true;

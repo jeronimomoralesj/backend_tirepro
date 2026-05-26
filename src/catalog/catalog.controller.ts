@@ -104,6 +104,7 @@ export class CatalogController {
   }
 
   @Get('search')
+  @UseGuards(JwtAuthGuard)
   search(
     @Query('marca') marca?: string,
     @Query('dimension') dimension?: string,
@@ -115,6 +116,7 @@ export class CatalogController {
   }
 
   @Get('match')
+  @UseGuards(JwtAuthGuard)
   findMatch(
     @Query('marca') marca: string,
     @Query('dimension') dimension: string,
@@ -124,6 +126,7 @@ export class CatalogController {
   }
 
   @Get('replacements')
+  @UseGuards(JwtAuthGuard)
   replacements(
     @Query('dimension') dimension: string,
     @Query('eje') eje: EjeType,
@@ -133,11 +136,13 @@ export class CatalogController {
   }
 
   @Get('brands')
+  @UseGuards(JwtAuthGuard)
   brands() {
     return this.catalogService.getBrands();
   }
 
   @Get('dimensions')
+  @UseGuards(JwtAuthGuard)
   dimensions() {
     return this.catalogService.getDimensions();
   }
@@ -146,11 +151,13 @@ export class CatalogController {
   // No precioCop filter: admin-created SKUs without prices still surface.
 
   @Get('autocomplete/brands')
+  @UseGuards(JwtAuthGuard)
   autocompleteBrands(@Query('q') q?: string, @Query('limit') limit?: string) {
     return this.catalogService.autocompleteBrands(q, limit ? Number(limit) : undefined);
   }
 
   @Get('autocomplete/models')
+  @UseGuards(JwtAuthGuard)
   autocompleteModels(
     @Query('marca') marca: string,
     @Query('q') q?: string,
@@ -166,6 +173,7 @@ export class CatalogController {
   }
 
   @Get('autocomplete/dimensions')
+  @UseGuards(JwtAuthGuard)
   autocompleteDimensions(
     @Query('marca') marca?: string,
     @Query('modelo') modelo?: string,
@@ -176,6 +184,7 @@ export class CatalogController {
   }
 
   @Get('stats')
+  @UseGuards(JwtAuthGuard)
   stats() {
     return this.catalogService.getStats();
   }
@@ -184,6 +193,7 @@ export class CatalogController {
 
   /** Get aggregated crowd stats for a marca + dimension + optional modelo */
   @Get('crowd-stats')
+  @UseGuards(JwtAuthGuard)
   crowdStats(
     @Query('marca') marca: string,
     @Query('dimension') dimension: string,
@@ -194,6 +204,7 @@ export class CatalogController {
 
   /** Create or update a crowdsourced catalog entry */
   @Post('crowdsource')
+  @UseGuards(JwtAuthGuard)
   crowdsource(
     @Body()
     body: {

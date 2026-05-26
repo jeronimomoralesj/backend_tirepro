@@ -92,21 +92,45 @@ export class InventoryBucketsService {
   // identified by `tipo = 'reencauche'` (never by name, so renames don't
   // break the reencauche flow).
   private async ensureDefaultBuckets(companyId: string): Promise<void> {
-    const reencauche = await this.prisma.tireInventoryBucket.findFirst({
-      where:  { companyId, tipo: 'reencauche' },
-      select: { id: true },
-    });
-    if (reencauche) return;
+    const [reencauche, finDeVida] = await Promise.all([
+      this.prisma.tireInventoryBucket.findFirst({
+        where:  { companyId, tipo: 'reencauche' },
+        select: { id: true },
+      }),
+      this.prisma.tireInventoryBucket.findFirst({
+        where:  { companyId, tipo: 'fin_de_vida' },
+        select: { id: true },
+      }),
+    ]);
 
-    await this.prisma.tireInventoryBucket.create({
-      data: {
-        companyId,
-        nombre: 'Reencauche',
-        color:  '#8b5cf6',
-        icono:  '♻️',
-        tipo:   'reencauche',
-      },
-    });
+    const creates: Promise<unknown>[] = [];
+
+    if (!reencauche) {
+      creates.push(this.prisma.tireInventoryBucket.create({
+        data: {
+          companyId,
+          nombre: 'Reencauche',
+          color:  '#8b5cf6',
+          icono:  '♻️',
+          tipo:   'reencauche',
+        },
+      }));
+    }
+
+    if (!finDeVida) {
+      creates.push(this.prisma.tireInventoryBucket.create({
+        data: {
+          companyId,
+          nombre: 'Fin de Vida',
+          color:  '#ef4444',
+          icono:  '🚫',
+          tipo:   'fin_de_vida',
+          excluirDeFlota: true,
+        },
+      }));
+    }
+
+    if (creates.length) await Promise.all(creates);
   }
 
   // Returns the company's system-managed Reencauche bucket, seeding it if
@@ -118,8 +142,18 @@ export class InventoryBucketsService {
       where: { companyId, tipo: 'reencauche' },
     });
     if (!bucket) {
-      // Seed above guarantees existence; this is a defensive fallback.
       throw new NotFoundException('Reencauche bucket could not be created');
+    }
+    return bucket;
+  }
+
+  async getFinDeVidaBucket(companyId: string) {
+    await this.ensureDefaultBuckets(companyId);
+    const bucket = await this.prisma.tireInventoryBucket.findFirst({
+      where: { companyId, tipo: 'fin_de_vida' },
+    });
+    if (!bucket) {
+      throw new NotFoundException('Fin de Vida bucket could not be created');
     }
     return bucket;
   }

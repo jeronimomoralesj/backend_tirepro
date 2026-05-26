@@ -49,8 +49,9 @@ export class VehicleController {
   // ── Static routes first (before :id param routes) ────────────────────────
 
   @Get('all')
-  findAll() {
-    return this.vehicleService.findAllVehicles();
+  findAll(@Query('companyId') companyId: string) {
+    if (!companyId) throw new BadRequestException('companyId is required');
+    return this.vehicleService.findVehiclesByCompany(companyId);
   }
 
   // Vehicles the caller's company can inspect (own + distribuidor client
@@ -156,7 +157,7 @@ export class VehicleController {
 
   @Get()
   getVehicles(@Query('companyId') companyId: string) {
-    if (!companyId) throw new Error('companyId is required');
+    if (!companyId) throw new BadRequestException('companyId is required');
     return this.vehicleService.findVehiclesByCompany(companyId);
   }
 
@@ -166,16 +167,18 @@ export class VehicleController {
   updateVehicle(
     @Param('id') id: string,
     @Body() dto: UpdateVehicleDto,
+    @Req() req: { user?: { companyId?: string } },
   ) {
-    return this.vehicleService.updateVehicle(id, dto);
+    return this.vehicleService.updateVehicle(id, dto, req.user?.companyId);
   }
 
   @Patch(':id/kilometraje')
   updateKilometraje(
     @Param('id') id: string,
     @Body() dto: UpdateKilometrajeDto,
+    @Req() req: { user?: { companyId?: string } },
   ) {
-    return this.vehicleService.updateKilometraje(id, dto.kilometrajeActual);
+    return this.vehicleService.updateKilometraje(id, dto.kilometrajeActual, req.user?.companyId);
   }
 
   @Patch(':id/union/add')
@@ -215,7 +218,10 @@ export class VehicleController {
 
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
-  deleteVehicle(@Param('id') id: string) {
-    return this.vehicleService.deleteVehicle(id);
+  deleteVehicle(
+    @Param('id') id: string,
+    @Req() req: { user?: { companyId?: string } },
+  ) {
+    return this.vehicleService.deleteVehicle(id, req.user?.companyId);
   }
 }

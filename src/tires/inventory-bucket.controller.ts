@@ -10,10 +10,18 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  UseGuards,
+  UsePipes,
+  ValidationPipe,
+  BadRequestException,
 } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyScopeGuard } from '../auth/guards/company-scope.guard';
 import { CreateBucketDto, InventoryBucketsService, MoveTireToBucketDto, UpdateBucketDto } from './inventory-bucket.service';
- 
+
 @Controller('inventory-buckets')
+@UseGuards(JwtAuthGuard, CompanyScopeGuard)
+@UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 export class InventoryBucketsController {
   constructor(private readonly svc: InventoryBucketsService) {}
  

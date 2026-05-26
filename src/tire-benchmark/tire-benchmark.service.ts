@@ -117,10 +117,11 @@ export class TireBenchmarkService {
       const v = vidaByKey.get(key);
       const c = costoByKey.get(key);
 
-      // Retread ROI: km per vida on reencauche1 / km per vida on nueva.
-      // > 0.9 = retread is essentially as good as a new tire per km spent.
-      const retreadRoiRatio = (v?.cpkNueva && v?.cpkReencauche1 && v.cpkReencauche1 > 0)
-        ? +(v.cpkNueva / v.cpkReencauche1).toFixed(3)
+      // Retread ROI: cpkReencauche1 / cpkNueva.
+      // < 1.0 = retread achieves lower CPK than new (pays off).
+      // > 1.0 = retread is more expensive per km (consider replacing).
+      const retreadRoiRatio = (v?.cpkNueva && v?.cpkReencauche1 && v.cpkNueva > 0)
+        ? +(v.cpkReencauche1 / v.cpkNueva).toFixed(3)
         : null;
 
       // Pressure sensitivity: % CPK degradation per 10 PSI under-inflation.

@@ -323,7 +323,19 @@ function safeInt(v: unknown, fallback = 0): number {
 
 function parseCurrency(value: string): number {
   if (!value) return 0;
-  const n = parseFloat(value.replace(/[$,\s]/g, '').replace(/[^\d.]/g, ''));
+  let s = value.replace(/[$\s]/g, '');
+  // Colombian format uses period as thousands separator: $1.900.000
+  // If there are multiple periods, they're thousands separators — strip them.
+  // If there's exactly one period, it could be decimal (1900.50) — keep it.
+  const dotCount = (s.match(/\./g) || []).length;
+  if (dotCount > 1) {
+    s = s.replace(/\./g, '');
+  } else if (dotCount === 1 && s.includes(',')) {
+    // "1.900,50" — European/Colombian decimal: period=thousands, comma=decimal
+    s = s.replace(/\./g, '').replace(',', '.');
+  }
+  s = s.replace(/,/g, '');
+  const n = parseFloat(s.replace(/[^\d.]/g, ''));
   return isNaN(n) ? 0 : n;
 }
 
@@ -334,6 +346,16 @@ function normalize(s: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function normalizeBrand(s: string): string {
+  if (!s?.trim()) return '';
+  const t = s.trim();
+  return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
+}
+
+function normalizeDesign(s: string): string {
+  return (s ?? '').trim().toLowerCase();
 }
 
 /**
@@ -552,7 +574,17 @@ function costsForVida(
   costos: { valor: number; fecha: Date | string }[],
   vidaStartDate: Date,
 ): { valor: number; fecha: Date | string }[] {
-  return costos.filter(c => new Date(c.fecha) >= vidaStartDate);
+  const vidaCostos = costos.filter(c => new Date(c.fecha) >= vidaStartDate);
+  if (vidaCostos.length > 0) return vidaCostos;
+  // Fallback: if no costs found after vida start, use the cost closest to
+  // (but not before) the vida start date. This handles the edge case where
+  // the cost was recorded slightly before the vida transition event.
+  const TOLERANCE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+  const nearby = costos.filter(c => {
+    const diff = vidaStartDate.getTime() - new Date(c.fecha).getTime();
+    return diff >= 0 && diff <= TOLERANCE_MS;
+  });
+  return nearby.length > 0 ? [nearby[nearby.length - 1]] : [];
 }
 
 function resolveVidaCostAndKm(params: {
@@ -569,16 +601,7 @@ function resolveVidaCostAndKm(params: {
   const vidaStart = resolveVidaStartDate(eventos, vidaActual, installationDate);
 
   const vidaCostos = costsForVida(costos, vidaStart);
-  let costForVida: number;
-
-  if (vidaCostos.length > 0) {
-    costForVida = vidaCostos.reduce((s, c) => s + c.valor, 0);
-  } else {
-    const sorted = [...costos].sort(
-      (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime(),
-    );
-    costForVida = sorted.at(0)?.valor ?? 0;
-  }
+  const costForVida = vidaCostos.reduce((s, c) => s + c.valor, 0);
 
   // Find km at the moment the current vida started:
   // 1. Look for the last inspection BEFORE vida start → that's the odometer baseline
@@ -1312,6 +1335,18 @@ export class TireService {
     if (!company)              throw new BadRequestException('Invalid companyId');
     if (vehicleId && !vehicle) throw new BadRequestException('Invalid vehicleId');
 
+    if (vehicleId && posicion && posicion > 0) {
+      const occupant = await this.prisma.tire.findFirst({
+        where: { vehicleId, posicion, id: { not: undefined } },
+        select: { id: true, placa: true },
+      });
+      if (occupant) {
+        throw new BadRequestException(
+          `Posición ${posicion} ya está ocupada por la llanta "${occupant.placa}"`,
+        );
+      }
+    }
+
     if (placa?.trim()) {
       const normalizedPlaca = placa.trim().toLowerCase();
       const existing = await this.prisma.tire.findFirst({
@@ -1361,8 +1396,8 @@ export class TireService {
     const newTire = await this.prisma.tire.create({
       data: {
         placa:                finalPlaca,
-        marca:                marca.toLowerCase(),
-        diseno:               (diseno ?? '').toLowerCase(),
+        marca:                normalizeBrand(marca),
+        diseno:               normalizeDesign(diseno),
         profundidadInicial:   profundidadInicial ?? C.DEFAULT_PROFUNDIDAD_INICIAL,
         dimension:            normalizeDimensionCanonical(dimension),
         eje:                  (eje as EjeType) ?? EjeType.libre,
@@ -1461,7 +1496,10 @@ export class TireService {
     });
 
     await this.invalidateCompanyCache(companyId);
-    if (vehicleId) await this.invalidateVehicleCache(vehicleId);
+    if (vehicleId) {
+      await this.invalidateVehicleCache(vehicleId);
+      this.openHistoryEntry(newTire.id, vehicleId, posicion ?? 0).catch(() => {});
+    }
 
     // Fire-and-forget: enrich catalog with crowdsource data from this tire
     this.catalogService
@@ -1673,8 +1711,8 @@ export class TireService {
         processedIds.add(tirePlaca);
 
         const marcaRaw  = get(row, 'marca').trim();
-        let marca       = marcaRaw.charAt(0).toUpperCase() + marcaRaw.slice(1).toLowerCase();
-        let diseno      = get(row, 'diseno_original').toLowerCase();
+        let marca       = normalizeBrand(marcaRaw);
+        let diseno      = normalizeDesign(get(row, 'diseno_original'));
         let dimension   = normalizeDimensionCanonical(get(row, 'dimension'));
 
         // ── Catalog fuzzy matching (brand / design / dimension) ─────────────
@@ -1762,11 +1800,11 @@ export class TireService {
           : get(row, 'tipovhc')?.trim();
         tipovhc = normalizeTipoVHC(tipovhc);
 
-        const profInt  = safeFloat(get(row, 'profundidad_int'));
-        const profCen  = safeFloat(get(row, 'profundidad_cen'));
-        const profExt  = safeFloat(get(row, 'profundidad_ext'));
+        let profInt  = safeFloat(get(row, 'profundidad_int'));
+        let profCen  = safeFloat(get(row, 'profundidad_cen'));
+        let profExt  = safeFloat(get(row, 'profundidad_ext'));
         const hasInsp  = profInt > 0 || profCen > 0 || profExt > 0;
-        const minDepth = hasInsp ? calcMinDepth(profInt, profCen, profExt) : 0;
+        let minDepth = hasInsp ? calcMinDepth(profInt, profCen, profExt) : 0;
 
         const presionRaw = safeFloat(get(row, 'presion_psi'), 0);
         const presionPsi = presionRaw > 0 ? presionRaw : null;
@@ -2148,6 +2186,29 @@ export class TireService {
             }
           }
 
+          // ── Depth-decreasing guard ──────────────────────────────────────
+          // Within the same vida, depths can only go down (tolerance 0.5mm).
+          // If any zone increased beyond tolerance, warn and clamp to previous.
+          if (existing && hasInsp && existingFull?.inspecciones?.length > 0) {
+            const lastI = existingFull.inspecciones[0]; // ordered desc
+            if (lastI && lastI.vidaAlMomento === (existingFull.vidaActual ?? VidaValue.nueva)) {
+              const TOL = 0.5;
+              if (profInt > lastI.profundidadInt + TOL) {
+                warnings.push(`Row ${rowNum}: prof. int ${profInt} > anterior ${lastI.profundidadInt} — ajustada.`);
+                profInt = lastI.profundidadInt;
+              }
+              if (profCen > lastI.profundidadCen + TOL) {
+                warnings.push(`Row ${rowNum}: prof. cen ${profCen} > anterior ${lastI.profundidadCen} — ajustada.`);
+                profCen = lastI.profundidadCen;
+              }
+              if (profExt > lastI.profundidadExt + TOL) {
+                warnings.push(`Row ${rowNum}: prof. ext ${profExt} > anterior ${lastI.profundidadExt} — ajustada.`);
+                profExt = lastI.profundidadExt;
+              }
+              minDepth = calcMinDepth(profInt, profCen, profExt);
+            }
+          }
+
           // ── Branch A continued: normal new inspection ─────────────────────
           if (existing && hasInsp) {
             const vidaActual  = existingFull?.vidaActual ?? VidaValue.nueva;
@@ -2175,6 +2236,11 @@ export class TireService {
               expectedLifetimeKm,
             );
 
+            const branchALifetimeCost = (existingFull?.costos ?? []).reduce((s, c) => s + (c.valor ?? 0), 0);
+            const branchALifetimeCpk = bulkCurrentKm >= 5_000 && branchALifetimeCost > 0
+              ? parseFloat((branchALifetimeCost / bulkCurrentKm).toFixed(2))
+              : null;
+
             await this.prisma.inspeccion.create({
               data: {
                 tireId:               existing.id,
@@ -2183,6 +2249,7 @@ export class TireService {
                 profundidadCen:       profCen,
                 profundidadExt:       profExt,
                 cpk:                  metrics.cpk,
+                lifetimeCpk:          branchALifetimeCpk,
                 cpkProyectado:        metrics.cpkProyectado,
                 cpt:                  metrics.cpt,
                 cptProyectado:        metrics.cptProyectado,
@@ -2277,6 +2344,10 @@ export class TireService {
               expectedLifetimeKm,
             );
 
+            const branchBLifetimeCpk = kmEstimados >= 5_000 && costoCell > 0
+              ? parseFloat((costoCell / kmEstimados).toFixed(2))
+              : null;
+
             await this.prisma.inspeccion.create({
               data: {
                 tireId:               newTire.id,
@@ -2285,6 +2356,7 @@ export class TireService {
                 profundidadCen:       profCen,
                 profundidadExt:       profExt,
                 cpk:                  metrics.cpk,
+                lifetimeCpk:          branchBLifetimeCpk,
                 cpkProyectado:        metrics.cpkProyectado,
                 cpt:                  metrics.cpt,
                 cptProyectado:        metrics.cptProyectado,
@@ -2302,6 +2374,37 @@ export class TireService {
                 source:               InspeccionSource.bulk_upload,
               },
             });
+          }
+
+          // Create TireVidaSnapshot for the initial vida (mirrors createTire)
+          await this.prisma.tireVidaSnapshot.create({
+            data: {
+              tireId:             newTire.id,
+              companyId,
+              vida:               vidaAlMomento,
+              marca,
+              diseno,
+              dimension,
+              eje:                (eje as EjeType) || EjeType.libre,
+              posicion:           posicion || null,
+              costoInicial:       costoCell,
+              costoTotal:         costoCell,
+              fechaInicio:        fechaInstalacion,
+              fechaFin:           fechaInstalacion,
+              diasTotales:        0,
+              mesesTotales:       0,
+              profundidadInicial,
+              profundidadFinal:   profundidadInicial,
+              mmDesgastados:      0,
+              kmTotales:          kmEstimados,
+              totalInspecciones:  hasInsp ? 1 : 0,
+              dataSource:         'live',
+            },
+          });
+
+          // Open vehicle tire history entry (mirrors createTire)
+          if (vehicle?.id && posicion > 0) {
+            this.openHistoryEntry(newTire.id, vehicle.id, posicion).catch(() => {});
           }
 
           if (needsReencauche) {
@@ -3150,7 +3253,7 @@ export class TireService {
     // every inspection so dashboards can chart it over time without
     // re-aggregating costs on the read path.
     const lifetimeTotalCost = tire.costos.reduce((s, c) => s + (c.valor ?? 0), 0);
-    const lifetimeCpkAtInspection = effectiveKm > 0 && lifetimeTotalCost > 0
+    const lifetimeCpkAtInspection = effectiveKm >= 5_000 && lifetimeTotalCost > 0
       ? parseFloat((lifetimeTotalCost / effectiveKm).toFixed(2))
       : null;
 
@@ -3493,7 +3596,7 @@ export class TireService {
       updateData.profundidadInicial = parsedProfundidad;
     }
 
-    if (banda?.trim()) updateData.diseno = banda.trim();
+    if (banda?.trim()) updateData.diseno = normalizeDesign(banda);
 
     // On retread the carcass keeps its casing but the new tread band has its
     // own brand (e.g. Michelin carcass + Contitread band = Continental brand).
@@ -3502,7 +3605,7 @@ export class TireService {
     // was captured, use the banda name (customer-facing terminology
     // sometimes treats band name and brand as synonymous).
     if (normalizedValor.startsWith('reencauche')) {
-      const newMarca = bandaMarca?.trim() || banda?.trim();
+      const newMarca = normalizeBrand(bandaMarca?.trim() || banda?.trim() || '');
       if (newMarca) updateData.marca = newMarca;
     }
 
@@ -3521,7 +3624,7 @@ export class TireService {
     await this.prisma.tireEvento.create({
       data: {
         tireId,
-        tipo:     TireEventType.reencauche,
+        tipo:     normalizedValor === VidaValue.fin ? TireEventType.retiro : TireEventType.reencauche,
         fecha:    now,
         notas:    normalizedValor,
         metadata: toJson({
@@ -3616,6 +3719,14 @@ export class TireService {
     });
     if (!tire) throw new NotFoundException('Tire not found');
 
+    // Guard: reject values that look like vida transitions — those must go
+    // through updateVida to produce correct snapshots and cost splits.
+    if (isVidaValue(newValor)) {
+      throw new BadRequestException(
+        `"${newValor}" es una transición de vida. Use el endpoint PATCH :id/vida.`,
+      );
+    }
+
     await this.prisma.tireEvento.create({
       data: {
         tireId,
@@ -3668,13 +3779,43 @@ export class TireService {
     }
     if (!vehicle) throw new NotFoundException('Vehicle not found');
 
-    // Flatten the { pos: ids } map to [(tireId, position)] pairs so we can
-    // loop once for both the tire.update and the history hook.
     const changes = Object.entries(updates).flatMap(([pos, ids]) => {
       const arr = Array.isArray(ids) ? ids : [ids];
       const position = parseInt(pos, 10) || 0;
       return arr.map((tireId) => ({ tireId, position }));
     });
+
+    // Guard: no two tires at the same position (excluding position 0 = unassigned)
+    const positionMap = new Map<number, string>();
+    for (const { tireId, position } of changes) {
+      if (position > 0) {
+        if (positionMap.has(position)) {
+          throw new BadRequestException(
+            `Posición ${position} asignada a múltiples llantas en esta solicitud`,
+          );
+        }
+        positionMap.set(position, tireId);
+      }
+    }
+
+    // Check existing occupants not being moved in this batch
+    if (positionMap.size > 0) {
+      const movingTireIds = changes.map(c => c.tireId);
+      const occupants = await this.prisma.tire.findMany({
+        where: {
+          vehicleId: vehicle.id,
+          posicion: { in: Array.from(positionMap.keys()) },
+          id: { notIn: movingTireIds },
+        },
+        select: { id: true, posicion: true, placa: true },
+      });
+      if (occupants.length > 0) {
+        const first = occupants[0];
+        throw new BadRequestException(
+          `Posición ${first.posicion} ya ocupada por llanta "${first.placa}"`,
+        );
+      }
+    }
 
     await this.prisma.$transaction(
       changes.map(({ tireId, position }) =>
@@ -3753,6 +3894,7 @@ export class TireService {
       presionPsi?: number;
       imageUrls?: string[];
       fechaInstalacion?: string;
+      observacion?: string;
     },
   ) {
     const insp = await this.prisma.inspeccion.findFirst({
@@ -3894,38 +4036,40 @@ export class TireService {
       );
       const mesesEnUso = diasEnUso / 30;
 
-      // For CPK, we need the total cost and total km for the current vida.
-      // costForVida comes from TireCosto entries.
-      // kmForVida = currentKm - kmAtVidaStart. We must use the TIRE's total
-      // accumulated km, not the inspection's snapshot, to avoid the case where
-      // the inspection being edited IS the only one (kmForVida would be 0).
+      // Use per-vida cost and km — same logic as calcCpkMetrics path.
       const totalTireKm = updates.kilometrosEstimados ?? tire.kilometrosRecorridos ?? effectiveKm;
 
-      // Get cost directly — sum all costos for this tire
-      const totalCost = tire.costos.reduce((s, c) => s + c.valor, 0);
+      const { costForVida, kmForVida } = resolveVidaCostAndKm({
+        costos:           tire.costos,
+        inspecciones:     tire.inspecciones,
+        eventos:          tire.eventos,
+        vidaActual:       tire.vidaActual,
+        currentKm:        totalTireKm,
+        installationDate: tire.fechaInstalacion ?? new Date(),
+      });
 
-      // Simple CPK: total cost / total km
-      const cpk = totalTireKm > 0 ? totalCost / totalTireKm : 0;
-      const cpt = mesesEnUso > 0 ? totalCost / mesesEnUso : 0;
+      const metrics = calcCpkMetrics(
+        costForVida,
+        kmForVida,
+        mesesEnUso,
+        tire.profundidadInicial,
+        minDepth,
+      );
 
-      // Projected CPK using depth-based extrapolation
-      const usableDepth = tire.profundidadInicial - 3; // 3mm legal limit
-      const mmWorn = tire.profundidadInicial - minDepth;
-      const mmLeft = Math.max(minDepth - 3, 0);
-      let projectedKm = 0;
-      if (usableDepth > 0 && totalTireKm > 0 && mmWorn > 0) {
-        projectedKm = totalTireKm + (totalTireKm / mmWorn) * mmLeft;
-      }
-      const cpkProyectado = projectedKm > 0 ? totalCost / projectedKm : 0;
-      // Use the canonical fleet-wide constant — the previous 7000 here
-      // diverged from C.KM_POR_MES (6000) used everywhere else, so the
-      // same tire's cptProyectado would shift depending on whether the
-      // inspection was created (calcCpkMetrics path, 6k) or edited
-      // (this path, 7k). One source of truth.
-      const projectedMonths = projectedKm > 0 ? projectedKm / C.KM_POR_MES : 0;
-      const cptProyectado = projectedMonths > 0 ? totalCost / projectedMonths : 0;
+      // Also compute lifetime CPK for the inspection record (5000km guard matches refreshTireAnalyticsCache)
+      const lifetimeTotalCost = tire.costos.reduce((s, c) => s + c.valor, 0);
+      const lifetimeCpk = totalTireKm >= 5_000 && lifetimeTotalCost > 0
+        ? parseFloat((lifetimeTotalCost / totalTireKm).toFixed(2))
+        : null;
+
+      const cpk = metrics.cpk;
+      const cpt = metrics.cpt ?? 0;
+      const cpkProyectado = metrics.cpkProyectado;
+      const cptProyectado = metrics.cptProyectado;
+      const projectedKm = metrics.projectedKm;
 
       data.cpk = cpk;
+      data.lifetimeCpk = lifetimeCpk;
       data.cpkProyectado = cpkProyectado;
       data.cpt = cpt;
       data.cptProyectado = cptProyectado;
@@ -3934,7 +4078,7 @@ export class TireService {
       data.mesesEnUso = mesesEnUso;
 
       this.logger.log(
-        `editInspection ${insp.id}: totalCost=${totalCost} totalKm=${totalTireKm} ` +
+        `editInspection ${insp.id}: costVida=${costForVida} kmVida=${kmForVida} ` +
         `cpk=${cpk.toFixed(2)} cpkProy=${cpkProyectado.toFixed(2)} cpt=${cpt.toFixed(2)}`,
       );
     }

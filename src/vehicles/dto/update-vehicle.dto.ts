@@ -45,7 +45,4 @@ export class UpdateVehicleDto {
   @Min(0)
   kmMensualEstimado?: number | null;
 
-  @IsOptional()
-  @IsUUID()
-  companyId?: string;
 }
