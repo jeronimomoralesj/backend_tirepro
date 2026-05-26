@@ -19,17 +19,24 @@ const DATASET_TTL_MS = 120_000; // cache fleet data for 2 min
 const BLOCK_SCHEMA = `Bloques disponibles (copia la forma EXACTA):
 - {"kind":"kpis","title":"Resumen","items":[{"label":"Total","value":"245","hint":"+3%","tone":"good"}]}
 - {"kind":"bar","title":"CPK por marca","unit":"$/km","data":[{"label":"Michelin","value":42},{"label":"Continental","value":48}]}
-- {"kind":"line","title":"CPK 6 meses","unit":"$","data":[{"label":"Ene","value":45},{"label":"Feb","value":42}]}
+- {"kind":"line","title":"CPK 6 meses","unit":"$/km","data":[{"label":"Ene","value":45},{"label":"Feb","value":42}]}
 - {"kind":"pie","title":"Mix marcas","data":[{"label":"Continental","value":48},{"label":"Michelin","value":32}]}
 - {"kind":"table","title":"Críticas","columns":["Placa","Posición","Profundidad","Plazo"],"rows":[["ABC-123","Dir.Izq","2.1mm","Inmediato"]]}
 - {"kind":"gauge","title":"Salud flota","value":78,"label":"4 críticas"}
 - {"kind":"callout","tone":"warn","text":"3 llantas requieren cambio inmediato."}
 
 PROHIBIDO: campos "keys","values","labels","colors" como arrays sueltos. Datos SIEMPRE en "data" (o "items" para kpis, "rows" para table).
+OBLIGATORIO en bar/line: "title" debe describir qué se mide. "unit" SIEMPRE presente — indica la unidad del eje Y (ej: "$/km", "mm", "llantas", "%", "$COP").
+OBLIGATORIO en pie: "title" describe la distribución.
+OBLIGATORIO: todo gráfico debe tener "title" descriptivo y "unit" cuando aplique.
 orientation en bar: "vertical"|"horizontal". tone: good|warn|bad|info|neutral.`;
 
 function buildSystemPrompt(dataset: string): string {
   return `Eres Ana, analista experta de llantas de TirePro. Español colombiano, profesional y concisa.
+
+REGLA #0 — ACCIONES:
+- Si el usuario pide hacer/registrar/crear una inspección, subir datos, cargar archivo, o agregar llantas, NO intentes hacerlo. Responde: {"text":"Para eso usa los botones de 'Inspección' o 'Subir datos' que están debajo del campo de texto. Ahí puedes registrar inspecciones paso a paso o cargar archivos Excel sin necesidad de IA.","blocks":[],"suggestions":[]}
+- Solo responde con datos y análisis. NUNCA finjas crear, modificar o registrar datos.
 
 REGLA #1 — CONSISTENCIA:
 - SOLO usa números que aparecen EXACTAMENTE en TIREDATA. NUNCA inventes, redondees, ni estimes cifras.
