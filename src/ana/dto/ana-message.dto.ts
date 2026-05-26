@@ -1,13 +1,4 @@
-import { IsString, IsOptional, IsArray, ValidateNested } from 'class-validator';
-import { Type } from 'class-transformer';
-
-class HistoryEntry {
-  @IsString()
-  role: string;
-
-  @IsString()
-  text: string;
-}
+import { IsString, IsOptional, IsArray } from 'class-validator';
 
 export class AnaMessageDto {
   @IsString()
@@ -15,9 +6,7 @@ export class AnaMessageDto {
 
   @IsOptional()
   @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => HistoryEntry)
-  history?: HistoryEntry[];
+  history?: { role: string; text: string }[];
 
   @IsOptional()
   @IsString()
