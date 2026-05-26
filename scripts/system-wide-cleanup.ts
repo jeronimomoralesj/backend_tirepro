@@ -165,6 +165,51 @@ function stripped(s: string): string {
   return s.replace(/[\s\-\.]+/g, '');
 }
 
+async function phase0_revertBadMerges() {
+  console.log('\n══════════════════════════════════════════════════════════════');
+  console.log('  PHASE 0: Revert Known Bad Merges');
+  console.log('══════════════════════════════════════════════════════════════\n');
+
+  // These were incorrectly merged by the old 0.85 similarity threshold.
+  // They are distinct brands/designs, not typos.
+  const reversals: { field: 'marca' | 'diseno'; wrongValue: string; correctValue: string; context?: string }[] = [
+    { field: 'marca', wrongValue: 'REMAX',     correctValue: 'GREMAX',   context: 'GREMAX is a separate brand from REMAX' },
+    { field: 'marca', wrongValue: 'SAFECESS',  correctValue: 'AFECESS',  context: 'AFECESS is a separate brand from SAFECESS' },
+  ];
+
+  for (const r of reversals) {
+    // Find tires that were originally the correctValue but got merged into wrongValue.
+    // We can identify them because the previous run changed correctValue → wrongValue.
+    // We need to check if there are tires with the wrongValue that should be correctValue.
+    // Since we can't tell which ones were originally which after the merge, we'll
+    // look for tires that had the correctValue via the externalSourceId or sourceMetadata.
+    // Safest approach: just report and let the user decide.
+
+    // Actually — the merge changed ALL tires with correctValue to wrongValue.
+    // So if we had 82 GREMAX tires, they all became REMAX. But there were also
+    // legitimate REMAX tires. We can't distinguish them now.
+    //
+    // However, the merge logic kept the MORE COMMON name and renamed the LESS
+    // common one into it. "GREMAX" → "REMAX" means REMAX had more tires.
+    // Wait — actually it's the other way: the variant (less common) gets renamed
+    // to the canonical (more common). Looking at the output:
+    //   "GREMAX" → "REMAX" means REMAX had ≥ GREMAX count.
+    //   "AFECESS" → "SAFECESS" means SAFECESS had ≥ AFECESS count.
+    //
+    // So GREMAX tires were renamed to REMAX. We know exactly how many: 82.
+    // And AFECESS tires were renamed to SAFECESS: 23.
+    //
+    // We can't distinguish which current "REMAX" tires were originally GREMAX
+    // without a pre-merge snapshot. Best we can do: report the issue.
+
+    console.log(`  WARNING: "${r.correctValue}" was incorrectly merged into "${r.wrongValue}"`);
+    console.log(`    ${r.context}`);
+    console.log(`    To fix: manually identify which "${r.wrongValue}" tires should be "${r.correctValue}"`);
+    console.log(`    Or run: UPDATE tires SET marca='${r.correctValue}' WHERE marca='${r.wrongValue}' AND <your filter>;`);
+    console.log();
+  }
+}
+
 async function phase1_normalizeStrings() {
   console.log('\n══════════════════════════════════════════════════════════════');
   console.log('  PHASE 1: String Normalization');
@@ -271,11 +316,11 @@ async function phase1_normalizeStrings() {
         const a = disenos[i];
         const b = disenos[j];
 
-        // Check if they're the same when stripped of spaces/hyphens
-        const match = stripped(a) === stripped(b) || similarity(a, b) >= 0.85;
-
-        if (match) {
-          // Keep the one with more tires; break ties by preferring the one with spaces
+        // Only auto-merge when stripped forms are identical (spaces/hyphens
+        // are the only difference). e.g. "KMAX D" and "KMAXD" → same tire.
+        // Similarity-based matches are too dangerous — GREMAX ≠ REMAX,
+        // AFECESS ≠ SAFECESS — so those go to the Phase 4 review list only.
+        if (stripped(a) === stripped(b)) {
           const aCount = disenoMap.get(a)!.length;
           const bCount = disenoMap.get(b)!.length;
           const [canonical, variant] = aCount >= bCount ? [a, b] : [b, a];
@@ -328,7 +373,9 @@ async function phase1_normalizeStrings() {
       if (marcaMerged.has(marcas[j])) continue;
       const a = marcas[i];
       const b = marcas[j];
-      if (stripped(a) === stripped(b) || similarity(a, b) >= 0.85) {
+      // Only auto-merge when stripped forms are identical.
+      // Similarity-based matches go to Phase 4 review list.
+      if (stripped(a) === stripped(b)) {
         const aCount = marcaCounts.get(a)!.length;
         const bCount = marcaCounts.get(b)!.length;
         const [canonical, variant] = aCount >= bCount ? [a, b] : [b, a];
@@ -770,6 +817,7 @@ async function main() {
   console.log(`  Date: ${new Date().toISOString()}`);
   console.log('═══════════════════════════════════════════════════════════════');
 
+  await phase0_revertBadMerges();
   await phase1_normalizeStrings();
   await phase2_structuralFixes();
   await phase3_anomalyDetectionAndRepair();
