@@ -160,7 +160,7 @@ export class AnaService {
     let parsed: { text?: unknown; blocks?: unknown; suggestions?: unknown } =
       {};
     try {
-      parsed = JSON.parse(stripCodeFence(raw));
+      parsed = JSON.parse(extractJson(raw));
     } catch {
       parsed = { text: raw || 'Entendido.' };
     }
@@ -567,15 +567,21 @@ export class AnaService {
    HELPERS — JSON normalization (same logic as the old route.ts)
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function stripCodeFence(s: string): string {
-  const trimmed = s.trim();
-  if (trimmed.startsWith('```')) {
-    return trimmed
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/```\s*$/, '')
-      .trim();
+function extractJson(s: string): string {
+  let t = s.trim();
+  // Strip markdown code fences
+  if (t.startsWith('```')) {
+    t = t.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
   }
-  return trimmed;
+  // If it starts with {, use as-is
+  if (t.startsWith('{')) return t;
+  // Model wrapped JSON in explanatory text — extract the JSON object
+  const first = t.indexOf('{');
+  const last = t.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    return t.slice(first, last + 1);
+  }
+  return t;
 }
 
 const ALLOWED_KINDS = new Set([
@@ -611,6 +617,13 @@ function coerceBlock(
     if (!Array.isArray(out.items) || (out.items as unknown[]).length === 0)
       return null;
   } else if (kind === 'table') {
+    // Model sometimes sends columns as `data` with {label,value} pairs
+    if (!Array.isArray(out.columns) && Array.isArray(out.data)) {
+      const d = out.data as { label?: string }[];
+      if (d.length > 0 && typeof d[0]?.label === 'string') {
+        out.columns = d.map((item) => String(item.label || ''));
+      }
+    }
     if (!Array.isArray(out.columns) || !Array.isArray(out.rows)) return null;
   } else if (kind === 'gauge') {
     const v = out.value;
