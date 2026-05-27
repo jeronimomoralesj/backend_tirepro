@@ -72,6 +72,34 @@ export class AnaController {
           return a.result;
         });
         reply.text = summaries.join('\n\n') + '\n\n¿Puedo ayudarte con algo más?';
+
+        for (const a of actions) {
+          if (a.action === 'calendar_query' && a.data) {
+            const d = a.data as { events: Array<{ summary: string; start: string; end: string }>; label: string; date: string };
+            reply.blocks = [
+              ...(reply.blocks ?? []),
+              { kind: 'calendar', title: `Eventos ${d.label}`, date: d.date, events: d.events },
+            ];
+          }
+          if (a.action === 'calendar_event_created') {
+            reply.blocks = [
+              ...(reply.blocks ?? []),
+              { kind: 'callout', tone: 'good', title: 'Evento creado', text: a.result },
+            ];
+          }
+          if (a.action === 'calendar_conflict') {
+            reply.blocks = [
+              ...(reply.blocks ?? []),
+              { kind: 'callout', tone: 'warn', title: 'Conflicto de horario', text: a.result },
+            ];
+          }
+          if (a.action === 'flow_created') {
+            reply.blocks = [
+              ...(reply.blocks ?? []),
+              { kind: 'callout', tone: 'good', title: 'Flujo creado', text: `${a.result} — visible en la página de Agentes.` },
+            ];
+          }
+        }
       }
 
       return { ...reply, ...(actions.length > 0 && { executedActions: actions }) };
@@ -141,9 +169,9 @@ export class AnaController {
     companyId: string,
     userId: string,
     role: string,
-  ): Promise<Array<{ action: string; result: string }>> {
+  ): Promise<Array<{ action: string; result: string; data?: unknown }>> {
     if (role !== 'admin') return [];
-    const actions: Array<{ action: string; result: string }> = [];
+    const actions: Array<{ action: string; result: string; data?: unknown }> = [];
 
     if (this.isCalendarQueryIntent(userMessage)) {
       const conn = await this.prisma.integrationConnection.findFirst({
@@ -156,13 +184,9 @@ export class AnaController {
           const { start, end, label } = this.parseCalendarQueryRange(userMessage);
           const events = await this.calendarSvc.listEvents(companyId, start, end);
           if (events.length === 0) {
-            actions.push({ action: 'calendar_query', result: `No tienes eventos ${label}.` });
+            actions.push({ action: 'calendar_query', result: `No tienes eventos ${label}.`, data: { events: [], label, date: start.toISOString() } });
           } else {
-            const list = events.map(e => {
-              const s = new Date(e.start).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-              return `• ${s} — ${e.summary}`;
-            }).join('\n');
-            actions.push({ action: 'calendar_query', result: `Tus eventos ${label}:\n${list}` });
+            actions.push({ action: 'calendar_query', result: `Tus eventos ${label}`, data: { events, label, date: start.toISOString() } });
           }
         } catch (err: any) {
           this.log.warn(`Ana calendar query failed: ${err.message}`);
