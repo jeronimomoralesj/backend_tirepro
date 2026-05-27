@@ -93,9 +93,10 @@ export class ActionExecutorService {
           const description = customDesc
             ?? `Generado por Agentes TirePro.\n${vars.tireMarca ? `Llanta: ${vars.tireMarca} ${vars.tireDiseno ?? ''} — ${vars.tireDepth ?? '?'}mm\nVehiculo: ${vars.vehiclePlaca ?? 'N/A'}\nPosicion: ${vars.position ?? 'N/A'}` : ''}`;
           const delayDays = typeof calConfig.delayDays === 'number' ? calConfig.delayDays : 0;
+          const startHour = typeof calConfig.startHour === 'number' ? calConfig.startHour : 9;
           const startTime = new Date();
           startTime.setDate(startTime.getDate() + (delayDays > 0 ? delayDays : 1));
-          startTime.setHours(9, 0, 0, 0);
+          startTime.setHours(startHour, 0, 0, 0);
           const eventId = await this.googleCalendar.createEvent(ctx.companyId, {
             summary: title,
             description,

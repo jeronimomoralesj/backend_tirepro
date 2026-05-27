@@ -39,10 +39,10 @@ TIPOS DE ACCIÓN disponibles:
    actionConfig: { "to": "<número con código de país, ej: +57...>" }
 
 3. "create_calendar_event" — Crea un evento en Google Calendar.
-   actionConfig: { "summary": "<título>", "description": "<descripción del evento>", "durationMinutes": <número>, "delayDays": <número de días después del trigger para programar el evento, default 0 = mismo día> }
-   - Si el usuario dice "para el siguiente día" o "al día siguiente", usa delayDays: 1.
-   - Si dice "en 3 días", usa delayDays: 3. Si no menciona cuándo, usa delayDays: 0.
-   - En "description", incluye las variables de plantilla relevantes para dar contexto. Ejemplo: "Llanta {{tireMarca}} {{tireDiseno}} en vehículo {{vehiclePlaca}} — profundidad: {{tireDepth}}mm"
+   actionConfig: { "summary": "<título>", "description": "<descripción>", "durationMinutes": <número>, "delayDays": <días después del trigger, default 0>, "startHour": <hora del día 0-23, default 9> }
+   - "para el siguiente día" → delayDays: 1. "en 3 días" → delayDays: 3. Sin mención → delayDays: 0.
+   - "a las 7am" → startHour: 7. "a las 2pm" → startHour: 14. Sin mención → startHour: 9.
+   - En "description", incluye variables de plantilla: "Llanta {{tireMarca}} {{tireDiseno}} en vehículo {{vehiclePlaca}} — profundidad: {{tireDepth}}mm"
 
 4. "make_phone_call" — Realiza una llamada telefónica.
    actionConfig: { "to": "<número>", "message": "<mensaje de voz>" }
@@ -64,11 +64,19 @@ REGLAS:
   "actionConfig": { ... },
   "explanation": "<explicación breve en español de lo que hace el flujo>"
 }
-- Si la solicitud NO es posible (pide algo que no existe en los triggers/acciones, o es ambigua/sin sentido, o pide algo fuera del alcance como "comprar llantas", "modificar datos", "enviar SMS", "conectar con SAP", etc.), responde con:
+- Si la solicitud NO es posible (pide algo que no existe en los triggers/acciones, o es ambigua/sin sentido, o pide algo fuera del alcance como "comprar llantas", "modificar datos", "enviar SMS", "conectar con SAP", "llanta sin inspección por X días", "si el conductor no reporta", etc.), responde con:
 {
   "impossible": true,
   "reason": "<explicación clara y amigable en español de POR QUÉ no es posible y QUÉ alternativas sí están disponibles>"
 }
+EJEMPLOS de triggers IMPOSIBLES: "cuando una llanta lleve X días sin inspección" (no existe ese trigger), "cuando el conductor no reporte" (no existe), "cuando baje la temperatura" (no existe), "cuando suba el precio" (no existe). Solo existen los 5 triggers listados arriba.
+
+- Si la solicitud es AMBIGUA o necesitas más detalles para generar un buen flujo, responde con:
+{
+  "clarification": true,
+  "question": "<pregunta específica en español para aclarar lo que necesitas>"
+}
+Ejemplo: si el usuario dice "alerta cuando haya un problema", pregunta qué tipo de problema (profundidad baja, alerta crítica, fin de vida, etc.).
 - Elige el trigger y acción que mejor se ajusten a la descripción del usuario.
 - Si la descripción no menciona un destinatario específico, usa placeholders descriptivos como "jefe@empresa.com" o "+573001234567".
 - Si mencionan "cambio inmediato", usa trigger "tire_alert_level" con alertLevels ["inmediato"].
@@ -91,6 +99,8 @@ export interface AiFlowSuggestion {
   explanation: string;
   impossible?: boolean;
   reason?: string;
+  clarification?: boolean;
+  question?: string;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -147,7 +157,7 @@ export class AiFlowBuilderService {
     }
 
     const parsed = this.parseResponse(raw);
-    if (parsed.impossible) return parsed;
+    if (parsed.impossible || parsed.clarification) return parsed;
     this.validate(parsed);
     return parsed;
   }
@@ -169,12 +179,15 @@ export class AiFlowBuilderService {
       return {
         impossible: true,
         reason: typeof obj.reason === 'string' ? obj.reason : 'Esta automatizacion no es posible con las opciones disponibles.',
-        name: '',
-        triggerType: '',
-        triggerConfig: {},
-        actionType: '',
-        actionConfig: {},
-        explanation: '',
+        name: '', triggerType: '', triggerConfig: {}, actionType: '', actionConfig: {}, explanation: '',
+      };
+    }
+
+    if (obj.clarification) {
+      return {
+        clarification: true,
+        question: typeof obj.question === 'string' ? obj.question : 'Necesito mas detalles para crear este flujo.',
+        name: '', triggerType: '', triggerConfig: {}, actionType: '', actionConfig: {}, explanation: '',
       };
     }
 
