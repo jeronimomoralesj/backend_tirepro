@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
+import { GoogleCalendarService } from '../integrations/google-calendar/google-calendar.service';
 import { AutomationFlow, ActionType, FlowStatus, Prisma } from '@prisma/client';
 
 export interface ActionContext {
@@ -18,6 +19,7 @@ export class ActionExecutorService {
     private readonly prisma: PrismaService,
     private readonly emailService: EmailService,
     private readonly whatsappService: WhatsappService,
+    @Optional() private readonly googleCalendar?: GoogleCalendarService,
   ) {}
 
   async execute(flow: AutomationFlow, ctx: ActionContext): Promise<void> {
@@ -78,11 +80,21 @@ export class ActionExecutorService {
           break;
         }
 
-        case ActionType.create_calendar_event:
+        case ActionType.create_calendar_event: {
+          if (!this.googleCalendar) throw new Error('Google Calendar not configured');
+          const calConfig = flow.actionConfig as Record<string, unknown>;
+          const title = this.interpolate((calConfig.title as string) ?? 'Cita TirePro — {{vehiclePlaca}}', vars);
+          const eventId = await this.googleCalendar.createEvent(ctx.companyId, {
+            summary: title,
+            description: `Generado por Agentes TirePro.\n${vars.tireMarca ? `Llanta: ${vars.tireMarca} ${vars.tireDiseno ?? ''} — ${vars.tireDepth ?? '?'}mm` : ''}`,
+            durationMinutes: (calConfig.durationMinutes as number) ?? 60,
+          });
+          output = { eventId };
+          break;
+        }
+
         case ActionType.make_phone_call:
-          this.logger.warn(
-            `Action type ${flow.actionType} not yet implemented`,
-          );
+          this.logger.warn('Phone calls not yet implemented (Phase 4)');
           output = { skipped: true, reason: 'not_implemented' };
           break;
       }

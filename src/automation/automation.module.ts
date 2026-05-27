@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailModule } from '../email/email.module';
+import { GoogleCalendarModule } from '../integrations/google-calendar/google-calendar.module';
 import { AutomationController } from './automation.controller';
 import { AutomationService } from './automation.service';
 import { AiFlowBuilderService } from './ai-flow-builder.service';
@@ -9,7 +10,7 @@ import { TriggerEvaluatorService } from './trigger-evaluator.service';
 import { ActionExecutorService } from './action-executor.service';
 
 @Module({
-  imports: [EmailModule],
+  imports: [EmailModule, GoogleCalendarModule],
   controllers: [AutomationController],
   providers: [
     PrismaService,
