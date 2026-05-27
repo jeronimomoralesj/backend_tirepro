@@ -21,7 +21,7 @@ import { AiFlowBuilderService } from './ai-flow-builder.service';
 import { CreateFlowDto } from './dto/create-flow.dto';
 import { UpdateFlowDto } from './dto/update-flow.dto';
 
-type AuthReq = { user?: { sub?: string; companyId?: string; role?: string } };
+type AuthReq = { user?: { userId?: string; companyId?: string; role?: string } };
 
 @Controller('automation')
 @UseGuards(JwtAuthGuard)
@@ -32,12 +32,12 @@ export class AutomationController {
     private readonly aiFlowBuilder: AiFlowBuilderService,
   ) {}
 
-  private extractCompany(req: AuthReq): { companyId: string; userId: string } {
+  private extractCompany(req: AuthReq, requireAdmin = true): { companyId: string; userId: string } {
     const companyId = req.user?.companyId;
-    const userId = req.user?.sub;
-    if (!companyId || !userId) throw new BadRequestException('No company');
-    if (req.user?.role !== 'admin') throw new BadRequestException('Admin only');
-    return { companyId, userId };
+    const userId = req.user?.userId;
+    if (!companyId) throw new BadRequestException('No company');
+    if (requireAdmin && req.user?.role !== 'admin') throw new BadRequestException('Admin only');
+    return { companyId, userId: userId ?? '' };
   }
 
   @Post('ai-builder')

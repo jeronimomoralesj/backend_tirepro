@@ -37,7 +37,7 @@ export class AnaController {
   @HttpCode(HttpStatus.OK)
   @SkipThrottle()
   async chat(
-    @Req() req: { user?: { companyId?: string; sub?: string; role?: string } },
+    @Req() req: { user?: { companyId?: string; userId?: string; role?: string } },
     @Body() dto: AnaMessageDto,
   ) {
     const companyId = req.user?.companyId;
@@ -57,7 +57,7 @@ export class AnaController {
         dto.message,
         reply.text,
         companyId,
-        req.user?.sub ?? '',
+        req.user?.userId ?? '',
         req.user?.role ?? '',
       );
 
