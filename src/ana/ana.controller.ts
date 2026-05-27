@@ -334,12 +334,10 @@ export class AnaController {
 
     if (this.isCalendarIntent(userMessage)) {
       if (!this.hasDateOrTimeHint(userMessage)) {
-        if (/procesando/i.test(_anaReply)) {
-          actions.push({
-            action: 'calendar_needs_info',
-            result: '¡Claro! Para crear el evento necesito algunos datos:\n\n1. **¿Qué día?** (ej: mañana, el viernes, 2 de junio)\n2. **¿A qué hora?** (ej: 10am, 3pm)\n3. **¿Cuánto dura?** (por defecto 1 hora)\n4. **¿Algún detalle adicional?** — ubicación, enlace de reunión, personas a invitar\n\nDime y lo agendo por ti.',
-          });
-        }
+        actions.push({
+          action: 'calendar_needs_info',
+          result: '¡Claro! Para crear el evento necesito algunos datos:\n\n1. **¿Qué día?** (ej: mañana, el viernes, 2 de junio)\n2. **¿A qué hora?** (ej: 10am, 3pm)\n3. **¿Cuánto dura?** (por defecto 1 hora)\n4. **¿Algún detalle adicional?** — ubicación, enlace de reunión, personas a invitar\n\nDime y lo agendo por ti.',
+        });
       } else {
         const conn = await this.prisma.integrationConnection.findFirst({
           where: { companyId, type: 'google_calendar', isActive: true },
