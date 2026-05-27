@@ -208,7 +208,7 @@ export class AnaService {
      FLEET DATASET BUILDER — queries DB and returns compact text for prompt
      ═══════════════════════════════════════════════════════════════════════ */
 
-  private async getFleetDataset(companyId: string): Promise<string> {
+  async getFleetDataset(companyId: string): Promise<string> {
     const cacheKey = `ana:dataset:${companyId}`;
     const cached = await this.cache.get<string>(cacheKey);
     if (cached) return cached;

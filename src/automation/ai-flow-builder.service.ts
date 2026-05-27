@@ -170,38 +170,40 @@ export class AiFlowBuilderService {
     return parsed;
   }
 
-  async buildReportBlocks(description: string, currentBlocks?: unknown[]): Promise<Record<string, unknown>> {
-    const prompt = `Eres un asistente que genera secciones de reportes de email para una plataforma de gestion de llantas (TirePro).
+  async buildReportBlocks(description: string, fleetData: string, currentBlocks?: unknown[]): Promise<Record<string, unknown>> {
+    const prompt = `Eres un asistente que genera secciones de reportes de email para TirePro (gestion de llantas).
 
-El usuario describe que quiere ver en un reporte por email. Tu generas una lista de "blocks" que representan secciones del reporte.
+El usuario describe que quiere ver en un reporte. Tu generas blocks con DATOS REALES de la flota.
 
-TIPOS DE BLOCKS disponibles:
-- {"kind":"table","title":"<titulo>","description":"<que datos incluir, ej: columnas Vehiculo, Marca, Profundidad, Alerta>"}
-- {"kind":"kpis","title":"<titulo>","description":"<que metricas mostrar, ej: Total llantas, CPK promedio, Llantas criticas>"}
-- {"kind":"bar","title":"<titulo>","description":"<que comparar, ej: CPK por marca, Llantas por eje>"}
-- {"kind":"pie","title":"<titulo>","description":"<que distribucion mostrar, ej: Alertas por nivel, Llantas por vida>"}
-- {"kind":"line","title":"<titulo>","description":"<que tendencia, ej: CPK ultimos 6 meses>"}
-- {"kind":"gauge","title":"<titulo>","description":"<que indicador, ej: Salud general de flota>"}
-- {"kind":"callout","title":"<titulo>","description":"<que alerta o mensaje destacado>"}
+DATOS DE LA FLOTA DEL USUARIO:
+${fleetData}
 
-CONTEXTO TECNICO:
-- CPK = costo por kilometro. Menor = mejor.
-- Alertas: critical (cambio inmediato, <=2mm), warning (30 dias, 2-4mm), watch (60 dias, 4-6mm), ok (>6mm)
-- Ejes: direccion, traccion, libre, remolque
-- Vidas: nueva, reencauche1/2/3
+TIPOS DE BLOCKS (usa la estructura EXACTA):
+- {"kind":"kpis","title":"...","items":[{"label":"Total","value":"245","hint":"+3%","tone":"good"}]}
+- {"kind":"bar","title":"...","unit":"$/km","data":[{"label":"Michelin","value":42}]}
+- {"kind":"pie","title":"...","data":[{"label":"Criticas","value":5}]}
+- {"kind":"table","title":"...","columns":["Vehiculo","Marca","Profundidad"],"rows":[["ABC-123","Continental","2.1mm"]]}
+- {"kind":"gauge","title":"...","value":78,"label":"4 criticas"}
+- {"kind":"callout","tone":"warn","title":"...","text":"3 llantas requieren cambio."}
+- {"kind":"line","title":"...","unit":"$/km","data":[{"label":"Ene","value":45}]}
 
 REGLAS:
-- Responde SOLO JSON: {"blocks":[...],"subject":"<asunto sugerido para el email>"}
-- Cada block debe tener kind, title, description
-- Si la solicitud no tiene sentido o pide algo imposible, responde: {"impossible":true,"reason":"<explicacion>"}
-- ${currentBlocks ? `BLOQUES ACTUALES (agrega los nuevos sin eliminar estos a menos que el usuario lo pida):\n${JSON.stringify(currentBlocks)}` : 'No hay bloques actuales.'}
+- USA DATOS REALES de DATOS DE LA FLOTA. Nunca inventes numeros.
+- kpis: items con label, value (string), hint opcional, tone (good/warn/bad/info)
+- table: columns (string[]) y rows (string[][]) con datos reales de la flota
+- bar/pie/line: data con label y value (number) de datos reales
+- gauge: value 0-100
+- callout: tone (good/warn/bad/info) y text
+- Responde SOLO JSON: {"blocks":[...],"subject":"<asunto sugerido>"}
+- Si la solicitud no tiene sentido: {"impossible":true,"reason":"<explicacion>"}
+- ${currentBlocks ? `BLOQUES ACTUALES (agrega nuevos sin eliminar estos):\n${JSON.stringify(currentBlocks)}` : ''}
 - IMPORTANTE: responde SOLO el JSON.`;
 
     const command = new ConverseCommand({
       modelId: MODEL_ID,
       system: [{ text: prompt }],
       messages: [{ role: 'user', content: [{ text: description }] }],
-      inferenceConfig: { temperature: 0.3, maxTokens: 1000 },
+      inferenceConfig: { temperature: 0.3, maxTokens: 2000 },
     });
 
     let raw: string;

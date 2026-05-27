@@ -18,6 +18,7 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AutomationService } from './automation.service';
 import { AiFlowBuilderService } from './ai-flow-builder.service';
+import { AnaService } from '../ana/ana.service';
 import { CreateFlowDto } from './dto/create-flow.dto';
 import { UpdateFlowDto } from './dto/update-flow.dto';
 
@@ -30,6 +31,7 @@ export class AutomationController {
   constructor(
     private readonly svc: AutomationService,
     private readonly aiFlowBuilder: AiFlowBuilderService,
+    private readonly anaSvc: AnaService,
   ) {}
 
   private extractCompany(req: AuthReq, requireAdmin = true): { companyId: string; userId: string } {
@@ -60,12 +62,13 @@ export class AutomationController {
     @Req() req: AuthReq,
     @Body() body: { description?: string; currentBlocks?: unknown[] },
   ) {
-    this.extractCompany(req);
+    const { companyId } = this.extractCompany(req);
     const description = body?.description;
     if (!description || typeof description !== 'string' || !description.trim()) {
       throw new BadRequestException('Se requiere una descripcion del reporte');
     }
-    return this.aiFlowBuilder.buildReportBlocks(description.trim(), body.currentBlocks);
+    const fleetData = await this.anaSvc.getFleetDataset(companyId);
+    return this.aiFlowBuilder.buildReportBlocks(description.trim(), fleetData, body.currentBlocks);
   }
 
   @Get('flows')
