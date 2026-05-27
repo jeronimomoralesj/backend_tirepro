@@ -21,6 +21,6 @@ import { ActionExecutorService } from './action-executor.service';
     ActionExecutorService,
     { provide: 'FLOW_ENGINE', useExisting: FlowEngineService },
   ],
-  exports: [FlowEngineService, 'FLOW_ENGINE'],
+  exports: [FlowEngineService, AutomationService, 'FLOW_ENGINE'],
 })
 export class AutomationModule {}
