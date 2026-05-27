@@ -284,6 +284,131 @@ export function fmtCOP(n: number): string {
 // ESCAPING — keep injected user data from breaking the HTML.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DATA-VISUALIZATION HELPERS — email-safe charts using HTML tables + inline CSS
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function emailDataTable(opts: {
+  title?: string;
+  columns: string[];
+  rows: string[][];
+  highlightCol?: number;
+}): string {
+  const header = opts.columns
+    .map(
+      (c) =>
+        `<th style="padding:8px 10px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.8px;color:${BRAND.muted};background:#F9FAFB;border-bottom:2px solid ${BRAND.hairline};text-align:left;">${escapeHtml(c)}</th>`,
+    )
+    .join('');
+  const body = opts.rows
+    .map(
+      (row, ri) =>
+        `<tr>${row
+          .map(
+            (cell, ci) =>
+              `<td style="padding:7px 10px;font-size:13px;color:${ci === opts.highlightCol ? BRAND.navy : BRAND.text};font-weight:${ci === opts.highlightCol ? '700' : '400'};border-bottom:1px solid ${BRAND.hairline};${ri % 2 === 1 ? 'background:#FAFBFC;' : ''}">${escapeHtml(cell)}</td>`,
+          )
+          .join('')}</tr>`,
+    )
+    .join('');
+  return `${opts.title ? `<p style="margin:0 0 8px;font-size:13px;font-weight:800;color:${BRAND.navy};">${escapeHtml(opts.title)}</p>` : ''}
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px;border-radius:8px;overflow:hidden;border:1px solid ${BRAND.hairline};">
+      <tr>${header}</tr>${body}
+    </table>`;
+}
+
+export function emailBarChart(opts: {
+  title?: string;
+  unit?: string;
+  data: { label: string; value: number; color?: string }[];
+}): string {
+  const maxVal = Math.max(...opts.data.map((d) => d.value), 1);
+  const palette = ['#1E76B6', '#0A183A', '#10b981', '#f59e0b', '#ef4444', '#0ea5e9', '#8b5cf6', '#14b8a6'];
+  const bars = opts.data
+    .map(
+      (d, i) => {
+        const pct = Math.round((d.value / maxVal) * 100);
+        const color = d.color || palette[i % palette.length];
+        return `<tr>
+          <td style="padding:4px 0;font-size:12px;color:${BRAND.text};width:30%;white-space:nowrap;">${escapeHtml(d.label)}</td>
+          <td style="padding:4px 8px;width:55%;">
+            <div style="background:#F3F4F6;border-radius:4px;height:18px;width:100%;">
+              <div style="background:${color};border-radius:4px;height:18px;width:${pct}%;min-width:${pct > 0 ? '4px' : '0'};"></div>
+            </div>
+          </td>
+          <td style="padding:4px 0;font-size:12px;font-weight:700;color:${BRAND.navy};text-align:right;white-space:nowrap;">${d.value}${opts.unit ? ' ' + escapeHtml(opts.unit) : ''}</td>
+        </tr>`;
+      },
+    )
+    .join('');
+  return `${opts.title ? `<p style="margin:0 0 8px;font-size:13px;font-weight:800;color:${BRAND.navy};">${escapeHtml(opts.title)}</p>` : ''}
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px;">${bars}</table>`;
+}
+
+export function emailPieList(opts: {
+  title?: string;
+  data: { label: string; value: number; color?: string }[];
+}): string {
+  const total = opts.data.reduce((s, d) => s + d.value, 0) || 1;
+  const palette = ['#1E76B6', '#0A183A', '#10b981', '#f59e0b', '#ef4444', '#0ea5e9', '#8b5cf6', '#14b8a6'];
+  const rows = opts.data
+    .map(
+      (d, i) => {
+        const pct = Math.round((d.value / total) * 100);
+        const color = d.color || palette[i % palette.length];
+        return `<tr>
+          <td style="padding:5px 0;width:16px;"><div style="width:12px;height:12px;border-radius:3px;background:${color};"></div></td>
+          <td style="padding:5px 8px;font-size:13px;color:${BRAND.text};">${escapeHtml(d.label)}</td>
+          <td style="padding:5px 0;font-size:13px;font-weight:700;color:${BRAND.navy};text-align:right;">${d.value}</td>
+          <td style="padding:5px 0 5px 6px;font-size:12px;color:${BRAND.muted};text-align:right;width:40px;">${pct}%</td>
+        </tr>`;
+      },
+    )
+    .join('');
+  return `${opts.title ? `<p style="margin:0 0 8px;font-size:13px;font-weight:800;color:${BRAND.navy};">${escapeHtml(opts.title)}</p>` : ''}
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px;">${rows}</table>`;
+}
+
+export function emailGauge(opts: {
+  label: string;
+  value: number;
+  max?: number;
+  unit?: string;
+}): string {
+  const max = opts.max ?? 100;
+  const pct = Math.max(0, Math.min(100, Math.round((opts.value / max) * 100)));
+  const color = pct >= 80 ? '#10b981' : pct >= 50 ? '#f59e0b' : '#ef4444';
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 12px;">
+    <tr>
+      <td style="padding:0 12px 0 0;">
+        <div style="width:56px;height:56px;border-radius:50%;border:5px solid #F3F4F6;position:relative;text-align:center;line-height:46px;">
+          <div style="position:absolute;top:0;left:0;width:56px;height:56px;border-radius:50%;border:5px solid ${color};border-color:${color} ${pct >= 75 ? color : '#F3F4F6'} ${pct >= 50 ? color : '#F3F4F6'} ${pct >= 25 ? color : '#F3F4F6'};"></div>
+          <span style="font-size:16px;font-weight:800;color:${BRAND.navy};position:relative;">${pct}%</span>
+        </div>
+      </td>
+      <td style="padding:0;">
+        <p style="margin:0;font-size:13px;font-weight:700;color:${BRAND.navy};">${escapeHtml(opts.label)}</p>
+        ${opts.unit ? `<p style="margin:2px 0 0;font-size:11px;color:${BRAND.muted};">${escapeHtml(opts.unit)}</p>` : ''}
+      </td>
+    </tr></table>`;
+}
+
+export function emailMetricRow(metrics: { label: string; value: string; tone?: 'good' | 'warn' | 'bad' | 'neutral' }[]): string {
+  const toneColors = { good: '#10b981', warn: '#f59e0b', bad: '#ef4444', neutral: BRAND.navy };
+  const cols = metrics
+    .map(
+      (m) => {
+        const color = m.tone ? toneColors[m.tone] : BRAND.navy;
+        return `<td style="padding:12px;text-align:center;background:#FAFBFC;border-radius:8px;">
+          <p style="margin:0;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:${BRAND.muted};">${escapeHtml(m.label)}</p>
+          <p style="margin:4px 0 0;font-size:20px;font-weight:800;color:${color};">${escapeHtml(m.value)}</p>
+        </td>`;
+      },
+    )
+    .join(`<td style="width:8px;"></td>`);
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px;"><tr>${cols}</tr></table>`;
+}
+
 function escapeHtml(s: string | null | undefined): string {
   if (s == null) return '';
   return String(s)

@@ -4,7 +4,11 @@ import { EmailService } from '../email/email.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { GoogleCalendarService } from '../integrations/google-calendar/google-calendar.service';
 import { AutomationFlow, ActionType, FlowStatus, Prisma } from '@prisma/client';
-import { wrapEmail, emailText, emailKvList, emailButton, emailCallout } from '../email/email-templates';
+import {
+  wrapEmail, emailText, emailKvList, emailButton, emailCallout,
+  emailDataTable, emailBarChart, emailPieList, emailGauge, emailMetricRow,
+  emailDivider, emailLabel,
+} from '../email/email-templates';
 
 export interface ActionContext {
   tireId?: string;
@@ -44,9 +48,15 @@ export class ActionExecutorService {
           );
           const customBody = config.body as string | undefined;
           const reportBlocks = config.reportBlocks as unknown[] | undefined;
-          const body = customBody || reportBlocks
-            ? this.buildCustomEmailBody(customBody ?? '', vars, reportBlocks)
-            : this.buildEmailBody(vars);
+          const isScheduledReport = flow.triggerType === 'scheduled_cron' || !!reportBlocks?.length;
+          let body: string;
+          if (isScheduledReport) {
+            body = await this.buildFleetReportEmail(ctx.companyId, customBody ?? '', vars, reportBlocks);
+          } else if (customBody) {
+            body = this.buildCustomEmailBody(customBody, vars);
+          } else {
+            body = this.buildEmailBody(vars);
+          }
           for (const to of recipients.length ? recipients : [rawTo]) {
             await this.emailService.sendEmail(to, subject, body);
           }
@@ -282,7 +292,7 @@ export class ActionExecutorService {
     });
   }
 
-  private buildCustomEmailBody(customBody: string, vars: Record<string, string>, reportBlocks?: unknown[]): string {
+  private buildCustomEmailBody(customBody: string, vars: Record<string, string>): string {
     const interpolated = customBody ? this.interpolate(customBody, vars) : '';
     const paragraphs = interpolated.split('\n').filter(l => l.trim());
 
@@ -290,19 +300,6 @@ export class ActionExecutorService {
 
     if (paragraphs.length > 0) {
       bodyParts.push(...paragraphs.map(p => emailText(p)));
-    }
-
-    if (reportBlocks && Array.isArray(reportBlocks) && reportBlocks.length > 0) {
-      for (const block of reportBlocks) {
-        const b = block as { kind?: string; title?: string; description?: string };
-        if (!b.kind) continue;
-        const desc = b.description ?? '';
-        bodyParts.push(emailCallout({
-          tone: b.kind === 'callout' ? 'warning' : 'info',
-          title: b.title ?? b.kind,
-          body: emailText(desc + (desc ? ' — ' : '') + 'Los datos se generan al momento del envio con la informacion actual de la flota.'),
-        }));
-      }
     }
 
     if (bodyParts.length === 0) {
@@ -319,8 +316,185 @@ export class ActionExecutorService {
     return wrapEmail({
       preheader: paragraphs[0]?.slice(0, 100) ?? 'Reporte de TirePro',
       accent: 'brand',
-      title: reportBlocks?.length ? 'Reporte de flota' : 'Notificacion de flota',
+      title: 'Notificacion de flota',
       eyebrow: 'Agentes TirePro',
+      body: bodyParts.join(''),
+    });
+  }
+
+  private async buildFleetReportEmail(
+    companyId: string,
+    customBody: string,
+    vars: Record<string, string>,
+    reportBlocks?: unknown[],
+  ): Promise<string> {
+    const tires = await this.prisma.tire.findMany({
+      where: { companyId },
+      select: {
+        marca: true,
+        diseno: true,
+        eje: true,
+        vidaActual: true,
+        currentProfundidad: true,
+        currentCpk: true,
+        lifetimeCpk: true,
+        healthScore: true,
+        alertLevel: true,
+        kilometrosRecorridos: true,
+        posicion: true,
+        vehicle: { select: { placa: true, tipovhc: true } },
+        costos: { select: { valor: true } },
+      },
+    });
+
+    const bodyParts: string[] = [];
+
+    if (customBody) {
+      const interpolated = this.interpolate(customBody, vars);
+      const paragraphs = interpolated.split('\n').filter(l => l.trim());
+      bodyParts.push(...paragraphs.map(p => emailText(p)));
+    }
+
+    if (!tires.length) {
+      bodyParts.push(emailCallout({ tone: 'info', title: 'Sin datos', body: emailText('No hay llantas registradas en la flota.') }));
+      bodyParts.push(emailButton('Ver en TirePro', 'https://tirepro.com.co/dashboard/resumen'));
+      return wrapEmail({ preheader: 'Reporte de flota', accent: 'brand', title: 'Reporte de flota', eyebrow: 'Agentes TirePro', body: bodyParts.join('') });
+    }
+
+    const fc = (n: number) => n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(0)}K` : `$${n.toFixed(0)}`;
+    const alertInm = tires.filter(t => t.currentProfundidad != null && t.currentProfundidad <= 2).length;
+    const alert30 = tires.filter(t => t.currentProfundidad != null && t.currentProfundidad > 2 && t.currentProfundidad <= 4).length;
+    const alert60 = tires.filter(t => t.currentProfundidad != null && t.currentProfundidad > 4 && t.currentProfundidad <= 6).length;
+    const alertOpt = tires.length - alertInm - alert30 - alert60;
+    const totalCost = tires.reduce((s, t) => s + t.costos.reduce((a, c) => a + (c.valor || 0), 0), 0);
+    const totalKm = tires.reduce((s, t) => s + (t.kilometrosRecorridos || 0), 0);
+    const profValues = tires.map(t => t.currentProfundidad).filter((p): p is number => p != null);
+    const healthValues = tires.map(t => t.healthScore).filter((h): h is number => h != null);
+    const avgProf = profValues.length ? (profValues.reduce((a, b) => a + b, 0) / profValues.length) : 0;
+    const avgHealth = healthValues.length ? Math.round(healthValues.reduce((a, b) => a + b, 0) / healthValues.length) : 0;
+    const fleetCpk = totalKm > 0 && totalCost > 0 ? (totalCost / totalKm) : 0;
+
+    // -- KPI metrics row
+    const metrics: { label: string; value: string; tone?: 'good' | 'warn' | 'bad' | 'neutral' }[] = [
+      { label: 'Llantas', value: String(tires.length) },
+      { label: 'Salud', value: `${avgHealth}/100`, tone: avgHealth >= 70 ? 'good' : avgHealth >= 40 ? 'warn' : 'bad' },
+      { label: 'Prof. Prom.', value: `${avgProf.toFixed(1)}mm`, tone: avgProf >= 6 ? 'good' : avgProf >= 3 ? 'warn' : 'bad' },
+    ];
+    if (fleetCpk > 0) metrics.push({ label: 'CPK Flota', value: `$${fleetCpk.toFixed(1)}/km` });
+    bodyParts.push(emailMetricRow(metrics));
+
+    // -- Alert distribution (pie-style list)
+    if (alertInm > 0 || alert30 > 0) {
+      const alertData: { label: string; value: number; color: string }[] = [];
+      if (alertInm > 0) alertData.push({ label: 'Cambio inmediato', value: alertInm, color: '#ef4444' });
+      if (alert30 > 0) alertData.push({ label: 'Alerta 30 dias', value: alert30, color: '#f59e0b' });
+      if (alert60 > 0) alertData.push({ label: 'Alerta 60 dias', value: alert60, color: '#0ea5e9' });
+      alertData.push({ label: 'Optimo', value: alertOpt, color: '#10b981' });
+      bodyParts.push(emailPieList({ title: 'Distribucion de alertas', data: alertData }));
+    }
+
+    // -- Critical tires table
+    const criticals = tires
+      .filter(t => t.currentProfundidad != null && t.currentProfundidad <= 4)
+      .sort((a, b) => (a.currentProfundidad ?? 99) - (b.currentProfundidad ?? 99))
+      .slice(0, 15);
+    if (criticals.length > 0) {
+      bodyParts.push(emailCallout({
+        tone: alertInm > 0 ? 'danger' : 'warning',
+        title: `${alertInm + alert30} llantas requieren atencion`,
+        body: emailText(alertInm > 0 ? `${alertInm} necesitan cambio inmediato.` : `${alert30} en alerta a 30 dias.`),
+      }));
+      bodyParts.push(emailDataTable({
+        title: 'Llantas criticas',
+        columns: ['Vehiculo', 'Posicion', 'Prof.', 'Marca', 'Estado'],
+        rows: criticals.map(t => [
+          t.vehicle?.placa || 'N/A',
+          String(t.posicion || '-'),
+          `${t.currentProfundidad?.toFixed(1) ?? '?'}mm`,
+          `${t.marca} ${t.diseno || ''}`.trim(),
+          t.currentProfundidad != null && t.currentProfundidad <= 2 ? 'INMEDIATO' : '30 dias',
+        ]),
+        highlightCol: 2,
+      }));
+    }
+
+    // -- CPK by brand (bar chart)
+    const byBrand: Record<string, { n: number; cpkSum: number; cpkCount: number }> = {};
+    for (const t of tires) {
+      const b = t.marca || 'Otro';
+      if (!byBrand[b]) byBrand[b] = { n: 0, cpkSum: 0, cpkCount: 0 };
+      byBrand[b].n++;
+      const cpk = t.lifetimeCpk ?? t.currentCpk;
+      if (cpk != null && cpk > 0) { byBrand[b].cpkSum += cpk; byBrand[b].cpkCount++; }
+    }
+    const brandData = Object.entries(byBrand)
+      .filter(([, v]) => v.cpkCount > 0)
+      .sort((a, b) => a[1].cpkSum / a[1].cpkCount - b[1].cpkSum / b[1].cpkCount)
+      .slice(0, 8)
+      .map(([brand, v]) => ({ label: `${brand} (${v.n})`, value: Math.round(v.cpkSum / v.cpkCount) }));
+    if (brandData.length > 1) {
+      bodyParts.push(emailBarChart({ title: 'CPK por marca', unit: '$/km', data: brandData }));
+    }
+
+    // -- Tires by axle (pie list)
+    const byEje: Record<string, number> = {};
+    for (const t of tires) { byEje[t.eje || 'otro'] = (byEje[t.eje || 'otro'] || 0) + 1; }
+    if (Object.keys(byEje).length > 1) {
+      bodyParts.push(emailPieList({
+        title: 'Distribucion por eje',
+        data: Object.entries(byEje).sort((a, b) => b[1] - a[1]).map(([eje, n]) => ({ label: eje, value: n })),
+      }));
+    }
+
+    // -- Tires by vida (pie list)
+    const byVida: Record<string, number> = {};
+    for (const t of tires) { byVida[t.vidaActual || 'nueva'] = (byVida[t.vidaActual || 'nueva'] || 0) + 1; }
+    if (Object.keys(byVida).length > 1) {
+      bodyParts.push(emailPieList({
+        title: 'Distribucion por vida',
+        data: Object.entries(byVida).sort((a, b) => b[1] - a[1]).map(([vida, n]) => ({ label: vida, value: n })),
+      }));
+    }
+
+    // -- Vehicles with most critical tires
+    const vehCritMap: Record<string, { placa: string; tipo: string; crit: number; total: number }> = {};
+    for (const t of tires) {
+      if (!t.vehicle?.placa) continue;
+      const p = t.vehicle.placa;
+      if (!vehCritMap[p]) vehCritMap[p] = { placa: p, tipo: t.vehicle.tipovhc || '-', crit: 0, total: 0 };
+      vehCritMap[p].total++;
+      if (t.currentProfundidad != null && t.currentProfundidad <= 4) vehCritMap[p].crit++;
+    }
+    const topVeh = Object.values(vehCritMap).filter(v => v.crit > 0).sort((a, b) => b.crit - a.crit).slice(0, 8);
+    if (topVeh.length > 0) {
+      bodyParts.push(emailDataTable({
+        title: 'Vehiculos con llantas criticas',
+        columns: ['Placa', 'Tipo', 'Criticas', 'Total'],
+        rows: topVeh.map(v => [v.placa, v.tipo, String(v.crit), String(v.total)]),
+        highlightCol: 2,
+      }));
+    }
+
+    // -- Investment summary
+    if (totalCost > 0) {
+      bodyParts.push(emailKvList([
+        { label: 'Inversion total', value: fc(totalCost), bold: true },
+        { label: 'Km totales', value: totalKm >= 1e6 ? `${(totalKm / 1e6).toFixed(1)}M` : `${(totalKm / 1e3).toFixed(0)}K` },
+        { label: 'CPK promedio flota', value: fleetCpk > 0 ? `$${fleetCpk.toFixed(1)}/km` : 'N/A' },
+      ]));
+    }
+
+    bodyParts.push(emailDivider());
+    bodyParts.push(emailText(`Reporte generado el ${new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/Bogota' })}.`));
+    bodyParts.push(emailButton('Ver dashboard completo', 'https://tirepro.com.co/dashboard/resumen'));
+
+    const accent = alertInm > 0 ? 'danger' as const : alert30 > 0 ? 'warning' as const : 'brand' as const;
+    return wrapEmail({
+      preheader: `Flota: ${tires.length} llantas, ${alertInm + alert30} requieren atencion — ${vars.companyName ?? 'TirePro'}`,
+      accent,
+      title: 'Reporte de flota',
+      eyebrow: 'Agentes TirePro',
+      subtitle: vars.companyName ? `${vars.companyName} — ${new Date().toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' })}` : undefined,
       body: bodyParts.join(''),
     });
   }
