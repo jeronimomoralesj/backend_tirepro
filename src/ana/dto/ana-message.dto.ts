@@ -11,4 +11,8 @@ export class AnaMessageDto {
   @IsOptional()
   @IsString()
   tireData?: string;
+
+  @IsOptional()
+  @IsString()
+  conversationId?: string;
 }

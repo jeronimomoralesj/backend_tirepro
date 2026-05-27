@@ -2,7 +2,10 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
+  Delete,
   Body,
+  Param,
   Query,
   Req,
   UseGuards,
@@ -21,6 +24,8 @@ import { AnaMessageDto } from './dto/ana-message.dto';
 import { AutomationService } from '../automation/automation.service';
 import { GoogleCalendarService } from '../integrations/google-calendar/google-calendar.service';
 
+type AuthReq = { user?: { companyId?: string; userId?: string; role?: string } };
+
 @Controller('ana')
 @UseGuards(JwtAuthGuard)
 export class AnaController {
@@ -33,14 +38,90 @@ export class AnaController {
     private readonly calendarSvc: GoogleCalendarService,
   ) {}
 
+  /* ── Conversation CRUD ────────────────────────────────────────── */
+
+  @Get('conversations')
+  @SkipThrottle()
+  async listConversations(@Req() req: AuthReq) {
+    const { companyId, userId } = this.extractUser(req);
+    return this.prisma.anaConversation.findMany({
+      where: { companyId, userId },
+      select: { id: true, title: true, updatedAt: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 50,
+    });
+  }
+
+  @Post('conversations')
+  @HttpCode(HttpStatus.CREATED)
+  async createConversation(
+    @Req() req: AuthReq,
+    @Body() body: { title?: string },
+  ) {
+    const { companyId, userId } = this.extractUser(req);
+    return this.prisma.anaConversation.create({
+      data: { companyId, userId, title: body?.title || 'Nueva conversación' },
+      select: { id: true, title: true, updatedAt: true },
+    });
+  }
+
+  @Get('conversations/:id')
+  @SkipThrottle()
+  async getConversation(@Req() req: AuthReq, @Param('id') id: string) {
+    const { companyId, userId } = this.extractUser(req);
+    const conv = await this.prisma.anaConversation.findFirst({
+      where: { id, companyId, userId },
+      include: {
+        messages: { orderBy: { createdAt: 'asc' } },
+      },
+    });
+    if (!conv) throw new NotFoundException('Conversación no encontrada.');
+    return conv;
+  }
+
+  @Patch('conversations/:id')
+  async updateConversation(
+    @Req() req: AuthReq,
+    @Param('id') id: string,
+    @Body() body: { title?: string },
+  ) {
+    const { companyId, userId } = this.extractUser(req);
+    const conv = await this.prisma.anaConversation.findFirst({ where: { id, companyId, userId } });
+    if (!conv) throw new NotFoundException('Conversación no encontrada.');
+    return this.prisma.anaConversation.update({
+      where: { id },
+      data: { title: body.title ?? conv.title },
+      select: { id: true, title: true, updatedAt: true },
+    });
+  }
+
+  @Delete('conversations/:id')
+  async deleteConversation(@Req() req: AuthReq, @Param('id') id: string) {
+    const { companyId, userId } = this.extractUser(req);
+    const conv = await this.prisma.anaConversation.findFirst({ where: { id, companyId, userId } });
+    if (!conv) throw new NotFoundException('Conversación no encontrada.');
+    await this.prisma.anaConversation.delete({ where: { id } });
+    return { deleted: true };
+  }
+
+  private extractUser(req: AuthReq): { companyId: string; userId: string } {
+    const companyId = req.user?.companyId;
+    const userId = req.user?.userId;
+    if (!companyId || !userId) throw new BadRequestException('No company/user.');
+    return { companyId, userId };
+  }
+
+  /* ── Chat (with persistence) ──────────────────────────────────── */
+
   @Post('chat')
   @HttpCode(HttpStatus.OK)
   @SkipThrottle()
   async chat(
-    @Req() req: { user?: { companyId?: string; userId?: string; role?: string } },
+    @Req() req: AuthReq,
     @Body() dto: AnaMessageDto,
   ) {
     const companyId = req.user?.companyId;
+    const userId = req.user?.userId ?? '';
     if (!companyId) {
       throw new BadRequestException('No company associated with this user.');
     }
@@ -57,7 +138,7 @@ export class AnaController {
         dto.message,
         reply.text,
         companyId,
-        req.user?.userId ?? '',
+        userId,
         req.user?.role ?? '',
       );
 
@@ -102,7 +183,47 @@ export class AnaController {
         }
       }
 
-      return { ...reply, ...(actions.length > 0 && { executedActions: actions }) };
+      // Persist messages to DB
+      let conversationId = dto.conversationId;
+      try {
+        if (!conversationId && userId) {
+          const title = dto.message.length > 60 ? dto.message.slice(0, 60) + '…' : dto.message;
+          const conv = await this.prisma.anaConversation.create({
+            data: { companyId, userId, title },
+          });
+          conversationId = conv.id;
+        }
+        if (conversationId && userId) {
+          await this.prisma.anaMessage.createMany({
+            data: [
+              { conversationId, role: 'user', text: dto.message },
+              {
+                conversationId,
+                role: 'assistant',
+                text: reply.text,
+                blocks: reply.blocks ? (reply.blocks as any) : undefined,
+                suggestions: reply.suggestions ? (reply.suggestions as any) : undefined,
+              },
+            ],
+          });
+          // Update title from first user message if this was a new conversation
+          if (!dto.conversationId) {
+            const title = dto.message.length > 60 ? dto.message.slice(0, 60) + '…' : dto.message;
+            await this.prisma.anaConversation.update({
+              where: { id: conversationId },
+              data: { title },
+            });
+          }
+        }
+      } catch (err) {
+        this.log.warn(`Failed to persist Ana message: ${(err as any)?.message}`);
+      }
+
+      return {
+        ...reply,
+        conversationId,
+        ...(actions.length > 0 && { executedActions: actions }),
+      };
     } catch {
       throw new InternalServerErrorException(
         'No se pudo conectar con Ana. Intenta de nuevo.',
@@ -207,41 +328,48 @@ export class AnaController {
     }
 
     if (this.isCalendarIntent(userMessage)) {
-      const conn = await this.prisma.integrationConnection.findFirst({
-        where: { companyId, type: 'google_calendar', isActive: true },
-      });
-      if (!conn) {
-        actions.push({ action: 'calendar_error', result: 'Google Calendar no está conectado. Ve a Agentes → haz clic en "Calendar → Conectar" primero.' });
+      if (!this.hasDateOrTimeHint(userMessage)) {
+        actions.push({
+          action: 'calendar_error',
+          result: '¿Para cuándo quieres agendar el evento? Dime el día y la hora — por ejemplo: "mañana a las 10am", "el viernes a las 3pm", "hoy a las 2pm".',
+        });
       } else {
-        try {
-          const { eventTitle, startTime } = this.parseCalendarDetails(userMessage);
-          const durationMinutes = 60;
-          const endTime = new Date(startTime.getTime() + durationMinutes * 60_000);
-          const dateStr = startTime.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
-          const timeStr = startTime.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+        const conn = await this.prisma.integrationConnection.findFirst({
+          where: { companyId, type: 'google_calendar', isActive: true },
+        });
+        if (!conn) {
+          actions.push({ action: 'calendar_error', result: 'Google Calendar no está conectado. Ve a Agentes → haz clic en "Calendar → Conectar" primero.' });
+        } else {
+          try {
+            const { eventTitle, startTime, description } = this.parseCalendarDetails(userMessage, _anaReply);
+            const durationMinutes = 60;
+            const endTime = new Date(startTime.getTime() + durationMinutes * 60_000);
+            const dateStr = startTime.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
+            const timeStr = startTime.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
 
-          const existing = await this.calendarSvc.listEvents(companyId, startTime, endTime);
-          if (existing.length > 0) {
-            const conflicts = existing.map(e => {
-              const s = new Date(e.start).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-              return `"${e.summary}" a las ${s}`;
-            }).join(', ');
-            actions.push({
-              action: 'calendar_conflict',
-              result: `El ${dateStr} a las ${timeStr} se cruza con: ${conflicts}. Dime "confírmalo" o "ponlo a otra hora" para que lo programe.`,
-            });
-          } else {
-            await this.calendarSvc.createEvent(companyId, {
-              summary: eventTitle,
-              description: 'Creado por Ana — TirePro',
-              startTime,
-              durationMinutes,
-            });
-            actions.push({ action: 'calendar_event_created', result: `Evento "${eventTitle}" creado para el ${dateStr} a las ${timeStr}.` });
+            const existing = await this.calendarSvc.listEvents(companyId, startTime, endTime);
+            if (existing.length > 0) {
+              const conflicts = existing.map(e => {
+                const s = new Date(e.start).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+                return `"${e.summary}" a las ${s}`;
+              }).join(', ');
+              actions.push({
+                action: 'calendar_conflict',
+                result: `El ${dateStr} a las ${timeStr} se cruza con: ${conflicts}. Dime "confírmalo" o "ponlo a otra hora" para que lo programe.`,
+              });
+            } else {
+              await this.calendarSvc.createEvent(companyId, {
+                summary: eventTitle,
+                description,
+                startTime,
+                durationMinutes,
+              });
+              actions.push({ action: 'calendar_event_created', result: `Evento "${eventTitle}" creado para el ${dateStr} a las ${timeStr}.` });
+            }
+          } catch (err: any) {
+            this.log.warn(`Ana calendar creation failed: ${err.message}`);
+            actions.push({ action: 'calendar_error', result: err.message });
           }
-        } catch (err: any) {
-          this.log.warn(`Ana calendar creation failed: ${err.message}`);
-          actions.push({ action: 'calendar_error', result: err.message });
         }
       }
     }
@@ -301,7 +429,18 @@ export class AnaController {
     } as any);
   }
 
-  private parseCalendarDetails(message: string): { eventTitle: string; startTime: Date } {
+  private hasDateOrTimeHint(msg: string): boolean {
+    const lo = msg.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    if (/hoy|manana|pasado\s*manana/i.test(lo)) return true;
+    if (/lunes|martes|miercoles|jueves|viernes|sabado|domingo/i.test(lo)) return true;
+    if (/a\s*las?\s*\d/i.test(lo)) return true;
+    if (/\d{1,2}[\/:]\d{2}/i.test(lo)) return true;
+    if (/\d{1,2}\s*(am|pm)/i.test(lo)) return true;
+    if (/proxim[oa]|siguiente|esta\s*semana|fin\s*de\s*semana/i.test(lo)) return true;
+    return false;
+  }
+
+  private parseCalendarDetails(message: string, conversationContext?: string): { eventTitle: string; startTime: Date; description: string } {
     let title = 'Cita TirePro';
     if (/cambio|llantas|reemplazo|comprar\s*llantas/i.test(message)) title = 'Cambio de llantas';
     if (/inspecci[oó]n/i.test(message)) title = 'Inspección de flota';
@@ -345,7 +484,22 @@ export class AnaController {
       startTime.setHours(h, parseInt(timeMatch[2] ?? '0'), 0, 0);
     }
 
-    return { eventTitle: title, startTime };
+    let description = 'Creado por Ana — TirePro';
+    if (conversationContext) {
+      const contextLines = conversationContext
+        .split('\n')
+        .filter(l => l.trim())
+        .slice(0, 20)
+        .join('\n');
+      if (contextLines.length > 10) {
+        description = `${title}\n\nDetalles de Ana:\n${contextLines}\n\n— Creado por Ana · TirePro`;
+      }
+    }
+    if (/descripci[oó]n|detalle|informaci[oó]n|agrega/i.test(message) && conversationContext) {
+      description = `${title}\n\n${conversationContext.slice(0, 1500)}\n\n— Creado por Ana · TirePro`;
+    }
+
+    return { eventTitle: title, startTime, description };
   }
 
   private nextWeekday(day: number): Date {

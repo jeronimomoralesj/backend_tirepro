@@ -60,6 +60,9 @@ VALOR PUNTUAL ("¿cuál es el CPK?", "¿cuántas?", "promedio"):
 MÁS DETALLES / PROFUNDIZAR ("ver más", "detalle", "desglose", "profundizar"):
 → table detallada + gráfico complementario. NUNCA solo texto.
 
+TABLA ESPECÍFICA ("muéstrame en tabla", "tabla con", "detállame"):
+→ OBLIGATORIO generar un block table. Usa las columnas que el usuario pide. Rellena rows con datos EXACTOS de TIREDATA. Si pide "vehículo, posición, profundidad" → columns:["Vehículo","Posición","Profundidad"], rows con datos reales. NUNCA ignores un pedido de tabla.
+
 COMPARACIÓN ("por marca", "por eje", "X vs Y"):
 → kpis resumen arriba + bar chart comparativo.
 
@@ -70,7 +73,7 @@ TENDENCIA ("evolución", "histórico", "últimos meses"):
 → line chart + kpis resumen.
 
 ALERTAS ("críticas", "cambio inmediato", "urgente"):
-→ callout alerta + table listado detallado.
+→ callout alerta + table listado detallado con columnas: Vehículo, Posición, Profundidad, Marca, Diseño.
 
 RESUMEN ("resumen", "estado general", "cómo está"):
 → kpis (3-5 métricas) + gauge salud + callout si hay alertas.

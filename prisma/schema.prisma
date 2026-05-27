@@ -275,6 +275,7 @@ model User {
   loginLogs         UserLoginLog[]
   teamKpis          TeamKpi[]
   catalogDownloads  CatalogDownload[]
+  anaConversations  AnaConversation[]
 
   @@index([companyId])
   @@index([email])
@@ -435,6 +436,9 @@ model Company {
   // Automation
   automationFlows        AutomationFlow[]
   integrationConnections IntegrationConnection[]
+
+  // Ana conversations
+  anaConversations AnaConversation[]
 
   @@index([plan])
 }
@@ -2508,4 +2512,39 @@ model IntegrationConnection {
   @@unique([companyId, type])
   @@index([companyId])
   @@map("integration_connections")
+}
+
+// =============================================================================
+// ANA CONVERSATIONS
+// =============================================================================
+
+model AnaConversation {
+  id        String   @id @default(uuid())
+  companyId String
+  userId    String
+  title     String   @default("Nueva conversación")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company  Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages AnaMessage[]
+
+  @@index([companyId, userId, updatedAt])
+  @@map("ana_conversations")
+}
+
+model AnaMessage {
+  id             String   @id @default(uuid())
+  conversationId String
+  role           String
+  text           String
+  blocks         Json?
+  suggestions    Json?
+  createdAt      DateTime @default(now())
+
+  conversation AnaConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("ana_messages")
 }
