@@ -8,6 +8,7 @@ import { AiFlowBuilderService } from './ai-flow-builder.service';
 import { FlowEngineService } from './flow-engine.service';
 import { TriggerEvaluatorService } from './trigger-evaluator.service';
 import { ActionExecutorService } from './action-executor.service';
+import { CronSchedulerService } from './cron-scheduler.service';
 
 @Module({
   imports: [EmailModule, GoogleCalendarModule],
@@ -19,6 +20,7 @@ import { ActionExecutorService } from './action-executor.service';
     FlowEngineService,
     TriggerEvaluatorService,
     ActionExecutorService,
+    CronSchedulerService,
     { provide: 'FLOW_ENGINE', useExisting: FlowEngineService },
   ],
   exports: [FlowEngineService, AutomationService, 'FLOW_ENGINE'],

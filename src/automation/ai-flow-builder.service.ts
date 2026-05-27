@@ -42,9 +42,11 @@ TIPOS DE ACCIÓN disponibles:
    actionConfig: { "to": "<número con código de país, ej: +57...>" }
 
 3. "create_calendar_event" — Crea un evento en Google Calendar.
-   actionConfig: { "summary": "<título>", "description": "<descripción>", "durationMinutes": <número>, "delayDays": <días después del trigger, default 0>, "startHour": <hora 0-23, default 9>, "startMinute": <minuto 0-59, default 0> }
+   actionConfig: { "summary": "<título>", "description": "<descripción>", "durationMinutes": <número>, "delayDays": <días después del trigger, default 0>, "startHour": <hora 0-23, default 9>, "startMinute": <minuto 0-59, default 0>, "attendees": ["email1@gmail.com","email2@empresa.com"], "location": "<lugar opcional>" }
    - "para el siguiente día" → delayDays: 1. "en 3 días" → delayDays: 3. Sin mención → delayDays: 0.
    - "a las 7am" → startHour: 7. "a las 2:30pm" → startHour: 14, startMinute: 30. "a las 10am" → startHour: 10. Sin mención → startHour: 9.
+   - "attendees": lista de correos electrónicos a invitar al evento. Se les enviará invitación automática. Si el usuario menciona invitar a alguien, agregar su correo aquí.
+   - "location": lugar del evento (ej: "Taller central", "Bodega 3"). Opcional.
    - En "description", incluye variables de plantilla: "Llanta {{tireMarca}} {{tireDiseno}} en vehículo {{vehiclePlaca}} — profundidad: {{tireDepth}}mm"
 
 4. "make_phone_call" — Realiza una llamada telefónica.
@@ -181,17 +183,22 @@ ${fleetData}
 TIPOS DE BLOCKS (usa la estructura EXACTA):
 - {"kind":"kpis","title":"...","items":[{"label":"Total","value":"245","hint":"+3%","tone":"good"}]}
 - {"kind":"bar","title":"...","unit":"$/km","data":[{"label":"Michelin","value":42}]}
+- {"kind":"line","title":"...","unit":"$/km","data":[{"label":"Ene","value":45}]}
+- {"kind":"area","title":"...","unit":"mm","data":[{"label":"Ene","value":12}]}
 - {"kind":"pie","title":"...","data":[{"label":"Criticas","value":5}]}
+- {"kind":"scatter","title":"...","xLabel":"Km","yLabel":"CPK","xUnit":"km","yUnit":"$/km","data":[{"x":50000,"y":42,"label":"Michelin"}]}
+- {"kind":"radar","title":"...","data":[{"label":"Direccion","value":85},{"label":"Traccion","value":62}]}
 - {"kind":"table","title":"...","columns":["Vehiculo","Marca","Profundidad"],"rows":[["ABC-123","Continental","2.1mm"]]}
 - {"kind":"gauge","title":"...","value":78,"label":"4 criticas"}
 - {"kind":"callout","tone":"warn","title":"...","text":"3 llantas requieren cambio."}
-- {"kind":"line","title":"...","unit":"$/km","data":[{"label":"Ene","value":45}]}
 
 REGLAS:
 - USA DATOS REALES de DATOS DE LA FLOTA. Nunca inventes numeros.
 - kpis: items con label, value (string), hint opcional, tone (good/warn/bad/info)
 - table: columns (string[]) y rows (string[][]) con datos reales de la flota
-- bar/pie/line: data con label y value (number) de datos reales
+- bar/pie/line/area: data con label y value (number) de datos reales
+- scatter: data con x, y (number) y label opcional. xLabel/yLabel para nombres de ejes
+- radar: data con label y value (number). Ideal para comparar multiples dimensiones
 - gauge: value 0-100
 - callout: tone (good/warn/bad/info) y text
 - Responde SOLO JSON: {"blocks":[...],"subject":"<asunto sugerido>"}

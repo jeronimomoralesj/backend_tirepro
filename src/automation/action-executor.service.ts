@@ -127,13 +127,20 @@ export class ActionExecutorService {
             description = `Generado por Agentes TirePro.\n${vars.tireMarca ? `Llanta: ${vars.tireMarca} ${vars.tireDiseno ?? ''} — ${vars.tireDepth ?? '?'}mm\nVehiculo: ${vars.vehiclePlaca ?? 'N/A'}\nPosicion: ${vars.position ?? 'N/A'}\nID: ${vars.tirePlaca ?? 'N/A'}` : ''}`;
           }
 
+          const attendees = Array.isArray(calConfig.attendees)
+            ? (calConfig.attendees as string[]).filter(e => typeof e === 'string' && e.includes('@'))
+            : [];
+          const location = typeof calConfig.location === 'string' ? calConfig.location : undefined;
+
           const eventId = await this.googleCalendar.createEvent(ctx.companyId, {
             summary: title,
             description,
             startTime,
             durationMinutes: (calConfig.durationMinutes as number) ?? 60,
+            ...(attendees.length > 0 && { attendees }),
+            ...(location && { location }),
           });
-          output = { eventId, tireCount: allTireVars.length };
+          output = { eventId, tireCount: allTireVars.length, attendees };
           break;
         }
 

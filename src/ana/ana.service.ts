@@ -20,15 +20,20 @@ const BLOCK_SCHEMA = `Bloques disponibles (copia la forma EXACTA):
 - {"kind":"kpis","title":"Resumen","items":[{"label":"Total","value":"245","hint":"+3%","tone":"good"}]}
 - {"kind":"bar","title":"CPK por marca","unit":"$/km","data":[{"label":"Michelin","value":42},{"label":"Continental","value":48}]}
 - {"kind":"line","title":"CPK 6 meses","unit":"$/km","data":[{"label":"Ene","value":45},{"label":"Feb","value":42}]}
+- {"kind":"area","title":"Profundidad promedio 6 meses","unit":"mm","data":[{"label":"Ene","value":12},{"label":"Feb","value":11.2}]}
 - {"kind":"pie","title":"Mix marcas","data":[{"label":"Continental","value":48},{"label":"Michelin","value":32}]}
-- {"kind":"table","title":"Críticas","columns":["Placa","Posición","Profundidad","Plazo"],"rows":[["ABC-123","Dir.Izq","2.1mm","Inmediato"]]}
-- {"kind":"gauge","title":"Salud flota","value":78,"label":"4 críticas"}
+- {"kind":"scatter","title":"CPK vs Km recorridos","xLabel":"Km","yLabel":"CPK","xUnit":"km","yUnit":"$/km","data":[{"x":50000,"y":42,"label":"Michelin"},{"x":35000,"y":55,"label":"Continental"}]}
+- {"kind":"radar","title":"Salud por eje","data":[{"label":"Direccion","value":85},{"label":"Traccion","value":62},{"label":"Libre","value":90}]}
+- {"kind":"table","title":"Criticas","columns":["Placa","Posicion","Profundidad","Plazo"],"rows":[["ABC-123","Dir.Izq","2.1mm","Inmediato"]]}
+- {"kind":"gauge","title":"Salud flota","value":78,"label":"4 criticas"}
 - {"kind":"callout","tone":"warn","text":"3 llantas requieren cambio inmediato."}
 
 PROHIBIDO: campos "keys","values","labels","colors" como arrays sueltos. Datos SIEMPRE en "data" (o "items" para kpis, "rows" para table).
-OBLIGATORIO en bar/line: "title" debe describir qué se mide. "unit" SIEMPRE presente — indica la unidad del eje Y (ej: "$/km", "mm", "llantas", "%", "$COP").
-OBLIGATORIO en pie: "title" describe la distribución.
-OBLIGATORIO: todo gráfico debe tener "title" descriptivo y "unit" cuando aplique.
+OBLIGATORIO en bar/line/area: "title" debe describir que se mide. "unit" SIEMPRE presente — indica la unidad del eje Y (ej: "$/km", "mm", "llantas", "%", "$COP").
+OBLIGATORIO en scatter: "xLabel" y "yLabel" para los ejes, "xUnit"/"yUnit" para unidades. "data" usa campos "x","y" (numeros) y "label" opcional.
+OBLIGATORIO en radar: "data" con "label" y "value". Opcional "fullMark" para el maximo de cada eje.
+OBLIGATORIO en pie: "title" describe la distribucion.
+OBLIGATORIO: todo grafico debe tener "title" descriptivo y "unit" cuando aplique.
 orientation en bar: "vertical"|"horizontal". tone: good|warn|bad|info|neutral.`;
 
 function buildSystemPrompt(dataset: string): string {
@@ -76,19 +81,26 @@ TABLA ESPECÍFICA ("muéstrame en tabla", "tabla con", "detállame"):
 COMPARACIÓN ("por marca", "por eje", "X vs Y"):
 → kpis resumen arriba + bar chart comparativo.
 
+CORRELACIÓN ("CPK vs km", "relación entre", "costo vs uso"):
+→ scatter chart con xLabel/yLabel descriptivos. Ideal para ver relación entre dos variables numéricas.
+
 DISTRIBUCIÓN ("mix", "proporción", "composición"):
 → pie chart + kpis con total.
 
+PERFIL MULTIDIMENSIONAL ("salud por eje", "estado por categoría", "comparar dimensiones"):
+→ radar chart. Ideal para comparar múltiples métricas en una sola vista (ej: salud por eje, rendimiento por marca en varias métricas).
+
 TENDENCIA ("evolución", "histórico", "últimos meses"):
-→ line chart + kpis resumen.
+→ area chart si es una sola serie con tendencia suave. line chart si hay puntos discretos importantes. Ambos + kpis resumen.
 
 ALERTAS ("críticas", "cambio inmediato", "urgente"):
 → callout alerta + table listado detallado con columnas: Vehículo, Posición, Profundidad, Marca, Diseño.
 
 RESUMEN ("resumen", "estado general", "cómo está"):
-→ kpis (3-5 métricas) + gauge salud + callout si hay alertas.
+→ kpis (3-5 métricas) + gauge salud + radar por ejes + callout si hay alertas.
 
 CLAVE: pregunta sobre UN número → kpis (NO gráfico solo para un dato).
+CLAVE: usa scatter SOLO cuando ambos ejes son numéricos (no categorías). Para categorías usa bar.
 
 CONTEXTO TÉCNICO:
 - CPK = costo total / km recorridos. Menor = mejor.
@@ -673,7 +685,7 @@ function extractJson(s: string): string {
 }
 
 const ALLOWED_KINDS = new Set([
-  'kpis', 'bar', 'line', 'pie', 'table', 'gauge', 'callout',
+  'kpis', 'bar', 'line', 'area', 'pie', 'scatter', 'radar', 'table', 'gauge', 'callout',
 ]);
 
 function normalizeBlocks(b: unknown): unknown[] {
@@ -694,7 +706,16 @@ function coerceBlock(
   if (typeof kind !== 'string' || !ALLOWED_KINDS.has(kind)) return null;
   const out: Record<string, unknown> = { ...x, kind };
 
-  if (kind === 'bar' || kind === 'line' || kind === 'pie') {
+  if (kind === 'bar' || kind === 'line' || kind === 'pie' || kind === 'area') {
+    out.data = coerceXY(out.data, out);
+    if (!Array.isArray(out.data) || out.data.length === 0) return null;
+  } else if (kind === 'scatter') {
+    if (!Array.isArray(out.data) || out.data.length === 0) return null;
+    out.data = (out.data as Record<string, unknown>[]).filter(
+      (d) => typeof d.x === 'number' && typeof d.y === 'number',
+    );
+    if ((out.data as unknown[]).length === 0) return null;
+  } else if (kind === 'radar') {
     out.data = coerceXY(out.data, out);
     if (!Array.isArray(out.data) || out.data.length === 0) return null;
   } else if (kind === 'kpis') {

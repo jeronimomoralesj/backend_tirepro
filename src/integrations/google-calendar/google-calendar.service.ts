@@ -12,6 +12,7 @@ export interface CalendarEventOpts {
   durationMinutes?: number;
   calendarId?: string;
   attendees?: string[];
+  location?: string;
 }
 
 @Injectable()
@@ -136,6 +137,7 @@ export class GoogleCalendarService {
         description: opts.description ?? 'Creado por Agentes TirePro',
         start: { dateTime: start.toISOString(), timeZone: 'America/Bogota' },
         end: { dateTime: end.toISOString(), timeZone: 'America/Bogota' },
+        ...(opts.location && { location: opts.location }),
         ...(opts.attendees?.length && {
           attendees: opts.attendees.map(email => ({ email })),
         }),
