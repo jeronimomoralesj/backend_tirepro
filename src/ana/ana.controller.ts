@@ -80,25 +80,31 @@ export class AnaController {
     }
   }
 
+  private isCalendarIntent(msg: string): boolean {
+    const lo = msg.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    return /agenda(r|me)?/i.test(lo) && /calendario|calendar/i.test(lo)
+      || /agenda(r|me)?\s*(una\s*)?(cita|evento|reunion)/i.test(lo)
+      || /crea(r|me)?\s*(un\s*)?(evento|cita|reunion)/i.test(lo) && /calendario|calendar/i.test(lo)
+      || /pon(er|me|lo)?\s*(en\s*)?(el\s*)?(mi\s*)?(calendario|calendar)/i.test(lo)
+      || /mi\s*calendario/i.test(lo) && /(agenda|crea|pon|programa)/i.test(lo);
+  }
+
+  private isFlowIntent(msg: string): boolean {
+    return /crea(r|me)?\s*(un\s*)?(flujo|agente|automatizaci)/i.test(msg)
+      || /configura(r|me)?\s*(un\s*)?(flujo|alerta\s*automat)/i.test(msg);
+  }
+
   private async executeAnaActions(
     userMessage: string,
-    anaReply: string,
+    _anaReply: string,
     companyId: string,
     userId: string,
     role: string,
   ): Promise<Array<{ action: string; result: string }>> {
     if (role !== 'admin') return [];
-
-    const lo = (userMessage + ' ' + anaReply)
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '');
     const actions: Array<{ action: string; result: string }> = [];
 
-    if (
-      /crea(r|me)?\s*(un\s*)?(flujo|agente|automatizaci)/i.test(userMessage) ||
-      /configura(r|me)?\s*(un\s*)?(flujo|alerta\s*automat)/i.test(userMessage)
-    ) {
+    if (this.isFlowIntent(userMessage)) {
       try {
         const flow = await this.detectAndCreateFlow(userMessage, companyId, userId);
         if (flow) actions.push({ action: 'flow_created', result: `"${flow.name}"` });
@@ -108,11 +114,7 @@ export class AnaController {
       }
     }
 
-    if (
-      /agenda(r|me)?\s*(una\s*)?(cita|evento|reunion)/i.test(userMessage) ||
-      /crea(r|me)?\s*(un\s*)?(evento|cita)\s*(en\s*)?(el\s*)?(calendario|calendar)/i.test(userMessage) ||
-      /pon(er|me)?\s*(en\s*)?(el\s*)?(calendario|calendar)/i.test(userMessage)
-    ) {
+    if (this.isCalendarIntent(userMessage)) {
       const conn = await this.prisma.integrationConnection.findFirst({
         where: { companyId, type: 'google_calendar', isActive: true },
       });
@@ -120,8 +122,16 @@ export class AnaController {
         actions.push({ action: 'calendar_error', result: 'Google Calendar no está conectado. Ve a Agentes → haz clic en "Calendar → Conectar" primero.' });
       } else {
         try {
-          const event = await this.createCalendarEvent(userMessage, companyId);
-          if (event) actions.push({ action: 'calendar_event_created', result: event });
+          const { eventTitle, startTime } = this.parseCalendarDetails(userMessage);
+          const eventId = await this.calendarSvc.createEvent(companyId, {
+            summary: eventTitle,
+            description: 'Creado por Ana — TirePro',
+            startTime,
+            durationMinutes: 60,
+          });
+          const dateStr = startTime.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
+          const timeStr = startTime.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+          actions.push({ action: 'calendar_event_created', result: `Evento "${eventTitle}" creado para el ${dateStr} a las ${timeStr}.` });
         } catch (err: any) {
           this.log.warn(`Ana calendar creation failed: ${err.message}`);
           actions.push({ action: 'calendar_error', result: err.message });
@@ -183,51 +193,51 @@ export class AnaController {
     } as any);
   }
 
-  private async createCalendarEvent(
-    message: string,
-    companyId: string,
-  ): Promise<string | null> {
-    if (!this.calendarSvc.isConfigured()) {
-      throw new Error('Google Calendar no está conectado. Ve a Agentes para conectarlo.');
+  private parseCalendarDetails(message: string): { eventTitle: string; startTime: Date } {
+    let title = 'Cita TirePro';
+    if (/cambio|llantas|reemplazo|comprar\s*llantas/i.test(message)) title = 'Cambio de llantas';
+    if (/inspecci[oó]n/i.test(message)) title = 'Inspección de flota';
+    if (/distribuidor|inter\b/i.test(message)) title = 'Visita distribuidor';
+    if (/rotaci[oó]n/i.test(message)) title = 'Rotación de llantas';
+
+    const contextMatch = message.match(/(?:para|ir\s*a)\s+(.{3,40?)(?:\s+(?:ma[ñn]ana|lunes|martes|mi[eé]rcoles|jueves|viernes|el\s|para\s|$))/i);
+    if (contextMatch) {
+      const raw = contextMatch[1].trim().replace(/^(hacer|una|un|la|el)\s+/i, '');
+      if (raw.length > 3) title = raw.charAt(0).toUpperCase() + raw.slice(1);
     }
 
-    let title = 'Cita TirePro';
-    let durationMinutes = 60;
+    let startTime = new Date();
+    startTime.setDate(startTime.getDate() + 1);
+    startTime.setHours(9, 0, 0, 0);
 
-    if (/cambio|llantas|reemplazo/i.test(message)) title = 'Cambio de llantas — TirePro';
-    if (/inspecci[oó]n/i.test(message)) title = 'Inspección de flota — TirePro';
-    if (/distribuidor/i.test(message)) title = 'Cita con distribuidor — TirePro';
-
-    const hourMatch = message.match(/(\d+)\s*hora/i);
-    if (hourMatch) durationMinutes = parseInt(hourMatch[1]) * 60;
-    const minMatch = message.match(/(\d+)\s*min/i);
-    if (minMatch) durationMinutes = parseInt(minMatch[1]);
-
-    let startTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    if (/ma[ñn]ana/i.test(message)) {
+    if (/hoy/i.test(message)) {
+      startTime = new Date();
+      startTime.setHours(startTime.getHours() + 1, 0, 0, 0);
+    } else if (/ma[ñn]ana/i.test(message)) {
       startTime = new Date();
       startTime.setDate(startTime.getDate() + 1);
       startTime.setHours(9, 0, 0, 0);
-    } else if (/lunes/i.test(message)) {
-      startTime = this.nextWeekday(1);
-    } else if (/martes/i.test(message)) {
-      startTime = this.nextWeekday(2);
-    } else if (/mi[eé]rcoles/i.test(message)) {
-      startTime = this.nextWeekday(3);
-    } else if (/jueves/i.test(message)) {
-      startTime = this.nextWeekday(4);
-    } else if (/viernes/i.test(message)) {
-      startTime = this.nextWeekday(5);
+    } else if (/pasado\s*ma[ñn]ana/i.test(message)) {
+      startTime = new Date();
+      startTime.setDate(startTime.getDate() + 2);
+      startTime.setHours(9, 0, 0, 0);
+    } else {
+      const days: Record<string, number> = { lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6, domingo: 0 };
+      const lo = message.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      for (const [name, dow] of Object.entries(days)) {
+        if (lo.includes(name)) { startTime = this.nextWeekday(dow); break; }
+      }
     }
 
-    const eventId = await this.calendarSvc.createEvent(companyId, {
-      summary: title,
-      description: 'Creado por Ana — TirePro',
-      startTime,
-      durationMinutes,
-    });
+    const timeMatch = message.match(/(?:a\s*las?\s*)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+    if (timeMatch) {
+      let h = parseInt(timeMatch[1]);
+      if (timeMatch[3]?.toLowerCase() === 'pm' && h < 12) h += 12;
+      if (timeMatch[3]?.toLowerCase() === 'am' && h === 12) h = 0;
+      startTime.setHours(h, parseInt(timeMatch[2] ?? '0'), 0, 0);
+    }
 
-    return eventId ? `Evento "${title}" creado en Google Calendar` : null;
+    return { eventTitle: title, startTime };
   }
 
   private nextWeekday(day: number): Date {
