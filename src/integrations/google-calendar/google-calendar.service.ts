@@ -45,7 +45,10 @@ export class GoogleCalendarService {
     return client.generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
-      scope: ['https://www.googleapis.com/auth/calendar.events'],
+      scope: [
+        'https://www.googleapis.com/auth/calendar.events',
+        'https://www.googleapis.com/auth/userinfo.email',
+      ],
       state: Buffer.from(JSON.stringify({ companyId })).toString('base64url'),
     });
   }
