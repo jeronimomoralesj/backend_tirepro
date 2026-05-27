@@ -49,9 +49,23 @@ export class AutomationController {
     this.extractCompany(req);
     const description = body?.description;
     if (!description || typeof description !== 'string' || !description.trim()) {
-      throw new BadRequestException('Se requiere una descripción del flujo');
+      throw new BadRequestException('Se requiere una descripcion del flujo');
     }
     return this.aiFlowBuilder.buildFlow(description.trim(), body.currentFlow);
+  }
+
+  @Post('ai-report-builder')
+  @HttpCode(HttpStatus.OK)
+  async aiReportBuilder(
+    @Req() req: AuthReq,
+    @Body() body: { description?: string; currentBlocks?: unknown[] },
+  ) {
+    this.extractCompany(req);
+    const description = body?.description;
+    if (!description || typeof description !== 'string' || !description.trim()) {
+      throw new BadRequestException('Se requiere una descripcion del reporte');
+    }
+    return this.aiFlowBuilder.buildReportBlocks(description.trim(), body.currentBlocks);
   }
 
   @Get('flows')

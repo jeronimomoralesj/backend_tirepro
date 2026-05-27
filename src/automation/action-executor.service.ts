@@ -36,17 +36,21 @@ export class ActionExecutorService {
 
       switch (flow.actionType) {
         case ActionType.send_email: {
-          const to = this.interpolate((config.to as string) ?? '', vars);
+          const rawTo = this.interpolate((config.to as string) ?? '', vars);
+          const recipients = rawTo.split(',').map(e => e.trim()).filter(Boolean);
           const subject = this.interpolate(
             (config.subject as string) ?? 'Alerta TirePro',
             vars,
           );
           const customBody = config.body as string | undefined;
-          const body = customBody
-            ? this.buildCustomEmailBody(customBody, vars)
+          const reportBlocks = config.reportBlocks as unknown[] | undefined;
+          const body = customBody || reportBlocks
+            ? this.buildCustomEmailBody(customBody ?? '', vars, reportBlocks)
             : this.buildEmailBody(vars);
-          await this.emailService.sendEmail(to, subject, body);
-          output = { to, subject };
+          for (const to of recipients.length ? recipients : [rawTo]) {
+            await this.emailService.sendEmail(to, subject, body);
+          }
+          output = { to: recipients, subject };
           break;
         }
 
@@ -271,26 +275,46 @@ export class ActionExecutorService {
     });
   }
 
-  private buildCustomEmailBody(customBody: string, vars: Record<string, string>): string {
-    const interpolated = this.interpolate(customBody, vars);
+  private buildCustomEmailBody(customBody: string, vars: Record<string, string>, reportBlocks?: unknown[]): string {
+    const interpolated = customBody ? this.interpolate(customBody, vars) : '';
     const paragraphs = interpolated.split('\n').filter(l => l.trim());
 
-    const kvRows: Array<{ label: string; value: string }> = [];
-    if (vars.vehiclePlaca) kvRows.push({ label: 'Vehiculo', value: vars.vehiclePlaca });
-    if (vars.tireMarca) kvRows.push({ label: 'Llanta', value: `${vars.tireMarca} ${vars.tireDiseno ?? ''}`.trim() });
-    if (vars.tireDepth) kvRows.push({ label: 'Profundidad', value: `${vars.tireDepth} mm` });
-    if (vars.tireAlertLevel) kvRows.push({ label: 'Nivel', value: vars.tireAlertLevel });
+    const bodyParts: string[] = [];
+
+    if (paragraphs.length > 0) {
+      bodyParts.push(...paragraphs.map(p => emailText(p)));
+    }
+
+    if (reportBlocks && Array.isArray(reportBlocks) && reportBlocks.length > 0) {
+      for (const block of reportBlocks) {
+        const b = block as { kind?: string; title?: string; description?: string };
+        if (!b.kind) continue;
+        const desc = b.description ?? '';
+        bodyParts.push(emailCallout({
+          tone: b.kind === 'callout' ? 'warning' : 'info',
+          title: b.title ?? b.kind,
+          body: emailText(desc + (desc ? ' — ' : '') + 'Los datos se generan al momento del envio con la informacion actual de la flota.'),
+        }));
+      }
+    }
+
+    if (bodyParts.length === 0) {
+      const kvRows: Array<{ label: string; value: string }> = [];
+      if (vars.vehiclePlaca) kvRows.push({ label: 'Vehiculo', value: vars.vehiclePlaca });
+      if (vars.tireMarca) kvRows.push({ label: 'Llanta', value: `${vars.tireMarca} ${vars.tireDiseno ?? ''}`.trim() });
+      if (vars.tireDepth) kvRows.push({ label: 'Profundidad', value: `${vars.tireDepth} mm` });
+      if (vars.tireAlertLevel) kvRows.push({ label: 'Nivel', value: vars.tireAlertLevel });
+      if (kvRows.length > 0) bodyParts.push(emailCallout({ tone: 'info', title: 'Datos de la llanta', body: emailKvList(kvRows) }));
+    }
+
+    bodyParts.push(emailButton('Ver en TirePro', 'https://tirepro.com.co/dashboard/resumen'));
 
     return wrapEmail({
-      preheader: paragraphs[0]?.slice(0, 100) ?? 'Notificacion de TirePro',
+      preheader: paragraphs[0]?.slice(0, 100) ?? 'Reporte de TirePro',
       accent: 'brand',
-      title: 'Notificacion de flota',
+      title: reportBlocks?.length ? 'Reporte de flota' : 'Notificacion de flota',
       eyebrow: 'Agentes TirePro',
-      body: [
-        ...paragraphs.map(p => emailText(p)),
-        kvRows.length > 0 ? emailCallout({ tone: 'info', title: 'Datos de la llanta', body: emailKvList(kvRows) }) : '',
-        emailButton('Ver en TirePro', 'https://tirepro.com.co/dashboard/resumen'),
-      ].join(''),
+      body: bodyParts.join(''),
     });
   }
 }
