@@ -149,6 +149,7 @@ export class AnaController {
           if (a.action === 'calendar_conflict') return `${a.result}`;
           if (a.action === 'calendar_query') return `${a.result}`;
           if (a.action === 'calendar_error') return `${a.result}`;
+          if (a.action === 'calendar_needs_info') return `${a.result}`;
           if (a.action === 'flow_error') return `No pude crear el flujo: ${a.result}`;
           return a.result;
         });
@@ -247,6 +248,10 @@ export class AnaController {
     if (/crea(r|me)?\s*(un\s*)?(evento|cita|reunion)/i.test(lo)) return true;
     if (/pon(er|me|lo)?\s*(en\s*)?(el\s*)?(mi\s*)?(calendario|calendar)/i.test(lo)) return true;
     if (/programa(r|me)?\s*(un\s*)?(evento|cita)/i.test(lo)) return true;
+    if (/agrega(r|me)?\s*(un\s*)?(evento|cita)/i.test(lo)) return true;
+    if (/agrega(r|me)?.*\b(calendario|calendar)\b/i.test(lo)) return true;
+    if (/\b(create|add|schedule|book)\b.*\b(event|meeting|appointment|calendar)\b/i.test(lo)) return true;
+    if (/\b(calendar|calendario)\b.*\b(event|evento|cita)\b/i.test(lo)) return true;
     return false;
   }
 
@@ -329,10 +334,12 @@ export class AnaController {
 
     if (this.isCalendarIntent(userMessage)) {
       if (!this.hasDateOrTimeHint(userMessage)) {
-        actions.push({
-          action: 'calendar_error',
-          result: '¿Para cuándo quieres agendar el evento? Dime el día y la hora — por ejemplo: "mañana a las 10am", "el viernes a las 3pm", "hoy a las 2pm".',
-        });
+        if (/procesando/i.test(_anaReply)) {
+          actions.push({
+            action: 'calendar_needs_info',
+            result: '¡Claro! Para crear el evento necesito algunos datos:\n\n1. **¿Qué día?** (ej: mañana, el viernes, 2 de junio)\n2. **¿A qué hora?** (ej: 10am, 3pm)\n3. **¿Cuánto dura?** (por defecto 1 hora)\n4. **¿Algún detalle adicional?** — ubicación, enlace de reunión, personas a invitar\n\nDime y lo agendo por ti.',
+          });
+        }
       } else {
         const conn = await this.prisma.integrationConnection.findFirst({
           where: { companyId, type: 'google_calendar', isActive: true },
@@ -341,7 +348,8 @@ export class AnaController {
           actions.push({ action: 'calendar_error', result: 'Google Calendar no está conectado. Ve a Agentes → haz clic en "Calendar → Conectar" primero.' });
         } else {
           try {
-            const { eventTitle, startTime, description } = this.parseCalendarDetails(userMessage, _anaReply);
+            const wantsTireInfo = /llanta|tire|critica|detalles|descripci|info/i.test(userMessage);
+            const { eventTitle, startTime, description } = await this.parseCalendarDetails(userMessage, _anaReply, wantsTireInfo ? companyId : undefined);
             const durationMinutes = 60;
             const endTime = new Date(startTime.getTime() + durationMinutes * 60_000);
             const dateStr = startTime.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -440,7 +448,7 @@ export class AnaController {
     return false;
   }
 
-  private parseCalendarDetails(message: string, conversationContext?: string): { eventTitle: string; startTime: Date; description: string } {
+  private async parseCalendarDetails(message: string, conversationContext?: string, companyIdForTireData?: string): Promise<{ eventTitle: string; startTime: Date; description: string }> {
     let title = 'Cita TirePro';
     if (/cambio|llantas|reemplazo|comprar\s*llantas/i.test(message)) title = 'Cambio de llantas';
     if (/inspecci[oó]n/i.test(message)) title = 'Inspección de flota';
@@ -485,7 +493,35 @@ export class AnaController {
     }
 
     let description = 'Creado por Ana — TirePro';
-    if (conversationContext) {
+
+    if (companyIdForTireData) {
+      try {
+        const criticalTires = await this.prisma.tire.findMany({
+          where: { companyId: companyIdForTireData, currentProfundidad: { lte: 4 } },
+          select: {
+            marca: true,
+            diseno: true,
+            dimension: true,
+            currentProfundidad: true,
+            currentCpk: true,
+            projectedKmRemaining: true,
+            eje: true,
+            posicion: true,
+            vehicle: { select: { placa: true } },
+          },
+          orderBy: { currentProfundidad: 'asc' },
+          take: 20,
+        });
+        if (criticalTires.length) {
+          const tireLines = criticalTires.map(t =>
+            `• ${t.vehicle?.placa || '?'} — ${t.marca} ${t.diseno} (${t.dimension}) — ${t.currentProfundidad?.toFixed(1)}mm — Pos: ${t.posicion || '?'} — CPK: $${t.currentCpk?.toFixed(0) || '?'}`,
+          );
+          description = `${title}\n\nLlantas críticas (≤4mm) para compra/cambio:\n${tireLines.join('\n')}\n\nTotal: ${criticalTires.length} llantas requieren atención.\n\n— Creado por Ana · TirePro`;
+        }
+      } catch {
+        this.log.warn('Failed to fetch tire data for calendar description');
+      }
+    } else if (conversationContext) {
       const contextLines = conversationContext
         .split('\n')
         .filter(l => l.trim())
@@ -494,9 +530,6 @@ export class AnaController {
       if (contextLines.length > 10) {
         description = `${title}\n\nDetalles de Ana:\n${contextLines}\n\n— Creado por Ana · TirePro`;
       }
-    }
-    if (/descripci[oó]n|detalle|informaci[oó]n|agrega/i.test(message) && conversationContext) {
-      description = `${title}\n\n${conversationContext.slice(0, 1500)}\n\n— Creado por Ana · TirePro`;
     }
 
     return { eventTitle: title, startTime, description };

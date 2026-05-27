@@ -55,7 +55,7 @@ Variables de plantilla disponibles para subject/message: {{vehiclePlaca}}, {{tir
 
 REGLAS:
 - Responde SOLO con JSON puro (sin markdown, sin \`\`\`).
-- Estructura exacta:
+- Si la solicitud ES posible con los triggers y acciones disponibles, usa esta estructura:
 {
   "name": "<nombre corto descriptivo del flujo>",
   "triggerType": "<uno de los tipos de trigger>",
@@ -63,6 +63,11 @@ REGLAS:
   "actionType": "<uno de los tipos de acción>",
   "actionConfig": { ... },
   "explanation": "<explicación breve en español de lo que hace el flujo>"
+}
+- Si la solicitud NO es posible (pide algo que no existe en los triggers/acciones, o es ambigua/sin sentido, o pide algo fuera del alcance como "comprar llantas", "modificar datos", "enviar SMS", "conectar con SAP", etc.), responde con:
+{
+  "impossible": true,
+  "reason": "<explicación clara y amigable en español de POR QUÉ no es posible y QUÉ alternativas sí están disponibles>"
 }
 - Elige el trigger y acción que mejor se ajusten a la descripción del usuario.
 - Si la descripción no menciona un destinatario específico, usa placeholders descriptivos como "jefe@empresa.com" o "+573001234567".
@@ -84,6 +89,8 @@ export interface AiFlowSuggestion {
   actionType: string;
   actionConfig: Record<string, unknown>;
   explanation: string;
+  impossible?: boolean;
+  reason?: string;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -140,6 +147,7 @@ export class AiFlowBuilderService {
     }
 
     const parsed = this.parseResponse(raw);
+    if (parsed.impossible) return parsed;
     this.validate(parsed);
     return parsed;
   }
@@ -155,6 +163,19 @@ export class AiFlowBuilderService {
     } catch {
       this.log.warn('Failed to parse AI response as JSON', raw);
       throw new Error('El modelo no devolvió un JSON válido. Intenta reformular la descripción.');
+    }
+
+    if (obj.impossible) {
+      return {
+        impossible: true,
+        reason: typeof obj.reason === 'string' ? obj.reason : 'Esta automatizacion no es posible con las opciones disponibles.',
+        name: '',
+        triggerType: '',
+        triggerConfig: {},
+        actionType: '',
+        actionConfig: {},
+        explanation: '',
+      };
     }
 
     return {

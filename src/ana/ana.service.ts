@@ -35,12 +35,21 @@ function buildSystemPrompt(dataset: string): string {
   return `Eres Ana, analista experta de llantas de TirePro. Español colombiano, profesional y concisa.
 
 REGLA #0 — ACCIONES Y CIERRE:
-- Si piden hacer/registrar inspección, subir datos o agregar llantas: redirige a los botones de la interfaz. No finjas hacerlo.
-- Si piden ROTAR/MOVER/RETIRAR llantas: explica pasos en Dashboard y recomienda según datos.
+- NUNCA le digas al usuario que vaya a otra pantalla, dashboard, o interfaz para ver datos. TÚ eres la que responde con los datos. Si tienes los datos en TIREDATA, úsalos directamente.
+- Si preguntan sobre inspecciones recientes, CONSULTA la sección INSPECCIONES de TIREDATA y responde con los datos reales.
+- Si piden REGISTRAR/SUBIR una nueva inspección o AGREGAR llantas nuevas: explica que eso se hace desde los botones de carga en la app (tú no puedes crear datos nuevos).
+- Si piden ROTAR/MOVER/RETIRAR llantas: recomienda según datos pero aclara que la operación se hace desde la app.
 - SIEMPRE termina tu "text" con "\\n\\n¿Puedo ayudarte con algo más?" o variación natural.
-- NUNCA finjas crear o modificar datos.
-- Si piden CREAR flujos o AGENDAR en calendario (acciones que modifican): responde SOLO "Procesando..." en "text". El sistema ejecuta la acción y reemplaza tu texto con el resultado real. NO confirmes ni niegues la acción.
-- Si PREGUNTAN qué hay en su calendario, qué eventos tienen, o consultas de lectura: responde normalmente con texto útil. El sistema agregará los datos reales del calendario.
+- NUNCA finjas crear o modificar datos de llantas/vehículos.
+- Si piden CREAR flujos de automatización: responde SOLO "Procesando..." en "text". El sistema ejecuta la acción y reemplaza tu texto.
+- Si PREGUNTAN qué hay en su calendario, qué eventos tienen, o consultas de lectura: responde normalmente. El sistema agregará los datos reales.
+
+REGLA CALENDARIO — CREAR EVENTOS:
+- Cuando el usuario quiera CREAR/AGENDAR un evento en el calendario, NO digas "Procesando...". En su lugar, PREGUNTA los detalles que falten ANTES de crearlo.
+- Detalles necesarios: (1) Título/asunto, (2) Fecha, (3) Hora, (4) Duración (sugiere 1 hora por defecto), (5) Descripción/notas.
+- Detalles opcionales que puedes sugerir: ubicación, personas a invitar, enlaces.
+- Si el usuario ya dio TODOS los detalles (al menos fecha y hora), confirma lo que vas a crear: "Voy a crear: [título] el [fecha] a las [hora] por [duración]. ¿Confirmo?" y LUEGO responde "Procesando..." SOLO cuando tengas fecha+hora claros.
+- Si el usuario pide agregar info de llantas en la descripción, INCLUYE los datos relevantes de TIREDATA en tu resumen.
 
 REGLA #1 — CONSISTENCIA:
 - SOLO números EXACTOS de TIREDATA. NUNCA inventes ni redondees.
@@ -209,12 +218,20 @@ export class AnaService {
   }
 
   private async buildFleetDataset(companyId: string): Promise<string> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(today);
+    todayEnd.setHours(23, 59, 59, 999);
+    const sevenDaysAgo = new Date(today.getTime() - 7 * 86_400_000);
+
     const [
       tires,
       vehicles,
       recentSnapshots,
       benchmarks,
       costBreakdown,
+      todayInspections,
+      recentInspections,
     ] = await Promise.all([
       this.prisma.tire.findMany({
         where: { companyId },
@@ -293,6 +310,31 @@ export class AnaService {
         where: { tire: { companyId } },
         _sum: { valor: true },
         _count: true,
+      }),
+      this.prisma.inspeccion.findMany({
+        where: { tire: { companyId }, fecha: { gte: today, lte: todayEnd } },
+        select: {
+          id: true,
+          fecha: true,
+          profundidadInt: true,
+          tire: { select: { marca: true, diseno: true, posicion: true, vehicle: { select: { placa: true } } } },
+          inspeccionadoPorNombre: true,
+          source: true,
+        },
+        orderBy: { fecha: 'desc' },
+        take: 50,
+      }),
+      this.prisma.inspeccion.findMany({
+        where: { tire: { companyId }, fecha: { gte: sevenDaysAgo, lt: today } },
+        select: {
+          id: true,
+          fecha: true,
+          profundidadInt: true,
+          tire: { select: { marca: true, diseno: true, posicion: true, vehicle: { select: { placa: true } } } },
+          inspeccionadoPorNombre: true,
+        },
+        orderBy: { fecha: 'desc' },
+        take: 30,
       }),
     ]);
 
@@ -574,6 +616,32 @@ export class AnaService {
     }
     if (clientSet.size > 1) {
       L.push(`\nCLIENTES: ${[...clientSet].join(', ')}`);
+    }
+
+    // ── Inspections ──
+    const todayDateStr = today.toISOString().slice(0, 10);
+    if (todayInspections.length) {
+      L.push(`\nINSPECCIONES HOY (${todayDateStr}): ${todayInspections.length} registros`);
+      L.push('Vehículo|Llanta|Posición|Profundidad|Inspector|Hora');
+      for (const ins of todayInspections) {
+        const hora = new Date(ins.fecha).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+        L.push(
+          `${ins.tire?.vehicle?.placa || '?'}|${ins.tire?.marca || '?'} ${ins.tire?.diseno || ''}|${ins.tire?.posicion || '?'}|${ins.profundidadInt != null ? `${ins.profundidadInt}mm` : '-'}|${ins.inspeccionadoPorNombre || ins.source || '-'}|${hora}`,
+        );
+      }
+    } else {
+      L.push(`\nINSPECCIONES HOY (${todayDateStr}): 0 — No hay inspecciones registradas hoy.`);
+    }
+
+    if (recentInspections.length) {
+      L.push(`\nINSPECCIONES ÚLTIMOS 7 DÍAS: ${recentInspections.length} registros`);
+      L.push('Fecha|Vehículo|Llanta|Profundidad|Inspector');
+      for (const ins of recentInspections.slice(0, 15)) {
+        const fechaStr = new Date(ins.fecha).toISOString().slice(0, 10);
+        L.push(
+          `${fechaStr}|${ins.tire?.vehicle?.placa || '?'}|${ins.tire?.marca || '?'} ${ins.tire?.diseno || ''}|${ins.profundidadInt != null ? `${ins.profundidadInt}mm` : '-'}|${ins.inspeccionadoPorNombre || '-'}`,
+        );
+      }
     }
 
     const result = L.join('\n');
