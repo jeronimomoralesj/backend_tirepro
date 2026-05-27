@@ -1,13 +1,28 @@
 import {
   IsString,
   IsOptional,
-  IsEnum,
+  IsIn,
   IsObject,
   IsInt,
   Min,
   Max,
 } from 'class-validator';
-import { TriggerType, ActionType, Prisma } from '@prisma/client';
+
+const TRIGGER_TYPES = [
+  'tire_alert_level',
+  'tire_depth_threshold',
+  'scheduled_cron',
+  'tire_eol_approaching',
+  'inspection_completed',
+] as const;
+
+const ACTION_TYPES = [
+  'send_email',
+  'send_whatsapp',
+  'create_calendar_event',
+  'make_phone_call',
+  'create_notification',
+] as const;
 
 export class UpdateFlowDto {
   @IsOptional()
@@ -19,20 +34,20 @@ export class UpdateFlowDto {
   description?: string;
 
   @IsOptional()
-  @IsEnum(TriggerType)
-  triggerType?: TriggerType;
+  @IsIn(TRIGGER_TYPES)
+  triggerType?: string;
 
   @IsOptional()
   @IsObject()
-  triggerConfig?: Prisma.InputJsonValue;
+  triggerConfig?: Record<string, any>;
 
   @IsOptional()
-  @IsEnum(ActionType)
-  actionType?: ActionType;
+  @IsIn(ACTION_TYPES)
+  actionType?: string;
 
   @IsOptional()
   @IsObject()
-  actionConfig?: Prisma.InputJsonValue;
+  actionConfig?: Record<string, any>;
 
   @IsOptional()
   @IsInt()

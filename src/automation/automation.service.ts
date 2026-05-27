@@ -4,7 +4,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { FlowStatus } from '@prisma/client';
+import { FlowStatus, TriggerType, ActionType } from '@prisma/client';
 import { CreateFlowDto } from './dto/create-flow.dto';
 import { UpdateFlowDto } from './dto/update-flow.dto';
 
@@ -42,10 +42,10 @@ export class AutomationService {
         createdBy: userId,
         name: dto.name,
         description: dto.description,
-        triggerType: dto.triggerType,
-        triggerConfig: dto.triggerConfig,
-        actionType: dto.actionType,
-        actionConfig: dto.actionConfig,
+        triggerType: dto.triggerType as TriggerType,
+        triggerConfig: dto.triggerConfig as any,
+        actionType: dto.actionType as ActionType,
+        actionConfig: dto.actionConfig as any,
         cooldownMinutes: dto.cooldownMinutes ?? 60,
         maxRunsPerDay: dto.maxRunsPerDay ?? 100,
         status: FlowStatus.active,
