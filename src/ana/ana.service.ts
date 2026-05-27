@@ -10,7 +10,7 @@ import {
 } from '@aws-sdk/client-bedrock-runtime';
 
 const MODEL_ID = 'amazon.nova-lite-v1:0';
-const DATASET_TTL_MS = 120_000; // cache fleet data for 2 min
+const DATASET_TTL_MS = 300_000; // cache fleet data for 5 min
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SYSTEM PROMPT
@@ -35,34 +35,57 @@ function buildSystemPrompt(dataset: string): string {
   return `Eres Ana, analista experta de llantas de TirePro. Español colombiano, profesional y concisa.
 
 REGLA #0 — ACCIONES Y CIERRE:
-- Si el usuario pide hacer/registrar/crear una inspección, subir datos, cargar archivo, o agregar llantas: redirige a los botones de "Inspección" o "Subir datos" en la interfaz. No finjas hacerlo.
-- Si el usuario pide ROTAR llantas (ej. "rotar posición 1 a posición 3"), EXPLICA los pasos: ve a Dashboard → Buscar → selecciona el vehículo → usa el botón de rotación. Indica qué posiciones mover según lo que pidió y recomienda basado en las profundidades actuales del TIREDATA.
-- Si el usuario pide RETIRAR, CAMBIAR, o MOVER una llanta, explica los pasos en el dashboard y da recomendaciones basadas en los datos.
-- SIEMPRE termina cada respuesta con una línea preguntando: "¿Hay algo más en lo que pueda ayudarte?" o similar.
-- NUNCA finjas crear, modificar o registrar datos.
+- Si piden hacer/registrar inspección, subir datos o agregar llantas: redirige a los botones de la interfaz. No finjas hacerlo.
+- Si piden ROTAR/MOVER/RETIRAR llantas: explica pasos en Dashboard y recomienda según datos.
+- SIEMPRE termina tu "text" con "\\n\\n¿Puedo ayudarte con algo más?" o variación natural.
+- NUNCA finjas crear o modificar datos.
+- PUEDES crear flujos de automatización cuando el usuario lo pida (ej: "créame un flujo que me avise por WhatsApp cuando una llanta tenga cambio inmediato"). Confirma lo que creaste.
+- PUEDES agendar eventos en Google Calendar cuando lo pidan (ej: "agéndame una cita para el martes para cambio de llantas"). Confirma el evento creado.
+- Si piden crear un flujo o agendar algo, responde confirmando la acción. El sistema lo ejecuta automáticamente.
 
 REGLA #1 — CONSISTENCIA:
-- SOLO usa números que aparecen EXACTAMENTE en TIREDATA. NUNCA inventes, redondees, ni estimes cifras.
-- Si mencionas un conteo (ej. "4 críticas") en un block, DEBE coincidir exactamente con los datos que muestras en otros blocks.
-- Si TIREDATA dice Inmediato:2, entonces hay 2 llantas críticas, no 3, no 4. Usa el número exacto.
-- Antes de responder, verifica que todos los números entre blocks sean coherentes.
+- SOLO números EXACTOS de TIREDATA. NUNCA inventes ni redondees.
+- Conteos entre blocks deben coincidir exactamente con TIREDATA.
 
-REGLA #2 — SIEMPRE BLOCKS:
-- Toda respuesta con datos DEBE incluir blocks. NUNCA respondas solo con texto cuando el usuario pide datos.
-- Comparaciones (CPK por marca, por eje, etc.) → SIEMPRE incluir un block bar o pie con los datos.
-- Listados → SIEMPRE incluir un block table.
-- Métricas → SIEMPRE incluir un block kpis.
-- Si el usuario pregunta algo que requiere datos y no incluyes blocks, tu respuesta es INCORRECTA.
+REGLA #2 — SIEMPRE BLOCKS Y SUGGESTIONS:
+- Toda respuesta con datos DEBE incluir blocks. Sin blocks cuando hay datos = INCORRECTO.
+- suggestions OBLIGATORIO (3 análisis relacionados). Solo omitir en saludos puros.
+- Saludo sin datos → blocks:[], suggestions con 3 opciones de análisis.
+
+REGLA #3 — VISUALIZACIÓN INTELIGENTE:
+Analiza la INTENCIÓN del usuario y elige blocks:
+
+VALOR PUNTUAL ("¿cuál es el CPK?", "¿cuántas?", "promedio"):
+→ kpis con número destacado. Si hay desglose por categoría, agregar bar debajo.
+
+MÁS DETALLES / PROFUNDIZAR ("ver más", "detalle", "desglose", "profundizar"):
+→ table detallada + gráfico complementario. NUNCA solo texto.
+
+COMPARACIÓN ("por marca", "por eje", "X vs Y"):
+→ kpis resumen arriba + bar chart comparativo.
+
+DISTRIBUCIÓN ("mix", "proporción", "composición"):
+→ pie chart + kpis con total.
+
+TENDENCIA ("evolución", "histórico", "últimos meses"):
+→ line chart + kpis resumen.
+
+ALERTAS ("críticas", "cambio inmediato", "urgente"):
+→ callout alerta + table listado detallado.
+
+RESUMEN ("resumen", "estado general", "cómo está"):
+→ kpis (3-5 métricas) + gauge salud + callout si hay alertas.
+
+CLAVE: pregunta sobre UN número → kpis (NO gráfico solo para un dato).
 
 CONTEXTO TÉCNICO:
-- CPK = costo total acumulado / km totales recorridos. Menor = mejor.
-- Profundidad: límite legal 2mm. Solo baja (sube con reencauche).
+- CPK = costo total / km recorridos. Menor = mejor.
+- Profundidad: límite legal 2mm.
 - Alertas: inmediato(≤2mm) 30d(2-4mm) 60d(4-6mm) óptimo(>6mm)
-- "Críticas" = SOLO inmediato (≤2mm). No incluye 30d.
+- "Críticas" = SOLO inmediato (≤2mm).
 - Ejes: direccion, traccion, libre, remolque, repuesto
-- Vidas: nueva, reencauche1, reencauche2, reencauche3, fin
+- Vidas: nueva, reencauche1/2/3, fin
 - Health score: 0-100
-- ROI reencauche: < 1.0 = reencauche conviene
 
 TIREDATA:
 ${dataset}
@@ -73,18 +96,12 @@ FORMATO: responde SOLO JSON puro (sin markdown, sin \`\`\`):
 ${BLOCK_SCHEMA}
 
 REGLAS DE FORMATO:
-- text: 1-3 frases. NO repitas cifras que van en blocks.
-- Comparaciones → bar chart (orientation "horizontal" si hay muchas categorías).
-- Distribuciones parte/todo → pie chart.
-- Tendencias temporales → line chart.
-- Listados detallados → table.
-- Métricas clave → kpis (2-6 items).
-- Alertas urgentes → callout con tone apropiado.
-- Reportes completos → combinar 3-5 blocks (kpis + gráfico + tabla).
-- gauge: "value" es un porcentaje 0-100. "label" describe el contexto.
-- gauge label: si mencionas conteos, usa los EXACTOS de TIREDATA.
-- suggestions: opcional, máx 3. Sugiere análisis relacionados.
-- Saludo sin datos → blocks:[].
+- text: 1-3 frases con insight + cierre. NO repitas cifras de blocks.
+- suggestions: OBLIGATORIO 3, relacionados al tema. label corto, intent la pregunta completa.
+- bar: orientation "horizontal" si >4 categorías.
+- gauge: "value" 0-100, "label" con contexto.
+- Reportes completos: combinar 3-5 blocks (kpis + gráfico + tabla).
+- Saludo → blocks:[], suggestions con opciones iniciales.
 - IMPORTANTE: responde SOLO el JSON, nada más.`;
 }
 
@@ -129,7 +146,7 @@ export class AnaService {
     const systemPrompt = buildSystemPrompt(dataset);
 
     const messages: Message[] = [];
-    for (const m of history.slice(-8)) {
+    for (const m of history.slice(-6)) {
       if (!m?.text) continue;
       messages.push({
         role: m.role === 'user' ? 'user' : 'assistant',
@@ -143,8 +160,8 @@ export class AnaService {
       system: [{ text: systemPrompt }],
       messages,
       inferenceConfig: {
-        temperature: 0.55,
-        maxTokens: 2000,
+        temperature: 0.5,
+        maxTokens: 1500,
       },
     });
 
@@ -439,7 +456,7 @@ export class AnaService {
     const criticals = tires
       .filter((t) => t.currentProfundidad != null && t.currentProfundidad <= 4)
       .sort((a, b) => (a.currentProfundidad ?? 99) - (b.currentProfundidad ?? 99))
-      .slice(0, 25);
+      .slice(0, 15);
     if (criticals.length) {
       L.push(`\nCRÍTICAS(${criticals.length}/${alertInm + alert30}):`);
       L.push('Vehículo|Llanta|Prof|Eje|CPK|Salud|EOL');
@@ -509,9 +526,9 @@ export class AnaService {
     }
     const topVehicles = Object.values(vehMap)
       .sort((a, b) => b.critCount - a.critCount || b.tireCount - a.tireCount)
-      .slice(0, 15);
+      .slice(0, 10);
     if (topVehicles.length) {
-      L.push(`\nVEHÍCULOS(top15):`);
+      L.push(`\nVEHÍCULOS(top10):`);
       L.push('Placa|Tipo|Llantas|Críticas|CPK');
       for (const v of topVehicles) {
         L.push(
@@ -530,7 +547,7 @@ export class AnaService {
     if (relevantBenchmarks.length) {
       L.push(`\nBENCHMARK INDUSTRIA:`);
       L.push('Llanta|CPK industria|KM prom|ROI reencauche|Muestra');
-      for (const b of relevantBenchmarks.slice(0, 15)) {
+      for (const b of relevantBenchmarks.slice(0, 10)) {
         L.push(
           `${b.marca} ${b.diseno} ${b.dimension}|${b.avgCpk != null ? `$${b.avgCpk.toFixed(0)}` : '-'}|${b.avgKmPorVida != null ? `${(b.avgKmPorVida / 1000).toFixed(0)}K` : '-'}|${b.retreadRoiRatio != null ? b.retreadRoiRatio.toFixed(2) : '-'}|${b.sampleSize}`,
         );
@@ -669,10 +686,16 @@ function isLabelValue(d: unknown): boolean {
   );
 }
 
+const FALLBACK_SUGGESTIONS: { label: string; intent: string }[] = [
+  { label: 'Resumen de flota', intent: 'Dame un resumen general de mi flota.' },
+  { label: 'Llantas críticas', intent: '¿Qué llantas necesitan cambio inmediato?' },
+  { label: 'CPK por marca', intent: '¿Cuál es el CPK promedio por marca?' },
+];
+
 function normalizeSuggestions(
   s: unknown,
 ): AnaReply['suggestions'] {
-  if (!Array.isArray(s)) return null;
+  if (!Array.isArray(s)) return FALLBACK_SUGGESTIONS;
   const out: { label: string; intent: string }[] = [];
   for (const it of s) {
     if (!it || typeof it !== 'object') continue;
@@ -687,5 +710,5 @@ function normalizeSuggestions(
     }
     if (out.length >= 3) break;
   }
-  return out.length ? out : null;
+  return out.length ? out : FALLBACK_SUGGESTIONS;
 }
