@@ -111,6 +111,38 @@ export class AnaController {
     return { companyId, userId };
   }
 
+  /* ── Calendar confirm ─────────────────────────────────────────── */
+
+  @Post('calendar/confirm')
+  @HttpCode(HttpStatus.OK)
+  async confirmCalendarEvent(
+    @Req() req: AuthReq,
+    @Body() body: {
+      title: string;
+      startTimeISO: string;
+      durationMinutes: number;
+      description?: string;
+      attendees?: string[];
+    },
+  ) {
+    const companyId = req.user?.companyId;
+    if (!companyId) throw new BadRequestException('No company.');
+    const startTime = new Date(body.startTimeISO);
+    if (isNaN(startTime.getTime())) throw new BadRequestException('Invalid startTime.');
+
+    await this.calendarSvc.createEvent(companyId, {
+      summary: body.title,
+      description: body.description,
+      startTime,
+      durationMinutes: body.durationMinutes || 60,
+      attendees: body.attendees,
+    });
+
+    const dateStr = startTime.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
+    const timeStr = startTime.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+    return { success: true, message: `Evento "${body.title}" creado para el ${dateStr} a las ${timeStr}.` };
+  }
+
   /* ── Chat (with persistence) ──────────────────────────────────── */
 
   @Post('chat')
@@ -143,19 +175,27 @@ export class AnaController {
       );
 
       if (actions.length > 0) {
-        const summaries = actions.map(a => {
-          if (a.action === 'flow_created') return `He creado el flujo: ${a.result}. Puedes verlo y administrarlo en la página de Agentes.`;
-          if (a.action === 'calendar_event_created') return `${a.result}`;
-          if (a.action === 'calendar_conflict') return `${a.result}`;
-          if (a.action === 'calendar_query') return `${a.result}`;
-          if (a.action === 'calendar_error') return `${a.result}`;
-          if (a.action === 'calendar_needs_info') return `${a.result}`;
-          if (a.action === 'flow_error') return `No pude crear el flujo: ${a.result}`;
-          return a.result;
-        });
-        reply.text = summaries.join('\n\n') + '\n\n¿Puedo ayudarte con algo más?';
+        const hasPreview = actions.some(a => a.action === 'calendar_preview');
+        if (!hasPreview) {
+          const summaries = actions.map(a => {
+            if (a.action === 'flow_created') return `He creado el flujo: ${a.result}. Puedes verlo y administrarlo en la página de Agentes.`;
+            if (a.action === 'calendar_event_created') return `${a.result}`;
+            if (a.action === 'calendar_conflict') return `${a.result}`;
+            if (a.action === 'calendar_query') return `${a.result}`;
+            if (a.action === 'calendar_error') return `${a.result}`;
+            if (a.action === 'calendar_needs_info') return `${a.result}`;
+            if (a.action === 'flow_error') return `No pude crear el flujo: ${a.result}`;
+            return a.result;
+          });
+          reply.text = summaries.join('\n\n') + '\n\n¿Puedo ayudarte con algo más?';
+        }
 
         for (const a of actions) {
+          if (a.action === 'calendar_preview' && a.data) {
+            reply.text = '¡Listo! Revisa los detalles del evento:';
+            reply.blocks = [...(reply.blocks ?? []), { kind: 'calendarPreview', ...(a.data as object) }];
+            reply.suggestions = null;
+          }
           if (a.action === 'calendar_query' && a.data) {
             const d = a.data as { events: Array<{ summary: string; start: string; end: string }>; label: string; date: string };
             reply.blocks = [
@@ -348,30 +388,34 @@ export class AnaController {
           try {
             const wantsTireInfo = /llanta|tire|critica|detalles|descripci|info/i.test(userMessage);
             const { eventTitle, startTime, description } = await this.parseCalendarDetails(userMessage, _anaReply, wantsTireInfo ? companyId : undefined);
-            const durationMinutes = 60;
-            const endTime = new Date(startTime.getTime() + durationMinutes * 60_000);
+            const durationMatch = userMessage.match(/(\d+)\s*hora/i);
+            const durationMinutes = durationMatch ? parseInt(durationMatch[1]) * 60 : 60;
             const dateStr = startTime.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
             const timeStr = startTime.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+            const attendees = [...userMessage.matchAll(/[\w.-]+@[\w.-]+\.\w+/g)].map(m => m[0]);
 
+            const conflicts: string[] = [];
+            const endTime = new Date(startTime.getTime() + durationMinutes * 60_000);
             const existing = await this.calendarSvc.listEvents(companyId, startTime, endTime);
-            if (existing.length > 0) {
-              const conflicts = existing.map(e => {
-                const s = new Date(e.start).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-                return `"${e.summary}" a las ${s}`;
-              }).join(', ');
-              actions.push({
-                action: 'calendar_conflict',
-                result: `El ${dateStr} a las ${timeStr} se cruza con: ${conflicts}. Dime "confírmalo" o "ponlo a otra hora" para que lo programe.`,
-              });
-            } else {
-              await this.calendarSvc.createEvent(companyId, {
-                summary: eventTitle,
-                description,
-                startTime,
-                durationMinutes,
-              });
-              actions.push({ action: 'calendar_event_created', result: `Evento "${eventTitle}" creado para el ${dateStr} a las ${timeStr}.` });
+            for (const e of existing) {
+              const s = new Date(e.start).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+              conflicts.push(`"${e.summary}" a las ${s}`);
             }
+
+            actions.push({
+              action: 'calendar_preview',
+              result: '',
+              data: {
+                title: eventTitle,
+                date: dateStr,
+                time: timeStr,
+                startTimeISO: startTime.toISOString(),
+                durationMinutes,
+                description,
+                attendees,
+                conflicts,
+              },
+            });
           } catch (err: any) {
             this.log.warn(`Ana calendar creation failed: ${err.message}`);
             actions.push({ action: 'calendar_error', result: err.message });

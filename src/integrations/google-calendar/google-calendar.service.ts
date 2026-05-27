@@ -11,6 +11,7 @@ export interface CalendarEventOpts {
   startTime?: Date;
   durationMinutes?: number;
   calendarId?: string;
+  attendees?: string[];
 }
 
 @Injectable()
@@ -132,7 +133,11 @@ export class GoogleCalendarService {
         description: opts.description ?? 'Creado por Agentes TirePro',
         start: { dateTime: start.toISOString(), timeZone: 'America/Bogota' },
         end: { dateTime: end.toISOString(), timeZone: 'America/Bogota' },
+        ...(opts.attendees?.length && {
+          attendees: opts.attendees.map(email => ({ email })),
+        }),
       },
+      ...(opts.attendees?.length && { sendUpdates: 'all' }),
     });
 
     await this.prisma.integrationConnection.update({
