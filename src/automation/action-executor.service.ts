@@ -8,6 +8,7 @@ import { wrapEmail, emailText, emailKvList, emailButton, emailCallout } from '..
 
 export interface ActionContext {
   tireId?: string;
+  tireIds?: string[];
   companyId: string;
 }
 
@@ -87,28 +88,48 @@ export class ActionExecutorService {
         case ActionType.create_calendar_event: {
           if (!this.googleCalendar) throw new Error('Google Calendar not configured');
           const calConfig = flow.actionConfig as Record<string, unknown>;
-          const title = this.interpolate(
-            (calConfig.summary as string) ?? (calConfig.title as string) ?? 'Cita TirePro — {{vehiclePlaca}}',
-            vars,
-          );
-          const customDesc = calConfig.description
-            ? this.interpolate(calConfig.description as string, vars)
-            : null;
-          const description = customDesc
-            ?? `Generado por Agentes TirePro.\n${vars.tireMarca ? `Llanta: ${vars.tireMarca} ${vars.tireDiseno ?? ''} — ${vars.tireDepth ?? '?'}mm\nVehiculo: ${vars.vehiclePlaca ?? 'N/A'}\nPosicion: ${vars.position ?? 'N/A'}` : ''}`;
           const delayDays = typeof calConfig.delayDays === 'number' ? calConfig.delayDays : 0;
           const startHour = typeof calConfig.startHour === 'number' ? calConfig.startHour : 9;
           const startMinute = typeof calConfig.startMinute === 'number' ? calConfig.startMinute : 0;
           const startTime = new Date();
           startTime.setDate(startTime.getDate() + (delayDays > 0 ? delayDays : 1));
           startTime.setHours(startHour, startMinute, 0, 0);
+
+          const tireIds = ctx.tireIds && ctx.tireIds.length > 1 ? ctx.tireIds : (ctx.tireId ? [ctx.tireId] : []);
+          const allTireVars = await Promise.all(tireIds.map(id => this.buildTemplateVars({ tireId: id, companyId: ctx.companyId })));
+
+          const title = allTireVars.length > 1
+            ? `Alerta TirePro — ${allTireVars.length} llantas requieren atencion`
+            : this.interpolate((calConfig.summary as string) ?? (calConfig.title as string) ?? 'Alerta TirePro — {{vehiclePlaca}}', vars);
+
+          let description: string;
+          if (allTireVars.length > 1) {
+            const lines = allTireVars.map((tv, i) => {
+              const parts = [
+                `Llanta ${i + 1}:`,
+                tv.tireMarca ? `${tv.tireMarca} ${tv.tireDiseno ?? ''}`.trim() : null,
+                tv.tireDepth ? `Profundidad: ${tv.tireDepth}mm` : null,
+                tv.vehiclePlaca ? `Vehiculo: ${tv.vehiclePlaca}` : null,
+                tv.position ? `Posicion: ${tv.position}` : null,
+                tv.tirePlaca ? `ID: ${tv.tirePlaca}` : null,
+                tv.tireAlertLevel ? `Nivel: ${tv.tireAlertLevel}` : null,
+              ].filter(Boolean);
+              return parts.join(' | ');
+            });
+            description = `${allTireVars.length} llantas activaron esta alerta:\n\n${lines.join('\n')}\n\n— Generado por Agentes TirePro`;
+          } else if (calConfig.description) {
+            description = this.interpolate(calConfig.description as string, vars);
+          } else {
+            description = `Generado por Agentes TirePro.\n${vars.tireMarca ? `Llanta: ${vars.tireMarca} ${vars.tireDiseno ?? ''} — ${vars.tireDepth ?? '?'}mm\nVehiculo: ${vars.vehiclePlaca ?? 'N/A'}\nPosicion: ${vars.position ?? 'N/A'}\nID: ${vars.tirePlaca ?? 'N/A'}` : ''}`;
+          }
+
           const eventId = await this.googleCalendar.createEvent(ctx.companyId, {
             summary: title,
             description,
             startTime,
             durationMinutes: (calConfig.durationMinutes as number) ?? 60,
           });
-          output = { eventId };
+          output = { eventId, tireCount: allTireVars.length };
           break;
         }
 
