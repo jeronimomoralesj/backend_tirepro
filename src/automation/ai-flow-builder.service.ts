@@ -19,7 +19,8 @@ TIPOS DE TRIGGER disponibles:
    triggerConfig: { "alertLevels": ["inmediato" | "30d" | "60d" | "optimo"] }
 
 2. "tire_depth_threshold" — Se dispara cuando la profundidad de una llanta cae por debajo de un umbral.
-   triggerConfig: { "thresholdMm": <número> }
+   triggerConfig: { "thresholdMm": <número en milímetros, SIEMPRE decimal, ej: 1.3, 2.0, 4.5. NUNCA multiplicar por 1000> }
+   - "1.3mm" → thresholdMm: 1.3 (NO 1300). "2mm" → thresholdMm: 2.0. Las profundidades de llantas van de 0 a ~15mm.
 
 3. "scheduled_cron" — Se dispara según un horario cron.
    triggerConfig: { "cron": "<expresión cron>", "timezone": "America/Bogota" }
@@ -38,7 +39,10 @@ TIPOS DE ACCIÓN disponibles:
    actionConfig: { "to": "<número con código de país, ej: +57...>" }
 
 3. "create_calendar_event" — Crea un evento en Google Calendar.
-   actionConfig: { "summary": "<título>", "durationMinutes": <número> }
+   actionConfig: { "summary": "<título>", "description": "<descripción del evento>", "durationMinutes": <número>, "delayDays": <número de días después del trigger para programar el evento, default 0 = mismo día> }
+   - Si el usuario dice "para el siguiente día" o "al día siguiente", usa delayDays: 1.
+   - Si dice "en 3 días", usa delayDays: 3. Si no menciona cuándo, usa delayDays: 0.
+   - En "description", incluye las variables de plantilla relevantes para dar contexto. Ejemplo: "Llanta {{tireMarca}} {{tireDiseno}} en vehículo {{vehiclePlaca}} — profundidad: {{tireDepth}}mm"
 
 4. "make_phone_call" — Realiza una llamada telefónica.
    actionConfig: { "to": "<número>", "message": "<mensaje de voz>" }

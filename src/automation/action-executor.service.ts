@@ -83,10 +83,23 @@ export class ActionExecutorService {
         case ActionType.create_calendar_event: {
           if (!this.googleCalendar) throw new Error('Google Calendar not configured');
           const calConfig = flow.actionConfig as Record<string, unknown>;
-          const title = this.interpolate((calConfig.title as string) ?? 'Cita TirePro — {{vehiclePlaca}}', vars);
+          const title = this.interpolate(
+            (calConfig.summary as string) ?? (calConfig.title as string) ?? 'Cita TirePro — {{vehiclePlaca}}',
+            vars,
+          );
+          const customDesc = calConfig.description
+            ? this.interpolate(calConfig.description as string, vars)
+            : null;
+          const description = customDesc
+            ?? `Generado por Agentes TirePro.\n${vars.tireMarca ? `Llanta: ${vars.tireMarca} ${vars.tireDiseno ?? ''} — ${vars.tireDepth ?? '?'}mm\nVehiculo: ${vars.vehiclePlaca ?? 'N/A'}\nPosicion: ${vars.position ?? 'N/A'}` : ''}`;
+          const delayDays = typeof calConfig.delayDays === 'number' ? calConfig.delayDays : 0;
+          const startTime = new Date();
+          startTime.setDate(startTime.getDate() + (delayDays > 0 ? delayDays : 1));
+          startTime.setHours(9, 0, 0, 0);
           const eventId = await this.googleCalendar.createEvent(ctx.companyId, {
             summary: title,
-            description: `Generado por Agentes TirePro.\n${vars.tireMarca ? `Llanta: ${vars.tireMarca} ${vars.tireDiseno ?? ''} — ${vars.tireDepth ?? '?'}mm` : ''}`,
+            description,
+            startTime,
             durationMinutes: (calConfig.durationMinutes as number) ?? 60,
           });
           output = { eventId };
