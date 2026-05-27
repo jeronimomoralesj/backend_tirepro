@@ -65,7 +65,9 @@ export class AnaController {
         const summaries = actions.map(a => {
           if (a.action === 'flow_created') return `He creado el flujo: ${a.result}. Puedes verlo y administrarlo en la página de Agentes.`;
           if (a.action === 'calendar_event_created') return `${a.result}`;
-          if (a.action === 'calendar_error') return `No pude crear el evento en Google Calendar: ${a.result}`;
+          if (a.action === 'calendar_conflict') return `${a.result}`;
+          if (a.action === 'calendar_query') return `${a.result}`;
+          if (a.action === 'calendar_error') return `${a.result}`;
           if (a.action === 'flow_error') return `No pude crear el flujo: ${a.result}`;
           return a.result;
         });
@@ -87,6 +89,44 @@ export class AnaController {
       || /crea(r|me)?\s*(un\s*)?(evento|cita|reunion)/i.test(lo) && /calendario|calendar/i.test(lo)
       || /pon(er|me|lo)?\s*(en\s*)?(el\s*)?(mi\s*)?(calendario|calendar)/i.test(lo)
       || /mi\s*calendario/i.test(lo) && /(agenda|crea|pon|programa)/i.test(lo);
+  }
+
+  private isCalendarQueryIntent(msg: string): boolean {
+    const lo = msg.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    return (
+      (/que\s*tengo|que\s*hay|mis\s*eventos|mi\s*agenda|mi\s*calendario/i.test(lo) && !/agenda(r|me)/i.test(lo))
+      || /muestrame.*calendario/i.test(lo)
+      || /eventos.*(?:hoy|manana|semana|lunes|martes|miercoles|jueves|viernes)/i.test(lo)
+    );
+  }
+
+  private parseCalendarQueryRange(msg: string): { start: Date; end: Date; label: string } {
+    const lo = msg.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const now = new Date();
+
+    if (/manana/i.test(lo)) {
+      const s = new Date(now); s.setDate(s.getDate() + 1); s.setHours(0, 0, 0, 0);
+      const e = new Date(s); e.setHours(23, 59, 59, 999);
+      return { start: s, end: e, label: 'para mañana' };
+    }
+    if (/semana/i.test(lo)) {
+      const s = new Date(now); s.setHours(0, 0, 0, 0);
+      const e = new Date(s); e.setDate(e.getDate() + 7); e.setHours(23, 59, 59, 999);
+      return { start: s, end: e, label: 'de esta semana' };
+    }
+
+    const days: Record<string, number> = { lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6, domingo: 0 };
+    for (const [name, dow] of Object.entries(days)) {
+      if (lo.includes(name)) {
+        const s = this.nextWeekday(dow); s.setHours(0, 0, 0, 0);
+        const e = new Date(s); e.setHours(23, 59, 59, 999);
+        return { start: s, end: e, label: `el ${name}` };
+      }
+    }
+
+    const s = new Date(now); s.setHours(0, 0, 0, 0);
+    const e = new Date(s); e.setHours(23, 59, 59, 999);
+    return { start: s, end: e, label: 'para hoy' };
   }
 
   private isFlowIntent(msg: string): boolean {
@@ -123,18 +163,58 @@ export class AnaController {
       } else {
         try {
           const { eventTitle, startTime } = this.parseCalendarDetails(userMessage);
-          const eventId = await this.calendarSvc.createEvent(companyId, {
-            summary: eventTitle,
-            description: 'Creado por Ana — TirePro',
-            startTime,
-            durationMinutes: 60,
-          });
+          const durationMinutes = 60;
+          const endTime = new Date(startTime.getTime() + durationMinutes * 60_000);
           const dateStr = startTime.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
           const timeStr = startTime.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-          actions.push({ action: 'calendar_event_created', result: `Evento "${eventTitle}" creado para el ${dateStr} a las ${timeStr}.` });
+
+          const existing = await this.calendarSvc.listEvents(companyId, startTime, endTime);
+          if (existing.length > 0) {
+            const conflicts = existing.map(e => {
+              const s = new Date(e.start).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+              return `"${e.summary}" a las ${s}`;
+            }).join(', ');
+            actions.push({
+              action: 'calendar_conflict',
+              result: `El ${dateStr} a las ${timeStr} se cruza con: ${conflicts}. Dime "confírmalo" o "ponlo a otra hora" para que lo programe.`,
+            });
+          } else {
+            await this.calendarSvc.createEvent(companyId, {
+              summary: eventTitle,
+              description: 'Creado por Ana — TirePro',
+              startTime,
+              durationMinutes,
+            });
+            actions.push({ action: 'calendar_event_created', result: `Evento "${eventTitle}" creado para el ${dateStr} a las ${timeStr}.` });
+          }
         } catch (err: any) {
           this.log.warn(`Ana calendar creation failed: ${err.message}`);
           actions.push({ action: 'calendar_error', result: err.message });
+        }
+      }
+    }
+
+    if (this.isCalendarQueryIntent(userMessage)) {
+      const conn = await this.prisma.integrationConnection.findFirst({
+        where: { companyId, type: 'google_calendar', isActive: true },
+      });
+      if (!conn) {
+        actions.push({ action: 'calendar_error', result: 'Google Calendar no está conectado.' });
+      } else {
+        try {
+          const { start, end, label } = this.parseCalendarQueryRange(userMessage);
+          const events = await this.calendarSvc.listEvents(companyId, start, end);
+          if (events.length === 0) {
+            actions.push({ action: 'calendar_query', result: `No tienes eventos ${label}.` });
+          } else {
+            const list = events.map(e => {
+              const s = new Date(e.start).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+              return `• ${s} — ${e.summary}`;
+            }).join('\n');
+            actions.push({ action: 'calendar_query', result: `Tus eventos ${label}:\n${list}` });
+          }
+        } catch (err: any) {
+          this.log.warn(`Ana calendar query failed: ${err.message}`);
         }
       }
     }

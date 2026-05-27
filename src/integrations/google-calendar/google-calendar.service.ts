@@ -142,4 +142,38 @@ export class GoogleCalendarService {
 
     return event.data.id ?? null;
   }
+
+  async listEvents(
+    companyId: string,
+    timeMin: Date,
+    timeMax: Date,
+  ): Promise<Array<{ id: string; summary: string; start: string; end: string }>> {
+    const conn = await this.prisma.integrationConnection.findUnique({
+      where: { companyId_type: { companyId, type: 'google_calendar' } },
+    });
+    if (!conn?.isActive || !conn.accessToken) return [];
+
+    const client = this.makeOAuth2();
+    client.setCredentials({
+      access_token: decrypt(conn.accessToken),
+      refresh_token: conn.refreshToken ? decrypt(conn.refreshToken) : undefined,
+    });
+
+    const calendar = google.calendar({ version: 'v3', auth: client });
+    const res = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 20,
+    });
+
+    return (res.data.items ?? []).map(e => ({
+      id: e.id ?? '',
+      summary: e.summary ?? '(Sin título)',
+      start: e.start?.dateTime ?? e.start?.date ?? '',
+      end: e.end?.dateTime ?? e.end?.date ?? '',
+    }));
+  }
 }
