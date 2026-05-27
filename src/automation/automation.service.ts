@@ -136,19 +136,23 @@ export class AutomationService {
     return {
       email: { connected: true, system: true },
       whatsapp: { connected: true, system: true },
-      google_calendar: {
-        connected: connections.some(
-          (c) => c.type === 'google_calendar' && c.isActive,
-        ),
-        accountEmail:
-          connections.find((c) => c.type === 'google_calendar')?.accountEmail ??
-          null,
-      },
-      twilio_phone: {
-        connected: connections.some(
-          (c) => c.type === 'twilio_phone' && c.isActive,
-        ),
-      },
+      google_calendar: (() => {
+        const cal = connections.find((c) => c.type === 'google_calendar');
+        return {
+          connected: !!cal && cal.isActive,
+          accountEmail: cal?.accountEmail ?? null,
+          accountName: cal?.accountName ?? null,
+          lastUsedAt: cal?.lastUsedAt?.toISOString() ?? null,
+          lastError: cal?.lastError ?? null,
+        };
+      })(),
+      twilio_phone: (() => {
+        const ph = connections.find((c) => c.type === 'twilio_phone');
+        return {
+          connected: !!ph && ph.isActive,
+          accountEmail: ph?.accountEmail ?? null,
+        };
+      })(),
     };
   }
 }
