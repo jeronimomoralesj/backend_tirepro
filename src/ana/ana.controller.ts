@@ -61,6 +61,17 @@ export class AnaController {
         req.user?.role ?? '',
       );
 
+      if (actions.length > 0) {
+        const summaries = actions.map(a => {
+          if (a.action === 'flow_created') return `He creado el flujo: ${a.result}. Puedes verlo y administrarlo en la página de Agentes.`;
+          if (a.action === 'calendar_event_created') return `${a.result}`;
+          if (a.action === 'calendar_error') return `No pude crear el evento en Google Calendar: ${a.result}`;
+          if (a.action === 'flow_error') return `No pude crear el flujo: ${a.result}`;
+          return a.result;
+        });
+        reply.text = summaries.join('\n\n') + '\n\n¿Puedo ayudarte con algo más?';
+      }
+
       return { ...reply, ...(actions.length > 0 && { executedActions: actions }) };
     } catch {
       throw new InternalServerErrorException(
@@ -90,9 +101,10 @@ export class AnaController {
     ) {
       try {
         const flow = await this.detectAndCreateFlow(userMessage, companyId, userId);
-        if (flow) actions.push({ action: 'flow_created', result: `Flujo "${flow.name}" creado` });
+        if (flow) actions.push({ action: 'flow_created', result: `"${flow.name}"` });
       } catch (err: any) {
         this.log.warn(`Ana flow creation failed: ${err.message}`);
+        actions.push({ action: 'flow_error', result: err.message });
       }
     }
 
@@ -101,12 +113,19 @@ export class AnaController {
       /crea(r|me)?\s*(un\s*)?(evento|cita)\s*(en\s*)?(el\s*)?(calendario|calendar)/i.test(userMessage) ||
       /pon(er|me)?\s*(en\s*)?(el\s*)?(calendario|calendar)/i.test(userMessage)
     ) {
-      try {
-        const event = await this.createCalendarEvent(userMessage, companyId);
-        if (event) actions.push({ action: 'calendar_event_created', result: event });
-      } catch (err: any) {
-        this.log.warn(`Ana calendar creation failed: ${err.message}`);
-        actions.push({ action: 'calendar_error', result: err.message });
+      const conn = await this.prisma.integrationConnection.findFirst({
+        where: { companyId, type: 'google_calendar', isActive: true },
+      });
+      if (!conn) {
+        actions.push({ action: 'calendar_error', result: 'Google Calendar no está conectado. Ve a Agentes → haz clic en "Calendar → Conectar" primero.' });
+      } else {
+        try {
+          const event = await this.createCalendarEvent(userMessage, companyId);
+          if (event) actions.push({ action: 'calendar_event_created', result: event });
+        } catch (err: any) {
+          this.log.warn(`Ana calendar creation failed: ${err.message}`);
+          actions.push({ action: 'calendar_error', result: err.message });
+        }
       }
     }
 
