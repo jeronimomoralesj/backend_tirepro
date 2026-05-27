@@ -4,6 +4,7 @@ import {
   NotFoundException,
   Logger,
   Inject,
+  Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { VehicleService } from '../vehicles/vehicle.service';
@@ -1090,6 +1091,7 @@ export class TireService {
     private readonly catalogService: CatalogService,
     private readonly s3: S3Service,
     @Inject(CACHE_MANAGER) private cache: Cache,
+    @Optional() @Inject('FLOW_ENGINE') private readonly flowEngine?: { onTireStateChanged: (tireId: string, companyId: string, old: string, cur: string) => Promise<void> },
   ) {}
 
   private tireKey(companyId: string)  { return `tires:${companyId}`; }
@@ -4941,6 +4943,7 @@ export class TireService {
       },
     });
     if (!tire) throw new NotFoundException('Tire not found for cache refresh');
+    const previousAlertLevel = tire.alertLevel;
 
     const inspecciones = tire.inspecciones;
 
@@ -5102,6 +5105,20 @@ export class TireService {
       }
     } catch (err: any) {
       this.logger.warn(`Failed to create notification for tire ${tireId}: ${err.message}`);
+    }
+
+    // ── Automation flow triggers ────────────────────────────────────────────
+    try {
+      if (this.flowEngine && updatedTire.companyId && updatedTire.alertLevel !== previousAlertLevel) {
+        await this.flowEngine.onTireStateChanged(
+          tireId,
+          updatedTire.companyId,
+          previousAlertLevel,
+          updatedTire.alertLevel,
+        );
+      }
+    } catch (err: any) {
+      this.logger.warn(`Flow engine error for tire ${tireId}: ${err.message}`);
     }
 
     // ── Dual tire harmony check ─────────────────────────────────────────────

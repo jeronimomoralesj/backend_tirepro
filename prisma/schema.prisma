@@ -155,6 +155,36 @@ enum CouponCategory {
   aceites
 }
 
+// ── Automation engine ────────────────────────────────────────────────────────
+
+enum FlowStatus {
+  active
+  paused
+  error
+  draft
+}
+
+enum TriggerType {
+  tire_alert_level
+  tire_depth_threshold
+  scheduled_cron
+  tire_eol_approaching
+  inspection_completed
+}
+
+enum ActionType {
+  send_email
+  send_whatsapp
+  create_calendar_event
+  make_phone_call
+  create_notification
+}
+
+enum IntegrationType {
+  google_calendar
+  twilio_phone
+}
+
 // Operational state of a vehicle — drives orphan import from Merquepro.
 // `fuera_de_operacion` = vehicle is preserved in TirePro but not linked to
 // any fleet (companyId null), so historical analysis stays queryable.
@@ -401,6 +431,10 @@ model Company {
   catalogDownloads     CatalogDownload[]
   catalogVideos        CatalogVideo[]
   catalogSubscriptions CatalogSubscription[]
+
+  // Automation
+  automationFlows        AutomationFlow[]
+  integrationConnections IntegrationConnection[]
 
   @@index([plan])
 }
@@ -2391,4 +2425,87 @@ model RetailPickupPoint {
   @@index([sourceId, city])
   @@index([sourceId, stockUnits])
   @@map("retail_pickup_points")
+}
+
+// =============================================================================
+// AUTOMATION ENGINE
+// =============================================================================
+
+model AutomationFlow {
+  id          String     @id @default(uuid())
+  companyId   String
+  name        String
+  description String?
+  status      FlowStatus @default(active)
+  createdBy   String
+
+  triggerType   TriggerType
+  triggerConfig Json
+  actionType    ActionType
+  actionConfig  Json
+
+  lastRunAt       DateTime?
+  runCount        Int       @default(0)
+  errorCount      Int       @default(0)
+  lastError       String?
+  cooldownMinutes Int       @default(60)
+  maxRunsPerDay   Int       @default(100)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  runs    FlowRun[]
+
+  @@index([companyId, status])
+  @@index([triggerType, status])
+  @@map("automation_flows")
+}
+
+model FlowRun {
+  id     String @id @default(uuid())
+  flowId String
+
+  triggerPayload Json?
+  success        Boolean
+  output         Json?
+  error          String?
+  durationMs     Int?
+
+  entityType String?
+  entityId   String?
+
+  createdAt DateTime @default(now())
+
+  flow AutomationFlow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+
+  @@index([flowId, createdAt])
+  @@index([flowId, entityId, createdAt])
+  @@map("flow_runs")
+}
+
+model IntegrationConnection {
+  id        String          @id @default(uuid())
+  companyId String
+  type      IntegrationType
+
+  accessToken    String?
+  refreshToken   String?
+  tokenExpiresAt DateTime?
+  accountEmail   String?
+  accountName    String?
+  scopes         String[]  @default([])
+
+  isActive   Boolean   @default(true)
+  lastUsedAt DateTime?
+  lastError  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, type])
+  @@index([companyId])
+  @@map("integration_connections")
 }

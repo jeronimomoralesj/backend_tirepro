@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TireService } from './tire.service';
 import { TireProjectionService } from './tire-projection.service';
@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { VehicleModule } from '../vehicles/vehicle.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CatalogModule } from '../catalog/catalog.module';
+import { AutomationModule } from '../automation/automation.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { CatalogModule } from '../catalog/catalog.module';
     VehicleModule,
     NotificationsModule,
     CatalogModule,
+    forwardRef(() => AutomationModule),
   ],
   controllers: [TireController],
   providers: [TireService, TireProjectionService, S3Service, PrismaService],

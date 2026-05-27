@@ -29,6 +29,7 @@ import { PaymentsModule } from './payments/payments.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { MerquellantasModule } from './integrations/merquellantas/merquellantas.module';
 import { AnaModule } from './ana/ana.module';
+import { AutomationModule } from './automation/automation.module';
 import { CompanyScopeGuard } from './auth/guards/company-scope.guard';
 import { PrismaService } from './prisma/prisma.service';
 
@@ -97,6 +98,7 @@ import { PrismaService } from './prisma/prisma.service';
     WhatsappModule,
     MerquellantasModule,
     AnaModule,
+    AutomationModule,
   ],
   controllers: [AppController],
   providers:   [
