@@ -82,22 +82,23 @@ export class AnaController {
     }
   }
 
-  private isCalendarIntent(msg: string): boolean {
-    const lo = msg.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-    return /agenda(r|me)?/i.test(lo) && /calendario|calendar/i.test(lo)
-      || /agenda(r|me)?\s*(una\s*)?(cita|evento|reunion)/i.test(lo)
-      || /crea(r|me)?\s*(un\s*)?(evento|cita|reunion)/i.test(lo) && /calendario|calendar/i.test(lo)
-      || /pon(er|me|lo)?\s*(en\s*)?(el\s*)?(mi\s*)?(calendario|calendar)/i.test(lo)
-      || /mi\s*calendario/i.test(lo) && /(agenda|crea|pon|programa)/i.test(lo);
-  }
-
   private isCalendarQueryIntent(msg: string): boolean {
     const lo = msg.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-    return (
-      (/que\s*tengo|que\s*hay|mis\s*eventos|mi\s*agenda|mi\s*calendario/i.test(lo) && !/agenda(r|me)/i.test(lo))
-      || /muestrame.*calendario/i.test(lo)
-      || /eventos.*(?:hoy|manana|semana|lunes|martes|miercoles|jueves|viernes)/i.test(lo)
-    );
+    if (/que\s*tengo|que\s*hay|mis\s*eventos/i.test(lo)) return true;
+    if (/muestrame.*calendario/i.test(lo)) return true;
+    if (/(tengo|hay).*calendario/i.test(lo)) return true;
+    if (/calendario.*(?:hoy|manana|semana|lunes|martes|miercoles|jueves|viernes)/i.test(lo) && !/(agenda|crea|pon|programa)/i.test(lo)) return true;
+    return false;
+  }
+
+  private isCalendarIntent(msg: string): boolean {
+    if (this.isCalendarQueryIntent(msg)) return false;
+    const lo = msg.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    if (/agenda(r|me)/i.test(lo)) return true;
+    if (/crea(r|me)?\s*(un\s*)?(evento|cita|reunion)/i.test(lo)) return true;
+    if (/pon(er|me|lo)?\s*(en\s*)?(el\s*)?(mi\s*)?(calendario|calendar)/i.test(lo)) return true;
+    if (/programa(r|me)?\s*(un\s*)?(evento|cita)/i.test(lo)) return true;
+    return false;
   }
 
   private parseCalendarQueryRange(msg: string): { start: Date; end: Date; label: string } {
@@ -143,6 +144,33 @@ export class AnaController {
   ): Promise<Array<{ action: string; result: string }>> {
     if (role !== 'admin') return [];
     const actions: Array<{ action: string; result: string }> = [];
+
+    if (this.isCalendarQueryIntent(userMessage)) {
+      const conn = await this.prisma.integrationConnection.findFirst({
+        where: { companyId, type: 'google_calendar', isActive: true },
+      });
+      if (!conn) {
+        actions.push({ action: 'calendar_error', result: 'Google Calendar no está conectado. Ve a Agentes → haz clic en "Calendar → Conectar" primero.' });
+      } else {
+        try {
+          const { start, end, label } = this.parseCalendarQueryRange(userMessage);
+          const events = await this.calendarSvc.listEvents(companyId, start, end);
+          if (events.length === 0) {
+            actions.push({ action: 'calendar_query', result: `No tienes eventos ${label}.` });
+          } else {
+            const list = events.map(e => {
+              const s = new Date(e.start).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+              return `• ${s} — ${e.summary}`;
+            }).join('\n');
+            actions.push({ action: 'calendar_query', result: `Tus eventos ${label}:\n${list}` });
+          }
+        } catch (err: any) {
+          this.log.warn(`Ana calendar query failed: ${err.message}`);
+          actions.push({ action: 'calendar_error', result: err.message });
+        }
+      }
+      return actions;
+    }
 
     if (this.isFlowIntent(userMessage)) {
       try {
@@ -194,30 +222,6 @@ export class AnaController {
       }
     }
 
-    if (this.isCalendarQueryIntent(userMessage)) {
-      const conn = await this.prisma.integrationConnection.findFirst({
-        where: { companyId, type: 'google_calendar', isActive: true },
-      });
-      if (!conn) {
-        actions.push({ action: 'calendar_error', result: 'Google Calendar no está conectado.' });
-      } else {
-        try {
-          const { start, end, label } = this.parseCalendarQueryRange(userMessage);
-          const events = await this.calendarSvc.listEvents(companyId, start, end);
-          if (events.length === 0) {
-            actions.push({ action: 'calendar_query', result: `No tienes eventos ${label}.` });
-          } else {
-            const list = events.map(e => {
-              const s = new Date(e.start).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-              return `• ${s} — ${e.summary}`;
-            }).join('\n');
-            actions.push({ action: 'calendar_query', result: `Tus eventos ${label}:\n${list}` });
-          }
-        } catch (err: any) {
-          this.log.warn(`Ana calendar query failed: ${err.message}`);
-        }
-      }
-    }
 
     return actions;
   }
