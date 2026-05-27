@@ -5109,7 +5109,7 @@ export class TireService {
 
     // ── Automation flow triggers ────────────────────────────────────────────
     try {
-      if (this.flowEngine && updatedTire.companyId && updatedTire.alertLevel !== previousAlertLevel) {
+      if (this.flowEngine && updatedTire.companyId) {
         await this.flowEngine.onTireStateChanged(
           tireId,
           updatedTire.companyId,

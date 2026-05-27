@@ -44,14 +44,14 @@ export class AutomationController {
   @HttpCode(HttpStatus.OK)
   async aiBuilder(
     @Req() req: AuthReq,
-    @Body() body: { description?: string },
+    @Body() body: { description?: string; currentFlow?: Record<string, unknown> },
   ) {
-    this.extractCompany(req); // admin-only guard
+    this.extractCompany(req);
     const description = body?.description;
     if (!description || typeof description !== 'string' || !description.trim()) {
       throw new BadRequestException('Se requiere una descripción del flujo');
     }
-    return this.aiFlowBuilder.buildFlow(description.trim());
+    return this.aiFlowBuilder.buildFlow(description.trim(), body.currentFlow);
   }
 
   @Get('flows')

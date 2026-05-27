@@ -16,7 +16,8 @@ const SYSTEM_PROMPT = `Eres un asistente de TirePro que convierte descripciones 
 
 TIPOS DE TRIGGER disponibles:
 1. "tire_alert_level" — Se dispara cuando una llanta cambia a cierto nivel de alerta.
-   triggerConfig: { "alertLevels": ["inmediato" | "30d" | "60d" | "optimo"] }
+   triggerConfig: { "alertLevels": ["critical" | "warning" | "watch" | "ok"] }
+   - "cambio inmediato" o "critica" → "critical". "30 dias" → "warning". "60 dias" → "watch". "optimo" → "ok".
 
 2. "tire_depth_threshold" — Se dispara cuando la profundidad de una llanta cae por debajo de un umbral.
    triggerConfig: { "thresholdMm": <número en milímetros, SIEMPRE decimal, ej: 1.3, 2.0, 4.5. NUNCA multiplicar por 1000> }
@@ -29,19 +30,21 @@ TIPOS DE TRIGGER disponibles:
    triggerConfig: { "daysThreshold": <número de días> }
 
 5. "inspection_completed" — Se dispara cuando se completa una inspección.
-   triggerConfig: { "alertLevelFilter": ["inmediato" | "30d" | "60d" | "optimo"] } (opcional, vacío = todas)
+   triggerConfig: { "alertLevelFilter": ["critical" | "warning" | "watch" | "ok"] } (opcional, vacío = todas)
 
 TIPOS DE ACCIÓN disponibles:
 1. "send_email" — Envía un correo electrónico.
-   actionConfig: { "to": "<correo>", "subject": "Alerta: {{tireMarca}} {{tireDiseno}}" }
+   actionConfig: { "to": "<correo>", "subject": "Alerta: {{tireMarca}} {{tireDiseno}}", "body": "<cuerpo del email con variables de plantilla, opcional>" }
+   - Si el usuario describe qué quiere que diga el email, genera el "body" con ese contenido usando las variables de plantilla.
+   - Si no menciona el contenido, omite "body" y se usará la plantilla por defecto con datos de la llanta.
 
 2. "send_whatsapp" — Envía un mensaje de WhatsApp.
    actionConfig: { "to": "<número con código de país, ej: +57...>" }
 
 3. "create_calendar_event" — Crea un evento en Google Calendar.
-   actionConfig: { "summary": "<título>", "description": "<descripción>", "durationMinutes": <número>, "delayDays": <días después del trigger, default 0>, "startHour": <hora del día 0-23, default 9> }
+   actionConfig: { "summary": "<título>", "description": "<descripción>", "durationMinutes": <número>, "delayDays": <días después del trigger, default 0>, "startHour": <hora 0-23, default 9>, "startMinute": <minuto 0-59, default 0> }
    - "para el siguiente día" → delayDays: 1. "en 3 días" → delayDays: 3. Sin mención → delayDays: 0.
-   - "a las 7am" → startHour: 7. "a las 2pm" → startHour: 14. Sin mención → startHour: 9.
+   - "a las 7am" → startHour: 7. "a las 2:30pm" → startHour: 14, startMinute: 30. "a las 10am" → startHour: 10. Sin mención → startHour: 9.
    - En "description", incluye variables de plantilla: "Llanta {{tireMarca}} {{tireDiseno}} en vehículo {{vehiclePlaca}} — profundidad: {{tireDepth}}mm"
 
 4. "make_phone_call" — Realiza una llamada telefónica.
@@ -79,12 +82,13 @@ EJEMPLOS de triggers IMPOSIBLES: "cuando una llanta lleve X días sin inspecció
 Ejemplo: si el usuario dice "alerta cuando haya un problema", pregunta qué tipo de problema (profundidad baja, alerta crítica, fin de vida, etc.).
 - Elige el trigger y acción que mejor se ajusten a la descripción del usuario.
 - Si la descripción no menciona un destinatario específico, usa placeholders descriptivos como "jefe@empresa.com" o "+573001234567".
-- Si mencionan "cambio inmediato", usa trigger "tire_alert_level" con alertLevels ["inmediato"].
+- Si mencionan "cambio inmediato" o "critica", usa trigger "tire_alert_level" con alertLevels ["critical"].
 - Si mencionan "profundidad menor a X mm", usa trigger "tire_depth_threshold".
 - Si mencionan un horario (diario, semanal, etc.), usa trigger "scheduled_cron".
 - Si mencionan "fin de vida" o "por acabarse", usa trigger "tire_eol_approaching".
 - Si mencionan "inspección", usa trigger "inspection_completed".
-- IMPORTANTE: responde SOLO el JSON, nada más.`;
+- Si recibes un FLUJO ACTUAL junto con la solicitud, es una MODIFICACION. CONSERVA el trigger y la accion actuales y SOLO cambia lo que el usuario pide explicitamente. Si dice "cambia la hora a las 10am", SOLO modifica startHour en actionConfig, NO cambies el triggerType ni triggerConfig.
+- IMPORTANTE: responde SOLO el JSON, nada mas.`;
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TYPES
@@ -134,12 +138,16 @@ export class AiFlowBuilderService {
     });
   }
 
-  async buildFlow(description: string): Promise<AiFlowSuggestion> {
+  async buildFlow(description: string, currentFlow?: Record<string, unknown>): Promise<AiFlowSuggestion> {
+    const userMessage = currentFlow
+      ? `FLUJO ACTUAL (solo modifica lo que el usuario pide, CONSERVA todo lo demas):\n${JSON.stringify(currentFlow, null, 2)}\n\nSOLICITUD DEL USUARIO: ${description}`
+      : description;
+
     const command = new ConverseCommand({
       modelId: MODEL_ID,
       system: [{ text: SYSTEM_PROMPT }],
       messages: [
-        { role: 'user', content: [{ text: description }] },
+        { role: 'user', content: [{ text: userMessage }] },
       ],
       inferenceConfig: {
         temperature: 0.3,

@@ -4,6 +4,7 @@ import { EmailService } from '../email/email.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { GoogleCalendarService } from '../integrations/google-calendar/google-calendar.service';
 import { AutomationFlow, ActionType, FlowStatus, Prisma } from '@prisma/client';
+import { wrapEmail, emailText, emailKvList, emailButton, emailCallout } from '../email/email-templates';
 
 export interface ActionContext {
   tireId?: string;
@@ -39,7 +40,10 @@ export class ActionExecutorService {
             (config.subject as string) ?? 'Alerta TirePro',
             vars,
           );
-          const body = this.buildEmailBody(vars);
+          const customBody = config.body as string | undefined;
+          const body = customBody
+            ? this.buildCustomEmailBody(customBody, vars)
+            : this.buildEmailBody(vars);
           await this.emailService.sendEmail(to, subject, body);
           output = { to, subject };
           break;
@@ -94,9 +98,10 @@ export class ActionExecutorService {
             ?? `Generado por Agentes TirePro.\n${vars.tireMarca ? `Llanta: ${vars.tireMarca} ${vars.tireDiseno ?? ''} — ${vars.tireDepth ?? '?'}mm\nVehiculo: ${vars.vehiclePlaca ?? 'N/A'}\nPosicion: ${vars.position ?? 'N/A'}` : ''}`;
           const delayDays = typeof calConfig.delayDays === 'number' ? calConfig.delayDays : 0;
           const startHour = typeof calConfig.startHour === 'number' ? calConfig.startHour : 9;
+          const startMinute = typeof calConfig.startMinute === 'number' ? calConfig.startMinute : 0;
           const startTime = new Date();
           startTime.setDate(startTime.getDate() + (delayDays > 0 ? delayDays : 1));
-          startTime.setHours(startHour, 0, 0, 0);
+          startTime.setHours(startHour, startMinute, 0, 0);
           const eventId = await this.googleCalendar.createEvent(ctx.companyId, {
             summary: title,
             description,
@@ -223,31 +228,48 @@ export class ActionExecutorService {
   }
 
   private buildEmailBody(vars: Record<string, string>): string {
-    const lines = [
-      `<h2 style="margin:0 0 12px;color:#0A183A;">Alerta de flota</h2>`,
-    ];
+    const kvRows: Array<{ label: string; value: string }> = [];
+    if (vars.vehiclePlaca) kvRows.push({ label: 'Vehiculo', value: vars.vehiclePlaca });
+    if (vars.tirePlaca) kvRows.push({ label: 'Llanta', value: vars.tirePlaca });
+    if (vars.tireMarca) kvRows.push({ label: 'Marca / Diseno', value: `${vars.tireMarca} ${vars.tireDiseno ?? ''}`.trim() });
+    if (vars.tireDepth) kvRows.push({ label: 'Profundidad', value: `${vars.tireDepth} mm` });
+    if (vars.tireAlertLevel) kvRows.push({ label: 'Nivel de alerta', value: vars.tireAlertLevel });
+    if (vars.position) kvRows.push({ label: 'Posicion', value: vars.position });
 
-    if (vars.vehiclePlaca)
-      lines.push(`<p><strong>Vehículo:</strong> ${vars.vehiclePlaca}</p>`);
-    if (vars.tirePlaca)
-      lines.push(`<p><strong>Llanta:</strong> ${vars.tirePlaca}</p>`);
-    if (vars.tireMarca)
-      lines.push(
-        `<p><strong>Marca/Diseño:</strong> ${vars.tireMarca} ${vars.tireDiseno ?? ''}</p>`,
-      );
-    if (vars.tireDepth)
-      lines.push(`<p><strong>Profundidad:</strong> ${vars.tireDepth} mm</p>`);
-    if (vars.tireAlertLevel)
-      lines.push(
-        `<p><strong>Nivel:</strong> ${vars.tireAlertLevel}</p>`,
-      );
-    lines.push(
-      `<p style="margin-top:16px"><a href="https://tirepro.com.co/dashboard/resumen" style="background:#0A183A;color:white;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:bold;">Ver en TirePro</a></p>`,
-    );
-    lines.push(
-      `<p style="margin-top:16px;font-size:12px;color:#666;">Generado por Agentes TirePro — ${vars.date ?? ''}</p>`,
-    );
+    const tone = vars.tireAlertLevel === 'inmediato' ? 'danger' as const : vars.tireAlertLevel === '30d' ? 'warning' as const : 'brand' as const;
 
-    return lines.join('\n');
+    return wrapEmail({
+      preheader: `Alerta de flota — ${vars.companyName ?? 'TirePro'}`,
+      accent: tone === 'danger' ? 'danger' : tone === 'warning' ? 'warning' : 'brand',
+      title: 'Alerta de flota',
+      eyebrow: 'Agentes TirePro',
+      body: [
+        kvRows.length > 0 ? emailKvList(kvRows) : '',
+        emailButton('Ver en TirePro', 'https://tirepro.com.co/dashboard/resumen'),
+      ].join(''),
+    });
+  }
+
+  private buildCustomEmailBody(customBody: string, vars: Record<string, string>): string {
+    const interpolated = this.interpolate(customBody, vars);
+    const paragraphs = interpolated.split('\n').filter(l => l.trim());
+
+    const kvRows: Array<{ label: string; value: string }> = [];
+    if (vars.vehiclePlaca) kvRows.push({ label: 'Vehiculo', value: vars.vehiclePlaca });
+    if (vars.tireMarca) kvRows.push({ label: 'Llanta', value: `${vars.tireMarca} ${vars.tireDiseno ?? ''}`.trim() });
+    if (vars.tireDepth) kvRows.push({ label: 'Profundidad', value: `${vars.tireDepth} mm` });
+    if (vars.tireAlertLevel) kvRows.push({ label: 'Nivel', value: vars.tireAlertLevel });
+
+    return wrapEmail({
+      preheader: paragraphs[0]?.slice(0, 100) ?? 'Notificacion de TirePro',
+      accent: 'brand',
+      title: 'Notificacion de flota',
+      eyebrow: 'Agentes TirePro',
+      body: [
+        ...paragraphs.map(p => emailText(p)),
+        kvRows.length > 0 ? emailCallout({ tone: 'info', title: 'Datos de la llanta', body: emailKvList(kvRows) }) : '',
+        emailButton('Ver en TirePro', 'https://tirepro.com.co/dashboard/resumen'),
+      ].join(''),
+    });
   }
 }
