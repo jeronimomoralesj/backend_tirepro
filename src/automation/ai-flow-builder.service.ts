@@ -60,14 +60,20 @@ Variables de plantilla disponibles para subject/message: {{vehiclePlaca}}, {{tir
 
 REGLAS:
 - Responde SOLO con JSON puro (sin markdown, sin \`\`\`).
+- Un flujo puede ejecutar HASTA 3 ACCIONES por trigger: la accion primaria + opcionalmente "additionalActions" (maximo 2 entradas). Si el usuario menciona varias acciones (ej: "envia email Y crea evento Y llama"), pon la primera en actionType/actionConfig y las demas en additionalActions.
+- additionalActions es un ARRAY de objetos {actionType, actionConfig}, maximo 2 elementos. Omitelo si solo hay una accion. NO incluyas mas de 2 entradas adicionales (3 acciones totales, no mas).
 - Si la solicitud ES posible con los triggers y acciones disponibles, usa esta estructura:
 {
   "name": "<nombre corto descriptivo del flujo>",
   "triggerType": "<uno de los tipos de trigger>",
   "triggerConfig": { ... },
-  "actionType": "<uno de los tipos de acción>",
+  "actionType": "<accion primaria>",
   "actionConfig": { ... },
-  "explanation": "<explicación breve en español de lo que hace el flujo>"
+  "additionalActions": [
+    { "actionType": "<segunda accion>", "actionConfig": { ... } },
+    { "actionType": "<tercera accion>", "actionConfig": { ... } }
+  ],
+  "explanation": "<explicación breve en español de lo que hace el flujo, mencionando todas las acciones>"
 }
 - Si la solicitud NO es posible (pide algo que no existe en los triggers/acciones, o es ambigua/sin sentido, o pide algo fuera del alcance como "comprar llantas", "modificar datos", "enviar SMS", "conectar con SAP", "llanta sin inspección por X días", "si el conductor no reporta", etc.), responde con:
 {
@@ -96,12 +102,18 @@ Ejemplo: si el usuario dice "alerta cuando haya un problema", pregunta qué tipo
    TYPES
    ═══════════════════════════════════════════════════════════════════════════ */
 
+export interface AdditionalActionSuggestion {
+  actionType: string;
+  actionConfig: Record<string, unknown>;
+}
+
 export interface AiFlowSuggestion {
   name: string;
   triggerType: string;
   triggerConfig: Record<string, unknown>;
   actionType: string;
   actionConfig: Record<string, unknown>;
+  additionalActions?: AdditionalActionSuggestion[];
   explanation: string;
   impossible?: boolean;
   reason?: string;
@@ -260,6 +272,19 @@ REGLAS:
       };
     }
 
+    const additionalActions: AdditionalActionSuggestion[] = [];
+    if (Array.isArray(obj.additionalActions)) {
+      for (const entry of obj.additionalActions.slice(0, 2)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const e = entry as Record<string, unknown>;
+        const at = typeof e.actionType === 'string' ? e.actionType : '';
+        const ac = (e.actionConfig && typeof e.actionConfig === 'object' && !Array.isArray(e.actionConfig))
+          ? (e.actionConfig as Record<string, unknown>)
+          : {};
+        if (at) additionalActions.push({ actionType: at, actionConfig: ac });
+      }
+    }
+
     return {
       name: typeof obj.name === 'string' ? obj.name : 'Flujo sin nombre',
       triggerType: String(obj.triggerType ?? ''),
@@ -270,6 +295,7 @@ REGLAS:
       actionConfig: (obj.actionConfig && typeof obj.actionConfig === 'object' && !Array.isArray(obj.actionConfig))
         ? obj.actionConfig as Record<string, unknown>
         : {},
+      ...(additionalActions.length > 0 && { additionalActions }),
       explanation: typeof obj.explanation === 'string' ? obj.explanation : '',
     };
   }
@@ -284,6 +310,16 @@ REGLAS:
       throw new Error(
         `Action type "${flow.actionType}" no es válido. Tipos válidos: ${[...AiFlowBuilderService.VALID_ACTIONS].join(', ')}`,
       );
+    }
+    if (flow.additionalActions && flow.additionalActions.length > 2) {
+      throw new Error('Maximo 3 acciones por flujo (primaria + 2 adicionales).');
+    }
+    for (const extra of flow.additionalActions ?? []) {
+      if (!AiFlowBuilderService.VALID_ACTIONS.has(extra.actionType)) {
+        throw new Error(
+          `Action type adicional "${extra.actionType}" no es válido. Tipos válidos: ${[...AiFlowBuilderService.VALID_ACTIONS].join(', ')}`,
+        );
+      }
     }
   }
 }

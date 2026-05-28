@@ -4,9 +4,13 @@ import {
   IsIn,
   IsObject,
   IsInt,
+  IsArray,
+  ArrayMaxSize,
+  ValidateNested,
   Min,
   Max,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 const TRIGGER_TYPES = [
   'tire_alert_level',
@@ -23,6 +27,14 @@ const ACTION_TYPES = [
   'make_phone_call',
   'create_notification',
 ] as const;
+
+export class AdditionalActionDto {
+  @IsIn(ACTION_TYPES)
+  actionType: string;
+
+  @IsObject()
+  actionConfig: Record<string, any>;
+}
 
 export class CreateFlowDto {
   @IsString()
@@ -43,6 +55,13 @@ export class CreateFlowDto {
 
   @IsObject()
   actionConfig: Record<string, any>;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(2)
+  @ValidateNested({ each: true })
+  @Type(() => AdditionalActionDto)
+  additionalActions?: AdditionalActionDto[];
 
   @IsOptional()
   @IsInt()

@@ -4,9 +4,14 @@ import {
   IsIn,
   IsObject,
   IsInt,
+  IsArray,
+  ArrayMaxSize,
+  ValidateNested,
   Min,
   Max,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+import { AdditionalActionDto } from './create-flow.dto';
 
 const TRIGGER_TYPES = [
   'tire_alert_level',
@@ -48,6 +53,13 @@ export class UpdateFlowDto {
   @IsOptional()
   @IsObject()
   actionConfig?: Record<string, any>;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(2)
+  @ValidateNested({ each: true })
+  @Type(() => AdditionalActionDto)
+  additionalActions?: AdditionalActionDto[];
 
   @IsOptional()
   @IsInt()

@@ -46,6 +46,7 @@ export class AutomationService {
         triggerConfig: dto.triggerConfig as any,
         actionType: dto.actionType as ActionType,
         actionConfig: dto.actionConfig as any,
+        additionalActions: dto.additionalActions ? (dto.additionalActions as any) : undefined,
         cooldownMinutes: dto.cooldownMinutes ?? 60,
         maxRunsPerDay: dto.maxRunsPerDay ?? 100,
         status: FlowStatus.active,
@@ -65,6 +66,7 @@ export class AutomationService {
     if (dto.triggerConfig !== undefined) data.triggerConfig = dto.triggerConfig;
     if (dto.actionType !== undefined) data.actionType = dto.actionType;
     if (dto.actionConfig !== undefined) data.actionConfig = dto.actionConfig;
+    if (dto.additionalActions !== undefined) data.additionalActions = dto.additionalActions;
     if (dto.cooldownMinutes !== undefined) data.cooldownMinutes = dto.cooldownMinutes;
     if (dto.maxRunsPerDay !== undefined) data.maxRunsPerDay = dto.maxRunsPerDay;
 

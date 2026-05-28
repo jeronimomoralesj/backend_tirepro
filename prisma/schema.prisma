@@ -2447,6 +2447,10 @@ model AutomationFlow {
   triggerConfig Json
   actionType    ActionType
   actionConfig  Json
+  // Optional list of extra actions (up to 2) executed after the primary one.
+  // Each entry: { actionType: ActionType, actionConfig: Json }. Combined with
+  // the primary action this gives a max of 3 actions per flow trigger.
+  additionalActions Json?
 
   lastRunAt       DateTime?
   runCount        Int       @default(0)

@@ -30,151 +30,48 @@ export class ActionExecutorService {
 
   async execute(flow: AutomationFlow, ctx: ActionContext): Promise<void> {
     const start = Date.now();
-    let success = false;
-    let output: Record<string, unknown> | null = null;
-    let error: string | null = null;
+    const vars = await this.buildTemplateVars(ctx);
 
-    try {
-      const vars = await this.buildTemplateVars(ctx);
-      const config = flow.actionConfig as Record<string, unknown>;
-
-      switch (flow.actionType) {
-        case ActionType.send_email: {
-          const rawTo = this.interpolate((config.to as string) ?? '', vars);
-          const recipients = rawTo.split(',').map(e => e.trim()).filter(Boolean);
-          const subject = this.interpolate(
-            (config.subject as string) ?? 'Alerta TirePro',
-            vars,
-          );
-          const customBody = config.body as string | undefined;
-          const reportBlocks = config.reportBlocks as unknown[] | undefined;
-          const isScheduledReport = flow.triggerType === 'scheduled_cron' || !!reportBlocks?.length;
-          let body: string;
-          if (isScheduledReport) {
-            body = await this.buildFleetReportEmail(ctx.companyId, customBody ?? '', vars, reportBlocks);
-          } else if (customBody) {
-            body = this.buildCustomEmailBody(customBody, vars);
-          } else {
-            body = this.buildEmailBody(vars);
-          }
-          for (const to of recipients.length ? recipients : [rawTo]) {
-            await this.emailService.sendEmail(to, subject, body);
-          }
-          output = { to: recipients, subject };
-          break;
-        }
-
-        case ActionType.send_whatsapp: {
-          const to = (config.to as string) ?? '';
-          const vehiclePlaca = vars.vehiclePlaca ?? 'N/A';
-          const position = vars.position ?? 'N/A';
-          const action = `Alerta: ${vars.tireMarca ?? ''} ${vars.tireDiseno ?? ''} — profundidad ${vars.tireDepth ?? '?'}mm`;
-          const link = `https://tirepro.com.co/dashboard/resumen`;
-          const sent = await this.whatsappService.sendDriverAlert(
-            to,
-            vehiclePlaca,
-            position,
-            action,
-            link,
-          );
-          output = { to, sent };
-          break;
-        }
-
-        case ActionType.create_notification: {
-          const priority = (config.priority as number) ?? 2;
-          if (ctx.tireId) {
-            await this.prisma.notification.create({
-              data: {
-                title: `Agente: ${flow.name}`,
-                message: `Flujo automático ejecutado para llanta ${vars.tirePlaca ?? ctx.tireId}`,
-                type: priority >= 3 ? 'critical' : priority >= 2 ? 'warning' : 'info',
-                companyId: ctx.companyId,
-                tireId: ctx.tireId,
-                priority,
-              },
-            });
-          }
-          output = { created: true };
-          break;
-        }
-
-        case ActionType.create_calendar_event: {
-          if (!this.googleCalendar) throw new Error('Google Calendar not configured');
-          const calConfig = flow.actionConfig as Record<string, unknown>;
-          const delayDays = typeof calConfig.delayDays === 'number' ? calConfig.delayDays : 0;
-          const startHour = typeof calConfig.startHour === 'number' ? calConfig.startHour : 9;
-          const startMinute = typeof calConfig.startMinute === 'number' ? calConfig.startMinute : 0;
-          const startTime = new Date();
-          startTime.setDate(startTime.getDate() + (delayDays > 0 ? delayDays : 1));
-          startTime.setHours(startHour, startMinute, 0, 0);
-
-          const tireIds = ctx.tireIds && ctx.tireIds.length > 1 ? ctx.tireIds : (ctx.tireId ? [ctx.tireId] : []);
-          const allTireVars = await Promise.all(tireIds.map(id => this.buildTemplateVars({ tireId: id, companyId: ctx.companyId })));
-
-          const title = allTireVars.length > 1
-            ? `Alerta TirePro — ${allTireVars.length} llantas requieren atencion`
-            : this.interpolate((calConfig.summary as string) ?? (calConfig.title as string) ?? 'Alerta TirePro — {{vehiclePlaca}}', vars);
-
-          let description: string;
-          if (allTireVars.length > 1) {
-            const lines = allTireVars.map((tv, i) => {
-              const parts = [
-                `Llanta ${i + 1}:`,
-                tv.tireMarca ? `${tv.tireMarca} ${tv.tireDiseno ?? ''}`.trim() : null,
-                tv.tireDepth ? `Profundidad: ${tv.tireDepth}mm` : null,
-                tv.vehiclePlaca ? `Vehiculo: ${tv.vehiclePlaca}` : null,
-                tv.position ? `Posicion: ${tv.position}` : null,
-                tv.tirePlaca ? `ID: ${tv.tirePlaca}` : null,
-                tv.tireAlertLevel ? `Nivel: ${tv.tireAlertLevel}` : null,
-              ].filter(Boolean);
-              return parts.join(' | ');
-            });
-            description = `${allTireVars.length} llantas activaron esta alerta:\n\n${lines.join('\n')}\n\n— Generado por Agentes TirePro`;
-          } else if (calConfig.description) {
-            description = this.interpolate(calConfig.description as string, vars);
-          } else {
-            description = `Generado por Agentes TirePro.\n${vars.tireMarca ? `Llanta: ${vars.tireMarca} ${vars.tireDiseno ?? ''} — ${vars.tireDepth ?? '?'}mm\nVehiculo: ${vars.vehiclePlaca ?? 'N/A'}\nPosicion: ${vars.position ?? 'N/A'}\nID: ${vars.tirePlaca ?? 'N/A'}` : ''}`;
-          }
-
-          const attendees = Array.isArray(calConfig.attendees)
-            ? (calConfig.attendees as string[]).filter(e => typeof e === 'string' && e.includes('@'))
-            : [];
-          const location = typeof calConfig.location === 'string' ? calConfig.location : undefined;
-
-          const eventId = await this.googleCalendar.createEvent(ctx.companyId, {
-            summary: title,
-            description,
-            startTime,
-            durationMinutes: (calConfig.durationMinutes as number) ?? 60,
-            ...(attendees.length > 0 && { attendees }),
-            ...(location && { location }),
-          });
-          output = { eventId, tireCount: allTireVars.length, attendees };
-          break;
-        }
-
-        case ActionType.make_phone_call:
-          this.logger.warn('Phone calls not yet implemented (Phase 4)');
-          output = { skipped: true, reason: 'not_implemented' };
-          break;
-      }
-
-      success = true;
-    } catch (err: any) {
-      error = err.message ?? 'Unknown error';
-      this.logger.error(
-        `Flow ${flow.id} action failed: ${error}`,
-        err.stack,
-      );
+    // Build the action queue: primary action + up to 2 additional actions.
+    const queue: Array<{ actionType: ActionType; actionConfig: Record<string, unknown> }> = [
+      { actionType: flow.actionType, actionConfig: (flow.actionConfig as Record<string, unknown>) ?? {} },
+    ];
+    const extras = Array.isArray(flow.additionalActions) ? (flow.additionalActions as unknown[]) : [];
+    for (const extra of extras.slice(0, 2)) {
+      if (!extra || typeof extra !== 'object') continue;
+      const e = extra as { actionType?: string; actionConfig?: Record<string, unknown> };
+      if (!e.actionType || !(e.actionType in ActionType)) continue;
+      queue.push({
+        actionType: e.actionType as ActionType,
+        actionConfig: e.actionConfig ?? {},
+      });
     }
+
+    const outputs: Record<string, unknown>[] = [];
+    const errors: string[] = [];
+
+    for (let i = 0; i < queue.length; i++) {
+      const { actionType, actionConfig } = queue[i];
+      try {
+        const out = await this.runSingleAction(actionType, actionConfig, flow, vars, ctx);
+        outputs.push({ step: i + 1, actionType, ...out });
+      } catch (err: any) {
+        const msg = err.message ?? 'Unknown error';
+        errors.push(`[${i + 1}/${queue.length} ${actionType}] ${msg}`);
+        outputs.push({ step: i + 1, actionType, error: msg });
+        this.logger.error(`Flow ${flow.id} step ${i + 1} (${actionType}) failed: ${msg}`, err.stack);
+      }
+    }
+
+    const success = errors.length === 0;
+    const error = errors.length > 0 ? errors.join(' | ') : null;
 
     await this.prisma.flowRun.create({
       data: {
         flowId: flow.id,
         triggerPayload: ctx as unknown as Prisma.InputJsonValue,
         success,
-        output: (output ?? Prisma.JsonNull) as Prisma.InputJsonValue,
+        output: ({ steps: outputs } as unknown) as Prisma.InputJsonValue,
         error,
         durationMs: Date.now() - start,
         entityType: ctx.tireId ? 'tire' : 'company',
@@ -210,6 +107,134 @@ export class ActionExecutorService {
           `Flow ${flow.id} auto-paused after ${updated.errorCount} consecutive errors`,
         );
       }
+    }
+  }
+
+  private async runSingleAction(
+    actionType: ActionType,
+    config: Record<string, unknown>,
+    flow: AutomationFlow,
+    vars: Record<string, string>,
+    ctx: ActionContext,
+  ): Promise<Record<string, unknown>> {
+    switch (actionType) {
+      case ActionType.send_email: {
+        const rawTo = this.interpolate((config.to as string) ?? '', vars);
+        const recipients = rawTo.split(',').map(e => e.trim()).filter(Boolean);
+        const subject = this.interpolate(
+          (config.subject as string) ?? 'Alerta TirePro',
+          vars,
+        );
+        const customBody = config.body as string | undefined;
+        const reportBlocks = config.reportBlocks as unknown[] | undefined;
+        const isScheduledReport = flow.triggerType === 'scheduled_cron' || !!reportBlocks?.length;
+        let body: string;
+        if (isScheduledReport) {
+          body = await this.buildFleetReportEmail(ctx.companyId, customBody ?? '', vars, reportBlocks);
+        } else if (customBody) {
+          body = this.buildCustomEmailBody(customBody, vars);
+        } else {
+          body = this.buildEmailBody(vars);
+        }
+        for (const to of recipients.length ? recipients : [rawTo]) {
+          await this.emailService.sendEmail(to, subject, body);
+        }
+        return { to: recipients, subject };
+      }
+
+      case ActionType.send_whatsapp: {
+        const to = (config.to as string) ?? '';
+        const vehiclePlaca = vars.vehiclePlaca ?? 'N/A';
+        const position = vars.position ?? 'N/A';
+        const action = `Alerta: ${vars.tireMarca ?? ''} ${vars.tireDiseno ?? ''} — profundidad ${vars.tireDepth ?? '?'}mm`;
+        const link = `https://tirepro.com.co/dashboard/resumen`;
+        const sent = await this.whatsappService.sendDriverAlert(
+          to,
+          vehiclePlaca,
+          position,
+          action,
+          link,
+        );
+        return { to, sent };
+      }
+
+      case ActionType.create_notification: {
+        const priority = (config.priority as number) ?? 2;
+        if (ctx.tireId) {
+          await this.prisma.notification.create({
+            data: {
+              title: `Agente: ${flow.name}`,
+              message: `Flujo automático ejecutado para llanta ${vars.tirePlaca ?? ctx.tireId}`,
+              type: priority >= 3 ? 'critical' : priority >= 2 ? 'warning' : 'info',
+              companyId: ctx.companyId,
+              tireId: ctx.tireId,
+              priority,
+            },
+          });
+        }
+        return { created: true };
+      }
+
+      case ActionType.create_calendar_event: {
+        if (!this.googleCalendar) throw new Error('Google Calendar not configured');
+        const calConfig = config;
+        const delayDays = typeof calConfig.delayDays === 'number' ? calConfig.delayDays : 0;
+        const startHour = typeof calConfig.startHour === 'number' ? calConfig.startHour : 9;
+        const startMinute = typeof calConfig.startMinute === 'number' ? calConfig.startMinute : 0;
+        const startTime = new Date();
+        startTime.setDate(startTime.getDate() + (delayDays > 0 ? delayDays : 1));
+        startTime.setHours(startHour, startMinute, 0, 0);
+
+        const tireIds = ctx.tireIds && ctx.tireIds.length > 1 ? ctx.tireIds : (ctx.tireId ? [ctx.tireId] : []);
+        const allTireVars = await Promise.all(tireIds.map(id => this.buildTemplateVars({ tireId: id, companyId: ctx.companyId })));
+
+        const title = allTireVars.length > 1
+          ? `Alerta TirePro — ${allTireVars.length} llantas requieren atencion`
+          : this.interpolate((calConfig.summary as string) ?? (calConfig.title as string) ?? 'Alerta TirePro — {{vehiclePlaca}}', vars);
+
+        let description: string;
+        if (allTireVars.length > 1) {
+          const lines = allTireVars.map((tv, i) => {
+            const parts = [
+              `Llanta ${i + 1}:`,
+              tv.tireMarca ? `${tv.tireMarca} ${tv.tireDiseno ?? ''}`.trim() : null,
+              tv.tireDepth ? `Profundidad: ${tv.tireDepth}mm` : null,
+              tv.vehiclePlaca ? `Vehiculo: ${tv.vehiclePlaca}` : null,
+              tv.position ? `Posicion: ${tv.position}` : null,
+              tv.tirePlaca ? `ID: ${tv.tirePlaca}` : null,
+              tv.tireAlertLevel ? `Nivel: ${tv.tireAlertLevel}` : null,
+            ].filter(Boolean);
+            return parts.join(' | ');
+          });
+          description = `${allTireVars.length} llantas activaron esta alerta:\n\n${lines.join('\n')}\n\n— Generado por Agentes TirePro`;
+        } else if (calConfig.description) {
+          description = this.interpolate(calConfig.description as string, vars);
+        } else {
+          description = `Generado por Agentes TirePro.\n${vars.tireMarca ? `Llanta: ${vars.tireMarca} ${vars.tireDiseno ?? ''} — ${vars.tireDepth ?? '?'}mm\nVehiculo: ${vars.vehiclePlaca ?? 'N/A'}\nPosicion: ${vars.position ?? 'N/A'}\nID: ${vars.tirePlaca ?? 'N/A'}` : ''}`;
+        }
+
+        const attendees = Array.isArray(calConfig.attendees)
+          ? (calConfig.attendees as string[]).filter(e => typeof e === 'string' && e.includes('@'))
+          : [];
+        const location = typeof calConfig.location === 'string' ? calConfig.location : undefined;
+
+        const eventId = await this.googleCalendar.createEvent(ctx.companyId, {
+          summary: title,
+          description,
+          startTime,
+          durationMinutes: (calConfig.durationMinutes as number) ?? 60,
+          ...(attendees.length > 0 && { attendees }),
+          ...(location && { location }),
+        });
+        return { eventId, tireCount: allTireVars.length, attendees };
+      }
+
+      case ActionType.make_phone_call:
+        this.logger.warn('Phone calls not yet implemented (Phase 4)');
+        return { skipped: true, reason: 'not_implemented' };
+
+      default:
+        throw new Error(`Unknown action type: ${actionType}`);
     }
   }
 
