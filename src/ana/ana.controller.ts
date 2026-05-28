@@ -607,6 +607,7 @@ export class AnaController {
         tipovhc: true,
         kilometrajeActual: true,
         configuracion: true,
+        union: true,
         tires: {
           select: {
             id: true,
@@ -616,11 +617,24 @@ export class AnaController {
             dimension: true,
             eje: true,
             posicion: true,
+            vehicleId: true,
             currentProfundidad: true,
             profundidadInicial: true,
+            kilometrosRecorridos: true,
             vidaActual: true,
             alertLevel: true,
             healthScore: true,
+            costos: { select: { valor: true, fecha: true } },
+            inspecciones: {
+              select: {
+                profundidadInt: true,
+                profundidadCen: true,
+                profundidadExt: true,
+                fecha: true,
+              },
+              orderBy: { fecha: 'desc' },
+              take: 1,
+            },
           },
           orderBy: { posicion: 'asc' },
         },
