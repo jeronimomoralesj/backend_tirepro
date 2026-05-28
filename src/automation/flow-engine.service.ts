@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { FlowStatus, TriggerType } from '@prisma/client';
-import { TriggerEvaluatorService, TriggerContext } from './trigger-evaluator.service';
+import { TriggerEvaluatorService, TriggerContext, RotationContext } from './trigger-evaluator.service';
 import { ActionExecutorService } from './action-executor.service';
 
 type PendingBatch = {
@@ -84,6 +84,59 @@ export class FlowEngineService {
       } catch (err: any) {
         this.logger.error(
           `Flow engine error for flow ${flow.id}: ${err.message}`,
+          err.stack,
+        );
+      }
+    }
+  }
+
+  /**
+   * Called when a tire's position or vehicle changes (rotation).
+   * Fires tire_rotation flows that match the new context.
+   */
+  async onTireRotated(
+    tireId: string,
+    companyId: string,
+    rotation: RotationContext,
+  ): Promise<void> {
+    const flows = await this.prisma.automationFlow.findMany({
+      where: {
+        companyId,
+        status: FlowStatus.active,
+        triggerType: TriggerType.tire_rotation,
+      },
+    });
+
+    if (flows.length === 0) return;
+
+    const ctx: TriggerContext = { tireId, companyId, rotation };
+
+    for (const flow of flows) {
+      try {
+        const shouldFire = await this.triggerEvaluator.evaluate(flow, ctx);
+        if (!shouldFire) continue;
+
+        const recentRun = await this.prisma.flowRun.findFirst({
+          where: {
+            flowId: flow.id,
+            entityId: tireId,
+            createdAt: { gte: new Date(Date.now() - flow.cooldownMinutes * 60_000) },
+          },
+          select: { id: true },
+        });
+        if (recentRun) continue;
+
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        const todayRuns = await this.prisma.flowRun.count({
+          where: { flowId: flow.id, createdAt: { gte: startOfDay } },
+        });
+        if (todayRuns >= flow.maxRunsPerDay) continue;
+
+        await this.actionExecutor.execute(flow, { tireId, companyId });
+      } catch (err: any) {
+        this.logger.error(
+          `Rotation flow ${flow.id} failed: ${err.message}`,
           err.stack,
         );
       }

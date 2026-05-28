@@ -170,6 +170,7 @@ enum TriggerType {
   scheduled_cron
   tire_eol_approaching
   inspection_completed
+  tire_rotation
 }
 
 enum ActionType {

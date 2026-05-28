@@ -1091,7 +1091,10 @@ export class TireService {
     private readonly catalogService: CatalogService,
     private readonly s3: S3Service,
     @Inject(CACHE_MANAGER) private cache: Cache,
-    @Optional() @Inject('FLOW_ENGINE') private readonly flowEngine?: { onTireStateChanged: (tireId: string, companyId: string, old: string, cur: string) => Promise<void> },
+    @Optional() @Inject('FLOW_ENGINE') private readonly flowEngine?: {
+      onTireStateChanged: (tireId: string, companyId: string, old: string, cur: string) => Promise<void>;
+      onTireRotated?: (tireId: string, companyId: string, rotation: { fromPosition?: number; toPosition?: number; fromVehicleId?: string; toVehicleId?: string; fromPlaca?: string; toPlaca?: string }) => Promise<void>;
+    },
   ) {}
 
   private tireKey(companyId: string)  { return `tires:${companyId}`; }
@@ -3925,6 +3928,20 @@ export class TireService {
       }
     }
 
+    // Snapshot the "from" state before we mutate, so rotation flows can
+    // filter on rotation.fromPosition / rotation.fromVehicleId / fromPlaca.
+    const movingTireIds = changes.map((c) => c.tireId);
+    const beforeRows = await this.prisma.tire.findMany({
+      where:  { id: { in: movingTireIds } },
+      select: {
+        id: true,
+        posicion: true,
+        vehicleId: true,
+        vehicle: { select: { placa: true } },
+      },
+    });
+    const beforeById = new Map(beforeRows.map((t) => [t.id, t]));
+
     await this.prisma.$transaction(
       changes.map(({ tireId, position }) =>
         this.prisma.tire.update({
@@ -3945,6 +3962,30 @@ export class TireService {
         })(),
       ),
     );
+
+    // Fire tire_rotation flows. Only when something actually moved (position
+    // or vehicle changed) and only when we have a companyId to scope to.
+    if (this.flowEngine?.onTireRotated && vehicle.companyId) {
+      const targetPlaca = await this.prisma.vehicle
+        .findUnique({ where: { id: vehicle.id }, select: { placa: true } })
+        .then((v) => v?.placa);
+
+      await Promise.allSettled(
+        changes.map(async ({ tireId, position }) => {
+          const before = beforeById.get(tireId);
+          if (!before) return;
+          if (before.posicion === position && before.vehicleId === vehicle.id) return;
+          await this.flowEngine!.onTireRotated!(tireId, vehicle.companyId!, {
+            fromPosition: before.posicion,
+            toPosition: position,
+            fromVehicleId: before.vehicleId ?? undefined,
+            toVehicleId: vehicle.id,
+            fromPlaca: before.vehicle?.placa ?? undefined,
+            toPlaca: targetPlaca ?? undefined,
+          });
+        }),
+      );
+    }
 
     await Promise.allSettled([
       this.invalidateCompanyCache(vehicle.companyId),

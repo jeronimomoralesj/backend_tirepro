@@ -19,6 +19,7 @@ const TRIGGER_TYPES = [
   'scheduled_cron',
   'tire_eol_approaching',
   'inspection_completed',
+  'tire_rotation',
 ] as const;
 
 const ACTION_TYPES = [
