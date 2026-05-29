@@ -1636,13 +1636,54 @@ export class TireService {
   async bulkUploadTires(
     file: { buffer: Buffer },
     companyId: string,
-    opts: { userId?: string; fileName?: string; recordSnapshot?: boolean } = {},
+    opts: {
+      userId?: string;
+      fileName?: string;
+      recordSnapshot?: boolean;
+      /**
+       * Optional AI-assisted column mapping: original file header → canonical
+       * field name (see CANONICAL_FIELDS in bulk-mapping.service.ts). When
+       * provided, row keys are renamed to the canonical field before the
+       * pipeline runs, so the AI mapping resolves directly via getCell. Headers
+       * absent from the map (or mapped to null/'') keep their original name and
+       * still go through the existing fuzzy/keyword matching — so the mapping
+       * is purely additive and can only help, never remove a fallback.
+       */
+      columnMapping?: Record<string, string | null>;
+    } = {},
   ) {
     const wb    = XLSX.read(file.buffer, { type: 'buffer' });
     const sheet = wb.Sheets[wb.SheetNames[0]];
-    const rows: Record<string, string>[] = XLSX.utils.sheet_to_json(sheet, {
+    let rows: Record<string, string>[] = XLSX.utils.sheet_to_json(sheet, {
       raw: false, defval: '',
     });
+
+    // ── AI-assisted column remapping ────────────────────────────────────────
+    const cm = opts.columnMapping;
+    if (cm && Object.keys(cm).length > 0) {
+      let remapped = 0;
+      rows = rows.map(row => {
+        const out: Record<string, string> = {};
+        for (const [key, val] of Object.entries(row)) {
+          const target = cm[key];
+          if (target && typeof target === 'string') {
+            // Canonical name resolves directly in getCell via `n === field`.
+            // If the target slot is already filled (two columns → same field),
+            // keep the original key so neither value is silently dropped.
+            if (out[target] === undefined || out[target] === '') {
+              out[target] = String(val ?? '');
+              remapped++;
+            } else {
+              out[key] = String(val ?? '');
+            }
+          } else {
+            out[key] = String(val ?? '');
+          }
+        }
+        return out;
+      });
+      this.logger.log(`Bulk upload: applied AI column mapping (${remapped} cells remapped across ${rows.length} rows)`);
+    }
 
     const fmtB      = isFormatB(rows);
     const headerMap = fmtB ? HEADER_MAP_B : HEADER_MAP_A;
@@ -4576,11 +4617,21 @@ export class TireService {
   // Inspeccion.fecha + the tire→vehicle join, plus a tight VEHICLE_SELECT.
   // No caching layer — the date is parameterized and the report is a
   // one-off download, not a repeat-fetch hotspot.
-  async inspectionsDayReport(companyId: string, date: string) {
-    const dayStart = new Date(`${date}T00:00:00`);
-    const dayEnd   = new Date(`${date}T23:59:59.999`);
-    if (isNaN(dayStart.getTime()) || isNaN(dayEnd.getTime())) {
-      throw new BadRequestException('Invalid date (expected YYYY-MM-DD)');
+  async inspectionsDayReport(
+    companyId: string,
+    from: string,
+    to: string,
+    distributorId?: string,
+  ) {
+    // Lenient: swap if the caller passed the range backwards.
+    let fromDate = from;
+    let toDate   = to;
+    if (fromDate > toDate) [fromDate, toDate] = [toDate, fromDate];
+
+    const rangeStart = new Date(`${fromDate}T00:00:00`);
+    const rangeEnd   = new Date(`${toDate}T23:59:59.999`);
+    if (isNaN(rangeStart.getTime()) || isNaN(rangeEnd.getTime())) {
+      throw new BadRequestException('Invalid date range (expected YYYY-MM-DD)');
     }
 
     const company = await this.prisma.company.findUnique({
@@ -4603,7 +4654,7 @@ export class TireService {
 
     const inspecciones = await this.prisma.inspeccion.findMany({
       where: {
-        fecha: { gte: dayStart, lte: dayEnd },
+        fecha: { gte: rangeStart, lte: rangeEnd },
         tire:  { companyId: { in: companyIds } },
       },
       select: {
@@ -4619,7 +4670,14 @@ export class TireService {
         cpkProyectado:     true,
         vidaAlMomento:     true,
         inspeccionadoPorNombre: true,
-        inspeccionadoPor:  { select: { name: true } },
+        // Pull the inspector's company so we can tell when an inspection was
+        // performed by a distributor (for PDF co-branding).
+        inspeccionadoPor:  {
+          select: {
+            name: true,
+            company: { select: { id: true, name: true, profileImage: true, plan: true } },
+          },
+        },
         tire: {
           select: {
             id:        true,
@@ -4687,6 +4745,13 @@ export class TireService {
 
     const byVehicle = new Map<string, VehicleAgg>();
     const inspectorNames = new Set<string>();
+    // Distributor co-branding: tally inspector companies whose plan is
+    // "distribuidor" (and that aren't the inspected company itself). The most
+    // frequent one brands the PDF when no explicit distributorId is given.
+    const distributorCounts = new Map<
+      string,
+      { id: string; name: string; profileImage: string | null; count: number }
+    >();
 
     for (const insp of inspecciones) {
       const t = insp.tire;
@@ -4735,6 +4800,18 @@ export class TireService {
 
       const inspectorName = insp.inspeccionadoPor?.name ?? insp.inspeccionadoPorNombre;
       if (inspectorName) inspectorNames.add(inspectorName);
+
+      const inspCompany = insp.inspeccionadoPor?.company;
+      if (inspCompany && inspCompany.plan === 'distribuidor' && inspCompany.id !== companyId) {
+        const prev = distributorCounts.get(inspCompany.id);
+        if (prev) prev.count++;
+        else distributorCounts.set(inspCompany.id, {
+          id: inspCompany.id,
+          name: inspCompany.name,
+          profileImage: inspCompany.profileImage,
+          count: 1,
+        });
+      }
     }
 
     const vehicles = Array.from(byVehicle.values()).sort((a, b) => a.placa.localeCompare(b.placa));
@@ -4771,13 +4848,40 @@ export class TireService {
       }))
       .sort((a, b) => b.total - a.total);
 
+    // ── Resolve the distributor for PDF co-branding ──────────────────────────
+    let distributor: { id: string; name: string; profileImage: string | null } | null = null;
+    // 1. Explicit hint (e.g. the distribuidor dashboard passes its own id) —
+    //    only honored when it's a real distribuidor with access to this company.
+    if (distributorId && distributorId !== companyId) {
+      const distCompany = await this.prisma.company.findUnique({
+        where:  { id: distributorId },
+        select: { id: true, name: true, profileImage: true, plan: true },
+      });
+      if (distCompany && distCompany.plan === 'distribuidor') {
+        const access = await this.prisma.distributorAccess.findUnique({
+          where:  { companyId_distributorId: { companyId, distributorId } },
+          select: { companyId: true },
+        });
+        if (access) {
+          distributor = { id: distCompany.id, name: distCompany.name, profileImage: distCompany.profileImage };
+        }
+      }
+    }
+    // 2. Otherwise, the most frequent distribuidor among the inspectors.
+    if (!distributor && distributorCounts.size > 0) {
+      const top = Array.from(distributorCounts.values()).sort((a, b) => b.count - a.count)[0];
+      distributor = { id: top.id, name: top.name, profileImage: top.profileImage };
+    }
+
     return {
-      date,
+      from: fromDate,
+      to:   toDate,
       company: {
         id:         company.id,
         name:       company.name,
         profileImage: company.profileImage,
       },
+      distributor,
       inspectorNames: Array.from(inspectorNames),
       totals: {
         vehiclesInspected: vehicles.length,

@@ -24,6 +24,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CompanyScopeGuard } from '../auth/guards/company-scope.guard';
 import { EditTireDto, TireService } from './tire.service';
 import { TireProjectionService } from './tire-projection.service';
+import { BulkMappingService } from './bulk-mapping.service';
 import { CreateTireDto } from './dto/create-tire.dto';
 import { UpdateInspectionDto } from './dto/update-inspection.dto';
 import { EditInspectionDto } from './dto/edit-inspection.dto';
@@ -37,6 +38,7 @@ export class TireController {
   constructor(
     private readonly tireService: TireService,
     private readonly tireProjectionService: TireProjectionService,
+    private readonly bulkMappingService: BulkMappingService,
   ) {}
 
   // ── Create ────────────────────────────────────────────────────────────────
@@ -161,12 +163,25 @@ export class TireController {
   // with id="inspections-day-report" and throw "Tire not found".
   @Get('inspections-day-report')
   inspectionsDayReport(
-    @Query('companyId') companyId: string,
-    @Query('date')      date: string,
+    @Query('companyId')      companyId: string,
+    @Query('from')           from?: string,
+    @Query('to')             to?: string,
+    @Query('date')           date?: string,          // legacy single-day alias
+    @Query('distributorId')  distributorId?: string, // optional branding hint
   ) {
     if (!companyId) throw new BadRequestException('companyId is required');
-    if (!date)      throw new BadRequestException('date is required (YYYY-MM-DD)');
-    return this.tireService.inspectionsDayReport(companyId, date);
+    // Accept either a range (from/to) or the legacy single `date`.
+    const start = from ?? date;
+    const end   = to ?? date ?? from;
+    if (!start) {
+      throw new BadRequestException('from is required (YYYY-MM-DD)');
+    }
+    return this.tireService.inspectionsDayReport(
+      companyId,
+      start,
+      end ?? start,
+      distributorId,
+    );
   }
 
   @Get(':id')
@@ -184,6 +199,17 @@ export class TireController {
 
   // ── Bulk upload ───────────────────────────────────────────────────────────
 
+  // AI-assisted analysis: parse an uploaded file, propose a column→field
+  // mapping and flag data errors. Writes NOTHING — the UI shows the result for
+  // review/confirmation before the real upload.
+  @Post('bulk-upload/analyze')
+  @SkipThrottle()
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  analyzeBulkUpload(@UploadedFile() file: Express.Multer.File) {
+    if (!file?.buffer) throw new BadRequestException('No file received');
+    return this.bulkMappingService.analyzeWorkbook(file.buffer);
+  }
+
   @Post('bulk-upload')
   @SkipThrottle()
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
@@ -191,13 +217,28 @@ export class TireController {
     @UploadedFile() file: Express.Multer.File,
     @Query('companyId') companyId: string,
     @Query('userId') userId?: string,
+    @Body('columnMapping') columnMapping?: string,
   ) {
     if (!companyId) throw new BadRequestException('companyId is required');
     if (!file?.buffer) throw new BadRequestException('No file received');
+
+    // columnMapping arrives as a JSON string in the multipart body (optional).
+    let parsedMapping: Record<string, string | null> | undefined;
+    if (columnMapping) {
+      try {
+        const obj = JSON.parse(columnMapping);
+        if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+          parsedMapping = obj as Record<string, string | null>;
+        }
+      } catch {
+        throw new BadRequestException('columnMapping must be valid JSON');
+      }
+    }
+
     return this.tireService.bulkUploadTires(
       file,
       companyId,
-      { userId, fileName: file.originalname },
+      { userId, fileName: file.originalname, columnMapping: parsedMapping },
     );
   }
 

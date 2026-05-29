@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TireService } from './tire.service';
 import { TireProjectionService } from './tire-projection.service';
+import { BulkMappingService } from './bulk-mapping.service';
 import { TireController } from './tire.controller';
 import { S3Service } from './s3.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -19,7 +20,7 @@ import { AutomationModule } from '../automation/automation.module';
     forwardRef(() => AutomationModule),
   ],
   controllers: [TireController],
-  providers: [TireService, TireProjectionService, S3Service, PrismaService],
+  providers: [TireService, TireProjectionService, BulkMappingService, S3Service, PrismaService],
   exports: [TireService, TireProjectionService],
 })
 export class TireModule {}
