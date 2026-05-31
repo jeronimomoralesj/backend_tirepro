@@ -25,6 +25,8 @@ import { CompanyScopeGuard } from '../auth/guards/company-scope.guard';
 import { EditTireDto, TireService } from './tire.service';
 import { TireProjectionService } from './tire-projection.service';
 import { BulkMappingService } from './bulk-mapping.service';
+import { AiUsageGuard } from '../ai-usage/ai-usage.guard';
+import { AiFeature } from '../ai-usage/ai-feature.decorator';
 import { CreateTireDto } from './dto/create-tire.dto';
 import { UpdateInspectionDto } from './dto/update-inspection.dto';
 import { EditInspectionDto } from './dto/edit-inspection.dto';
@@ -204,10 +206,19 @@ export class TireController {
   // review/confirmation before the real upload.
   @Post('bulk-upload/analyze')
   @SkipThrottle()
+  @UseGuards(AiUsageGuard)
+  @AiFeature('bulk_analyze')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
-  analyzeBulkUpload(@UploadedFile() file: Express.Multer.File) {
+  analyzeBulkUpload(
+    @UploadedFile() file: Express.Multer.File,
+    @Req() req: { user?: { companyId?: string; userId?: string } },
+  ) {
     if (!file?.buffer) throw new BadRequestException('No file received');
-    return this.bulkMappingService.analyzeWorkbook(file.buffer);
+    const companyId = req.user?.companyId;
+    return this.bulkMappingService.analyzeWorkbook(
+      file.buffer,
+      companyId ? { companyId, userId: req.user?.userId } : undefined,
+    );
   }
 
   @Post('bulk-upload')

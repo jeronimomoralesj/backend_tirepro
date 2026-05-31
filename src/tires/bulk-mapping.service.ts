@@ -5,6 +5,10 @@ import {
   ConverseCommand,
 } from '@aws-sdk/client-bedrock-runtime';
 import * as XLSX from 'xlsx';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
+
+/** Who is making the analyze call — for AI usage logging/quota. */
+export type AiUsageContext = { companyId: string; userId?: string | null };
 
 const MODEL_ID = 'amazon.nova-lite-v1:0';
 
@@ -129,7 +133,10 @@ export class BulkMappingService {
   private readonly client: BedrockRuntimeClient;
   private readonly log = new Logger(BulkMappingService.name);
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly aiUsage: AiUsageService,
+  ) {
     this.client = new BedrockRuntimeClient({
       region: config.get<string>('AWS_REGION') || 'us-east-1',
     });
@@ -141,6 +148,7 @@ export class BulkMappingService {
    */
   async analyzeWorkbook(
     buffer: Buffer,
+    ctx?: AiUsageContext,
   ): Promise<MappingResult & { headers: string[]; sampleRows: Record<string, string>[]; totalRows: number }> {
     let rows: Record<string, string>[] = [];
     try {
@@ -153,7 +161,7 @@ export class BulkMappingService {
 
     const headers = rows.length ? Object.keys(rows[0]) : [];
     const sampleRows = rows.slice(0, 8);
-    const result = await this.analyzeFile(headers, rows.slice(0, 15));
+    const result = await this.analyzeFile(headers, rows.slice(0, 15), ctx);
     return { ...result, headers, sampleRows, totalRows: rows.length };
   }
 
@@ -166,6 +174,7 @@ export class BulkMappingService {
   async analyzeFile(
     headers: string[],
     sampleRows: Record<string, unknown>[],
+    ctx?: AiUsageContext,
   ): Promise<MappingResult> {
     const cleanHeaders = headers.filter(h => h != null && String(h).trim() !== '');
 
@@ -189,6 +198,16 @@ export class BulkMappingService {
       });
       const res = await this.client.send(command);
       raw = res.output?.message?.content?.[0]?.text ?? '';
+      if (ctx?.companyId) {
+        await this.aiUsage.record({
+          companyId: ctx.companyId,
+          userId: ctx.userId,
+          feature: 'bulk_analyze',
+          model: MODEL_ID,
+          inputTokens: res.usage?.inputTokens ?? 0,
+          outputTokens: res.usage?.outputTokens ?? 0,
+        });
+      }
     } catch (err) {
       this.log.error('Bedrock mapping call failed', (err as Error).message);
       return this.fallback(cleanHeaders, 'La asistencia de IA no está disponible; revisa el mapeo manualmente.');

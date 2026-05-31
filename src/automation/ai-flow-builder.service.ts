@@ -4,8 +4,12 @@ import {
   BedrockRuntimeClient,
   ConverseCommand,
 } from '@aws-sdk/client-bedrock-runtime';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
 
 const MODEL_ID = 'amazon.nova-lite-v1:0';
+
+/** Who triggered the AI call — for usage logging/quota. */
+type AiUsageContext = { companyId: string; userId?: string | null };
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SYSTEM PROMPT — teaches the model how to map Spanish descriptions
@@ -178,13 +182,20 @@ export class AiFlowBuilderService {
     'create_notification',
   ]);
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly aiUsage: AiUsageService,
+  ) {
     this.client = new BedrockRuntimeClient({
       region: config.get<string>('AWS_REGION') || 'us-east-1',
     });
   }
 
-  async buildFlow(description: string, currentFlow?: Record<string, unknown>): Promise<AiFlowSuggestion> {
+  async buildFlow(
+    description: string,
+    currentFlow?: Record<string, unknown>,
+    ctx?: AiUsageContext,
+  ): Promise<AiFlowSuggestion> {
     const userMessage = currentFlow
       ? `FLUJO ACTUAL (solo modifica lo que el usuario pide, CONSERVA todo lo demas):\n${JSON.stringify(currentFlow, null, 2)}\n\nSOLICITUD DEL USUARIO: ${description}`
       : description;
@@ -205,6 +216,16 @@ export class AiFlowBuilderService {
     try {
       const res = await this.client.send(command);
       raw = res.output?.message?.content?.[0]?.text ?? '';
+      if (ctx?.companyId) {
+        await this.aiUsage.record({
+          companyId: ctx.companyId,
+          userId: ctx.userId,
+          feature: 'automation',
+          model: MODEL_ID,
+          inputTokens: res.usage?.inputTokens ?? 0,
+          outputTokens: res.usage?.outputTokens ?? 0,
+        });
+      }
     } catch (err) {
       this.log.error('Bedrock call failed', (err as Error).message);
       throw err;
@@ -216,7 +237,7 @@ export class AiFlowBuilderService {
     return parsed;
   }
 
-  async buildReportBlocks(description: string, fleetData: string, currentBlocks?: unknown[]): Promise<Record<string, unknown>> {
+  async buildReportBlocks(description: string, fleetData: string, currentBlocks?: unknown[], ctx?: AiUsageContext): Promise<Record<string, unknown>> {
     const prompt = `Eres un asistente que genera secciones de reportes de email para TirePro (gestion de llantas).
 
 El usuario describe que quiere ver en un reporte. Tu generas blocks con DATOS REALES de la flota.
@@ -261,6 +282,16 @@ REGLAS:
     try {
       const res = await this.client.send(command);
       raw = res.output?.message?.content?.[0]?.text ?? '';
+      if (ctx?.companyId) {
+        await this.aiUsage.record({
+          companyId: ctx.companyId,
+          userId: ctx.userId,
+          feature: 'automation',
+          model: MODEL_ID,
+          inputTokens: res.usage?.inputTokens ?? 0,
+          outputTokens: res.usage?.outputTokens ?? 0,
+        });
+      }
     } catch (err) {
       this.log.error('Bedrock report builder failed', (err as Error).message);
       throw err;

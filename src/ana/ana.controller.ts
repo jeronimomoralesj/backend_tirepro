@@ -23,8 +23,14 @@ import { AnaService } from './ana.service';
 import { AnaMessageDto } from './dto/ana-message.dto';
 import { AutomationService } from '../automation/automation.service';
 import { GoogleCalendarService } from '../integrations/google-calendar/google-calendar.service';
+import { AiUsageGuard } from '../ai-usage/ai-usage.guard';
+import { AiFeature } from '../ai-usage/ai-feature.decorator';
+import type { UsageStatus } from '../ai-usage/ai-usage.service';
 
-type AuthReq = { user?: { companyId?: string; userId?: string; role?: string } };
+type AuthReq = {
+  user?: { companyId?: string; userId?: string; role?: string };
+  aiUsage?: UsageStatus;
+};
 
 @Controller('ana')
 @UseGuards(JwtAuthGuard)
@@ -148,6 +154,8 @@ export class AnaController {
   @Post('chat')
   @HttpCode(HttpStatus.OK)
   @SkipThrottle()
+  @UseGuards(AiUsageGuard)
+  @AiFeature('chat')
   async chat(
     @Req() req: AuthReq,
     @Body() dto: AnaMessageDto,
@@ -164,6 +172,7 @@ export class AnaController {
         dto.message,
         dto.history ?? [],
         dto.tireData ?? '',
+        userId,
       );
 
       const actions = await this.executeAnaActions(
@@ -264,6 +273,8 @@ export class AnaController {
         ...reply,
         conversationId,
         ...(actions.length > 0 && { executedActions: actions }),
+        // Set when the company/user is at ≥80% of an AI quota so the UI can warn.
+        ...(req.aiUsage?.nearLimit && { usageWarning: true }),
       };
     } catch {
       throw new InternalServerErrorException(

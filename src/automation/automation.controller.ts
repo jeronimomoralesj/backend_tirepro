@@ -16,6 +16,8 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { AiUsageGuard } from '../ai-usage/ai-usage.guard';
+import { AiFeature } from '../ai-usage/ai-feature.decorator';
 import { AutomationService } from './automation.service';
 import { AiFlowBuilderService } from './ai-flow-builder.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -98,31 +100,35 @@ export class AutomationController {
 
   @Post('ai-builder')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(AiUsageGuard)
+  @AiFeature('automation')
   async aiBuilder(
     @Req() req: AuthReq,
     @Body() body: { description?: string; currentFlow?: Record<string, unknown> },
   ) {
-    this.extractCompany(req);
+    const { companyId, userId } = this.extractCompany(req);
     const description = body?.description;
     if (!description || typeof description !== 'string' || !description.trim()) {
       throw new BadRequestException('Se requiere una descripcion del flujo');
     }
-    return this.aiFlowBuilder.buildFlow(description.trim(), body.currentFlow);
+    return this.aiFlowBuilder.buildFlow(description.trim(), body.currentFlow, { companyId, userId });
   }
 
   @Post('ai-report-builder')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(AiUsageGuard)
+  @AiFeature('automation')
   async aiReportBuilder(
     @Req() req: AuthReq,
     @Body() body: { description?: string; currentBlocks?: unknown[] },
   ) {
-    const { companyId } = this.extractCompany(req);
+    const { companyId, userId } = this.extractCompany(req);
     const description = body?.description;
     if (!description || typeof description !== 'string' || !description.trim()) {
       throw new BadRequestException('Se requiere una descripcion del reporte');
     }
     const fleetData = await this.buildQuickFleetSummary(companyId);
-    return this.aiFlowBuilder.buildReportBlocks(description.trim(), fleetData, body.currentBlocks);
+    return this.aiFlowBuilder.buildReportBlocks(description.trim(), fleetData, body.currentBlocks, { companyId, userId });
   }
 
   @Get('flows')

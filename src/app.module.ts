@@ -30,6 +30,7 @@ import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { MerquellantasModule } from './integrations/merquellantas/merquellantas.module';
 import { AnaModule } from './ana/ana.module';
 import { AutomationModule } from './automation/automation.module';
+import { AiUsageModule } from './ai-usage/ai-usage.module';
 import { GoogleCalendarModule } from './integrations/google-calendar/google-calendar.module';
 import { CompanyScopeGuard } from './auth/guards/company-scope.guard';
 import { PrismaService } from './prisma/prisma.service';
@@ -77,6 +78,7 @@ import { PrismaService } from './prisma/prisma.service';
     ]),
 
     PrismaModule,
+    AiUsageModule,
     AuthModule,
     UsersModule,
     TeamKpisModule,

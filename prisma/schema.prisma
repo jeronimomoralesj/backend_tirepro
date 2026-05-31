@@ -354,6 +354,10 @@ model Company {
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
+  // Optional per-company override for the monthly AI request quota. Null →
+  // use the plan default (see PLAN_AI_LIMITS in ai-usage.service.ts).
+  aiMonthlyLimit Int?
+
   // Distributor-only fields
   emailAtencion String?
   // Additional notification recipients — order-placed emails fan out
@@ -2557,4 +2561,23 @@ model AnaMessage {
 
   @@index([conversationId, createdAt])
   @@map("ana_messages")
+}
+
+// One row per AI request (Ana chat, bulk-upload analyze, automation builder).
+// Durable source of truth for usage limiting + cost analytics. Request counts
+// per period drive the hard caps; token columns track the Bedrock bill.
+model AiUsageEvent {
+  id               String   @id @default(uuid())
+  companyId        String
+  userId           String?
+  feature          String   // 'chat' | 'bulk_analyze' | 'automation'
+  model            String?
+  inputTokens      Int      @default(0)
+  outputTokens     Int      @default(0)
+  estimatedCostUsd Float    @default(0)
+  createdAt        DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([userId, createdAt])
+  @@map("ai_usage_events")
 }

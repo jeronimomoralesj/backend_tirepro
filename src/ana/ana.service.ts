@@ -8,6 +8,7 @@ import {
   ConverseCommand,
   type Message,
 } from '@aws-sdk/client-bedrock-runtime';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
 
 const MODEL_ID = 'amazon.nova-lite-v1:0';
 const DATASET_TTL_MS = 300_000; // cache fleet data for 5 min
@@ -148,6 +149,7 @@ export class AnaService {
     private config: ConfigService,
     private prisma: PrismaService,
     @Inject(CACHE_MANAGER) private cache: Cache,
+    private readonly aiUsage: AiUsageService,
   ) {
     this.client = new BedrockRuntimeClient({
       region: config.get<string>('AWS_REGION') || 'us-east-1',
@@ -159,6 +161,7 @@ export class AnaService {
     message: string,
     history: { role: string; text: string }[] = [],
     tireDataFallback = '',
+    userId?: string,
   ): Promise<AnaReply> {
     let dataset: string;
     if (companyId) {
@@ -193,6 +196,15 @@ export class AnaService {
     try {
       const res = await this.client.send(command);
       raw = res.output?.message?.content?.[0]?.text ?? '';
+      // Log the call + token usage (this also increments the request quota).
+      await this.aiUsage.record({
+        companyId,
+        userId,
+        feature: 'chat',
+        model: MODEL_ID,
+        inputTokens: res.usage?.inputTokens ?? 0,
+        outputTokens: res.usage?.outputTokens ?? 0,
+      });
     } catch (err) {
       this.log.error('Bedrock call failed', (err as Error).message);
       throw err;
