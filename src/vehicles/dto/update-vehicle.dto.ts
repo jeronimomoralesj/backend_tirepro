@@ -45,4 +45,14 @@ export class UpdateVehicleDto {
   @Min(0)
   kmMensualEstimado?: number | null;
 
+  // Inflation pressure range (PSI). null clears the override → report default.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  presionMin?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  presionMax?: number | null;
 }

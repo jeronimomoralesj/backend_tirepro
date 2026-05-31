@@ -494,6 +494,11 @@ model Vehicle {
   union                 Json @default("[]")
   presionesRecomendadas Json @default("[]")
 
+  // Per-vehicle inflation pressure range (PSI). When null, reports fall back
+  // to the 100–120 PSI default. Used to label each reading baja/correcta/alta.
+  presionMin Float?
+  presionMax Float?
+
   // ─── External system dedup key ───────────────────────────────────────────
   // Populated by integrators (e.g. MERQUEPRO migration) so re-running an
   // import doesn't duplicate rows. Null for anything created natively.

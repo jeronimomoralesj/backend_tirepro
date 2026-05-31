@@ -737,6 +737,12 @@ function deriveAlertLevel(healthScore: number, minDepth: number): TireAlertLevel
   return TireAlertLevel.ok;
 }
 
+// Default inflation pressure range (PSI) used when a vehicle hasn't set its
+// own presionMin/presionMax. Reports label readings below as "baja", above as
+// "alta", and within as "correcta".
+const DEFAULT_PRESION_MIN_PSI = 100;
+const DEFAULT_PRESION_MAX_PSI = 120;
+
 function resolvePresionRecomendada(vehicle: any, posicion: number): number | null {
   if (!vehicle?.presionesRecomendadas) return null;
   const configs = Array.isArray(vehicle.presionesRecomendadas)
@@ -4696,6 +4702,8 @@ export class TireService {
                 kilometrajeActual: true,
                 configuracion:     true,
                 tipoOperacion:     true,
+                presionMin:        true,
+                presionMax:        true,
                 company: { select: { name: true } },
               },
             },
@@ -4777,10 +4785,18 @@ export class TireService {
         : minDepth >= 2 ? 'proyectado_30'
         : 'cambio_inmediato';
 
+      // Pressure bucket uses the vehicle's configured inflation range
+      // [presionMin, presionMax] (PSI). When the vehicle hasn't defined a
+      // range we fall back to the 100–120 PSI default. Below the range is
+      // "baja", above is "alta", within is "correcta".
       let presionBucket: VehicleAgg['tires'][number]['presionBucket'] = null;
-      if (insp.presionPsi != null && insp.presionRecomendadaPsi != null && insp.presionRecomendadaPsi > 0) {
-        const ratio = insp.presionPsi / insp.presionRecomendadaPsi;
-        presionBucket = ratio < 0.9 ? 'baja' : ratio > 1.1 ? 'alta' : 'correcta';
+      if (insp.presionPsi != null) {
+        const minPsi = v?.presionMin ?? DEFAULT_PRESION_MIN_PSI;
+        const maxPsi = v?.presionMax ?? DEFAULT_PRESION_MAX_PSI;
+        presionBucket =
+          insp.presionPsi < minPsi ? 'baja'
+          : insp.presionPsi > maxPsi ? 'alta'
+          : 'correcta';
       }
       byVehicle.get(key)!.tires.push({
         tireId:    t.id,

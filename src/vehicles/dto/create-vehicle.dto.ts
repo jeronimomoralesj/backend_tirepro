@@ -49,6 +49,17 @@ export class CreateVehicleDto {
   @Min(0)
   kmMensualEstimado?: number; // User's initial declared monthly km target
 
+  // Inflation pressure range (PSI). When omitted, reports use 100–120.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  presionMin?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  presionMax?: number;
+
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(3)

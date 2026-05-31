@@ -29,6 +29,8 @@ const VEHICLE_SELECT = {
   kmMensualEstimado:  true,
   kmMensualReal:      true,
   presionesRecomendadas: true,
+  presionMin:        true,
+  presionMax:        true,
   createdAt:         true,
   updatedAt:         true,
   _count: { select: { tires: true } },
@@ -58,8 +60,11 @@ export class VehicleService {
     const {
       kilometrajeActual, carga, pesoCarga, tipovhc, companyId,
       cliente, tipoOperacion, configuracion, drivers,
-      marca, kmMensualEstimado,
+      marca, kmMensualEstimado, presionMin, presionMax,
     } = dto;
+    if (presionMin != null && presionMax != null && presionMin > presionMax) {
+      throw new BadRequestException('presionMin no puede ser mayor que presionMax');
+    }
     // Normalize the placa once at the boundary so every downstream
     // lookup, link, and dedupe sees the same casing. Without this the
     // same physical vehicle could be created twice as "ABC123" and
@@ -96,6 +101,8 @@ export class VehicleService {
           configuracion:  configuracion ?? null,
           marca:              marca ?? null,
           kmMensualEstimado:  kmMensualEstimado ?? null,
+          presionMin:         presionMin ?? null,
+          presionMax:         presionMax ?? null,
           union:   [],
         },
         select: VEHICLE_SELECT,
@@ -285,7 +292,7 @@ export class VehicleService {
   async updateVehicle(vehicleId: string, dto: UpdateVehicleDto, callerCompanyId?: string) {
     const vehicle = await this.prisma.vehicle.findUnique({
       where:  { id: vehicleId },
-      select: { id: true, placa: true, kilometrajeActual: true, companyId: true },
+      select: { id: true, placa: true, kilometrajeActual: true, companyId: true, presionMin: true, presionMax: true },
     });
     if (!vehicle) throw new NotFoundException('Vehicle not found');
 
@@ -308,6 +315,14 @@ export class VehicleService {
       throw new BadRequestException('El nuevo kilometraje debe ser mayor o igual al actual');
     }
 
+    // Validate the pressure range against the row's resulting values (the
+    // incoming value when provided, otherwise the existing one).
+    const nextMin = dto.presionMin !== undefined ? dto.presionMin : vehicle.presionMin;
+    const nextMax = dto.presionMax !== undefined ? dto.presionMax : vehicle.presionMax;
+    if (nextMin != null && nextMax != null && nextMin > nextMax) {
+      throw new BadRequestException('presionMin no puede ser mayor que presionMax');
+    }
+
     const updated = await this.prisma.vehicle.update({
   where: { id: vehicleId },
   data:  {
@@ -321,6 +336,8 @@ export class VehicleService {
     ...(dto.configuracion    !== undefined && { configuracion:     dto.configuracion     }),
     ...(dto.marca             !== undefined && { marca:             dto.marca             }),
     ...(dto.kmMensualEstimado !== undefined && { kmMensualEstimado: dto.kmMensualEstimado }),
+    ...(dto.presionMin        !== undefined && { presionMin:        dto.presionMin        }),
+    ...(dto.presionMax        !== undefined && { presionMax:        dto.presionMax        }),
   },
   select: VEHICLE_SELECT,
 });
