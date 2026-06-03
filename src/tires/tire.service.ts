@@ -2867,6 +2867,10 @@ export class TireService {
             projectedKmRemaining: true, projectedDateEOL: true, healthScore: true,
             alertLevel: true, lastInspeccionDate: true, fechaInstalacion: true,
             createdAt: true, updatedAt: true,
+            // Scrap record (deprecated JSON, still written on fin) — the
+            // Desechos tab reads causales/mm/photos from here. Only populated
+            // on scrapped tires, so it adds nothing to the payload for the rest.
+            desechos: true,
             costos: {
               orderBy: { fecha: 'desc' },
               select: { valor: true, fecha: true, concepto: true },
