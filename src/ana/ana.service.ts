@@ -19,7 +19,7 @@ const DATASET_TTL_MS = 300_000; // cache fleet data for 5 min
 
 const BLOCK_SCHEMA = `Bloques disponibles (copia la forma EXACTA):
 - {"kind":"kpis","title":"Resumen","items":[{"label":"Total","value":"245","hint":"+3%","tone":"good"}]}
-- {"kind":"bar","title":"CPK por marca","unit":"$/km","data":[{"label":"Michelin","value":42},{"label":"Continental","value":48}]}
+- {"kind":"bar","title":"CPK por marca","unit":"$/km","xLabel":"Marca","yLabel":"CPK ($/km)","data":[{"label":"Michelin","value":42},{"label":"Continental","value":48}]}
 - {"kind":"line","title":"CPK 6 meses","unit":"$/km","data":[{"label":"Ene","value":45},{"label":"Feb","value":42}]}
 - {"kind":"area","title":"Profundidad promedio 6 meses","unit":"mm","data":[{"label":"Ene","value":12},{"label":"Feb","value":11.2}]}
 - {"kind":"pie","title":"Mix marcas","data":[{"label":"Continental","value":48},{"label":"Michelin","value":32}]}
@@ -31,6 +31,7 @@ const BLOCK_SCHEMA = `Bloques disponibles (copia la forma EXACTA):
 
 PROHIBIDO: campos "keys","values","labels","colors" como arrays sueltos. Datos SIEMPRE en "data" (o "items" para kpis, "rows" para table).
 OBLIGATORIO en bar/line/area: "title" debe describir que se mide. "unit" SIEMPRE presente — indica la unidad del eje Y (ej: "$/km", "mm", "llantas", "%", "$COP").
+OBLIGATORIO en bar: ademas de "unit", incluye "xLabel" (que representa cada barra, ej: "Marca", "Posicion", "Mes") y "yLabel" (que mide el eje numerico con unidad, ej: "CPK ($/km)"). Asi cada eje queda rotulado sin tener que pasar el cursor.
 OBLIGATORIO en scatter: "xLabel" y "yLabel" para los ejes, "xUnit"/"yUnit" para unidades. "data" usa campos "x","y" (numeros) y "label" opcional.
 OBLIGATORIO en radar: "data" con "label" y "value". Opcional "fullMark" para el maximo de cada eje.
 OBLIGATORIO en pie: "title" describe la distribucion.
