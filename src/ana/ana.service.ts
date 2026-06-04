@@ -104,7 +104,10 @@ CLAVE: pregunta sobre UN número → kpis (NO gráfico solo para un dato).
 CLAVE: usa scatter SOLO cuando ambos ejes son numéricos (no categorías). Para categorías usa bar.
 
 CONTEXTO TÉCNICO:
-- CPK = costo total / km recorridos. Menor = mejor.
+- CPK = CPK PROYECTADO por defecto (costo total / km proyectados al límite legal de 2mm). Menor = mejor.
+- TODOS los valores de CPK en TIREDATA YA están proyectados — úsalos tal cual, NO los recalcules.
+- Usa SIEMPRE el CPK proyectado. SOLO usa el "CPK actual/real" si el usuario lo pide EXPLÍCITAMENTE (ej: "CPK actual", "CPK real", "CPK a hoy"); en ese caso usa la línea "CPK FLOTA (actual/real)".
+- Al mostrar CPK no necesitas aclarar "proyectado" — es el valor estándar.
 - Profundidad: límite legal 2mm.
 - Alertas: inmediato(≤2mm) 30d(2-4mm) 60d(4-6mm) óptimo(>6mm)
 - "Críticas" = SOLO inmediato (≤2mm).
@@ -182,19 +185,41 @@ export class AnaService {
     }
     messages.push({ role: 'user', content: [{ text: message }] });
 
-    const command = new ConverseCommand({
-      modelId: MODEL_ID,
-      system: [{ text: systemPrompt }],
-      messages,
-      inferenceConfig: {
-        temperature: 0.5,
-        maxTokens: 1500,
-      },
-    });
+    // Nova-lite frequently replies in prose instead of the required JSON, which
+    // makes JSON.parse fail and silently drops every block/suggestion. Prefilling
+    // the assistant turn with "{" forces the model to start a JSON object — the
+    // single biggest reliability win for getting tables/graphs back. If the model
+    // ever rejects the trailing assistant turn, we retry once without the prefill.
+    const send = (withPrefill: boolean) => {
+      const msgs: Message[] = withPrefill
+        ? [...messages, { role: 'assistant', content: [{ text: '{' }] }]
+        : messages;
+      return this.client.send(
+        new ConverseCommand({
+          modelId: MODEL_ID,
+          system: [{ text: systemPrompt }],
+          messages: msgs,
+          // maxTokens bumped from 1500 → 4000: a full report (kpis + chart +
+          // a 15-row table) easily exceeds 1500 tokens, and truncation produces
+          // invalid JSON that parses to an empty-blocks fallback.
+          inferenceConfig: { temperature: 0.4, maxTokens: 4000 },
+        }),
+      );
+    };
 
     let raw: string;
+    let usedPrefill = true;
     try {
-      const res = await this.client.send(command);
+      let res;
+      try {
+        res = await send(true);
+      } catch (prefillErr) {
+        this.log.warn(
+          `Bedrock prefill call failed, retrying without prefill: ${(prefillErr as Error).message}`,
+        );
+        usedPrefill = false;
+        res = await send(false);
+      }
       raw = res.output?.message?.content?.[0]?.text ?? '';
       // Log the call + token usage (this also increments the request quota).
       await this.aiUsage.record({
@@ -210,12 +235,23 @@ export class AnaService {
       throw err;
     }
 
+    // When the model honors the prefill it continues *after* the "{", so its
+    // output starts with the first key (e.g. `"text":`). Re-attach the brace
+    // before parsing. If it returned a full object anyway, leave it untouched.
+    let jsonText = raw.trim();
+    if (usedPrefill && !jsonText.startsWith('{') && !jsonText.startsWith('```')) {
+      jsonText = '{' + jsonText;
+    }
+
     let parsed: { text?: unknown; blocks?: unknown; suggestions?: unknown } =
       {};
     try {
-      parsed = JSON.parse(extractJson(raw));
+      parsed = JSON.parse(extractJson(jsonText));
     } catch {
-      parsed = { text: raw || 'Entendido.' };
+      // Surface the raw output so prod logs reveal *why* parsing failed instead
+      // of silently degrading to a no-blocks, fallback-suggestions reply.
+      this.log.warn(`Ana JSON parse failed. Raw output: ${raw.slice(0, 600)}`);
+      parsed = { text: salvageText(raw) };
     }
 
     return {
@@ -283,6 +319,14 @@ export class AnaService {
           posicion: true,
           vehicle: { select: { placa: true, tipovhc: true, kilometrajeActual: true, cliente: true } },
           costos: { select: { valor: true, concepto: true } },
+          // Latest inspection carries the projected CPK (cost / projected-km-to-2mm),
+          // which is the default CPK Ana should report. There is no cpkProyectado
+          // column on Tire — it lives only on Inspeccion.
+          inspecciones: {
+            select: { cpkProyectado: true },
+            orderBy: { fecha: 'desc' },
+            take: 1,
+          },
         },
       }),
       this.prisma.vehicle.findMany({
@@ -373,6 +417,22 @@ export class AnaService {
           ? `$${(n / 1e3).toFixed(0)}K`
           : `$${n.toFixed(0)}`;
 
+    // CPK reported to Ana defaults to the PROJECTED CPK (latest inspection's
+    // cpkProyectado), falling back to lifetime/current CPK only when no
+    // projection exists. Projected CPK amortizes cost over the tire's full
+    // expected life, so it's lower and more representative than the actual CPK,
+    // which runs high for tires that haven't covered many km yet.
+    const cpkOf = (t: {
+      inspecciones?: { cpkProyectado: number | null }[];
+      lifetimeCpk: number | null;
+      currentCpk: number | null;
+    }): number | null => {
+      const proy = t.inspecciones?.[0]?.cpkProyectado;
+      if (proy != null && proy > 0) return proy;
+      const fallback = t.lifetimeCpk ?? t.currentCpk;
+      return fallback != null && fallback > 0 ? fallback : null;
+    };
+
     // ── Fleet overview ──
     const totalCost = tires.reduce(
       (s, t) => s + t.costos.reduce((a, c) => a + (c.valor || 0), 0),
@@ -415,8 +475,18 @@ export class AnaService {
       L.push(
         `SALUD: prom=${Math.round(healthValues.reduce((a, b) => a + b, 0) / healthValues.length)}/100`,
       );
+    // Default CPK = average projected CPK across tires. The actual/real CPK
+    // (cost / km driven) is kept as a secondary line for when the user asks
+    // for it explicitly.
+    const projCpks = tires
+      .map((t) => cpkOf(t))
+      .filter((v): v is number => v != null);
+    if (projCpks.length)
+      L.push(
+        `CPK FLOTA (proyectado, por defecto): $${(projCpks.reduce((a, b) => a + b, 0) / projCpks.length).toFixed(1)}/km`,
+      );
     if (totalKm > 0 && totalCost > 0)
-      L.push(`CPK FLOTA: $${(totalCost / totalKm).toFixed(1)}/km`);
+      L.push(`CPK FLOTA (actual/real, solo si lo piden): $${(totalCost / totalKm).toFixed(1)}/km`);
 
     // ── Brand performance ──
     const byBrand: Record<
@@ -428,7 +498,7 @@ export class AnaService {
       if (!byBrand[b])
         byBrand[b] = { n: 0, cpkSum: 0, cpkCount: 0, healthSum: 0, healthCount: 0 };
       byBrand[b].n++;
-      const cpk = t.lifetimeCpk ?? t.currentCpk;
+      const cpk = cpkOf(t);
       if (cpk != null && cpk > 0) {
         byBrand[b].cpkSum += cpk;
         byBrand[b].cpkCount++;
@@ -455,7 +525,7 @@ export class AnaService {
       if (!byDesign[key])
         byDesign[key] = { n: 0, cpkSum: 0, cpkCount: 0, dim: t.dimension };
       byDesign[key].n++;
-      const cpk = t.lifetimeCpk ?? t.currentCpk;
+      const cpk = cpkOf(t);
       if (cpk != null && cpk > 0) {
         byDesign[key].cpkSum += cpk;
         byDesign[key].cpkCount++;
@@ -477,7 +547,7 @@ export class AnaService {
       const e = t.eje || 'otro';
       if (!byEje[e]) byEje[e] = { n: 0, cpkSum: 0, cpkCount: 0 };
       byEje[e].n++;
-      const cpk = t.lifetimeCpk ?? t.currentCpk;
+      const cpk = cpkOf(t);
       if (cpk != null && cpk > 0) {
         byEje[e].cpkSum += cpk;
         byEje[e].cpkCount++;
@@ -494,7 +564,7 @@ export class AnaService {
       const v = t.vidaActual || 'nueva';
       if (!byVida[v]) byVida[v] = { n: 0, cpkSum: 0, cpkCount: 0 };
       byVida[v].n++;
-      const cpk = t.lifetimeCpk ?? t.currentCpk;
+      const cpk = cpkOf(t);
       if (cpk != null && cpk > 0) {
         byVida[v].cpkSum += cpk;
         byVida[v].cpkCount++;
@@ -530,7 +600,7 @@ export class AnaService {
       L.push(`\nCRÍTICAS(${criticals.length}/${alertInm + alert30}):`);
       L.push('Vehículo|Llanta|Prof|Eje|CPK|Salud|EOL');
       for (const t of criticals) {
-        const cpk = t.lifetimeCpk ?? t.currentCpk;
+        const cpk = cpkOf(t);
         const eol = t.projectedDateEOL
           ? new Date(t.projectedDateEOL).toISOString().slice(0, 10)
           : '-';
@@ -587,7 +657,7 @@ export class AnaService {
         t.currentProfundidad <= 4
       )
         vehMap[p].critCount++;
-      const cpk = t.lifetimeCpk ?? t.currentCpk;
+      const cpk = cpkOf(t);
       if (cpk != null && cpk > 0) {
         vehMap[p].cpkSum += cpk;
         vehMap[p].cpkCount++;
@@ -679,15 +749,31 @@ export class AnaService {
    HELPERS — JSON normalization (same logic as the old route.ts)
    ═══════════════════════════════════════════════════════════════════════════ */
 
+// When JSON parsing fails entirely, pull a clean user-facing message out of the
+// raw output instead of dumping JSON fragments into the chat bubble.
+function salvageText(raw: string): string {
+  const m = raw.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (m) {
+    try {
+      return JSON.parse(`"${m[1]}"`);
+    } catch {
+      return m[1];
+    }
+  }
+  const t = raw.trim();
+  // Pure prose (no JSON braces) is a fine answer; JSON-ish junk is not.
+  return t && !t.includes('{') ? t : 'Entendido.';
+}
+
 function extractJson(s: string): string {
   let t = s.trim();
   // Strip markdown code fences
   if (t.startsWith('```')) {
     t = t.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
   }
-  // If it starts with {, use as-is
-  if (t.startsWith('{')) return t;
-  // Model wrapped JSON in explanatory text — extract the JSON object
+  // Slice from the first { to the last } — this strips both leading prose and
+  // any trailing text the model appends after the JSON object (which would
+  // otherwise break JSON.parse even when the output starts with "{").
   const first = t.indexOf('{');
   const last = t.lastIndexOf('}');
   if (first >= 0 && last > first) {
@@ -746,6 +832,17 @@ function coerceBlock(
       }
     }
     if (!Array.isArray(out.columns) || !Array.isArray(out.rows)) return null;
+    // Model sometimes sends rows as objects ({Placa:"ABC",Prof:"2mm"}) instead
+    // of arrays. The frontend only renders array rows, so coerce them by column.
+    const cols = out.columns as string[];
+    out.rows = (out.rows as unknown[]).map((r) => {
+      if (Array.isArray(r)) return r;
+      if (r && typeof r === 'object') {
+        const obj = r as Record<string, unknown>;
+        return cols.map((c) => obj[c] ?? '');
+      }
+      return [r];
+    });
   } else if (kind === 'gauge') {
     const v = out.value;
     if (typeof v !== 'number') {
@@ -763,31 +860,55 @@ function coerceXY(
   data: unknown,
   container: Record<string, unknown>,
 ): unknown {
-  if (Array.isArray(data) && data.length > 0 && data.every(isLabelValue))
-    return data;
+  // Normalize {label|name, value|amount} entries — including numeric strings
+  // like "42" which the model often emits and which would otherwise drop the
+  // whole chart block (recharts needs real numbers).
+  if (Array.isArray(data) && data.length > 0 && data.every(isLabelValue)) {
+    return data.map((d) => {
+      const o = d as Record<string, unknown>;
+      return {
+        ...o,
+        label: String(o.label ?? o.name ?? ''),
+        value: toNum(o.value ?? o.amount),
+      };
+    });
+  }
   const keys = (container.keys ?? container.labels ?? container.categories) as unknown;
   const values = (container.values ?? container.amounts ?? container.counts) as unknown;
   if (Array.isArray(keys) && Array.isArray(values)) {
     return keys.map((k, i) => ({
       label: String(k),
-      value: Number((values as unknown[])[i]) || 0,
+      value: toNum((values as unknown[])[i]),
     }));
   }
   if (data && typeof data === 'object' && !Array.isArray(data)) {
     return Object.entries(data as Record<string, unknown>).map(
-      ([label, value]) => ({ label, value: Number(value) || 0 }),
+      ([label, value]) => ({ label, value: toNum(value) }),
     );
   }
   return [];
 }
 
+function toNum(v: unknown): number {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  if (typeof v === 'string') {
+    // Tolerate "42", "$48", "1,234", "12.5mm" etc.
+    const n = Number(v.replace(/[^0-9.-]/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
 function isLabelValue(d: unknown): boolean {
   if (!d || typeof d !== 'object') return false;
   const o = d as Record<string, unknown>;
-  return (
-    (typeof o.label === 'string' || typeof o.name === 'string') &&
-    (typeof o.value === 'number' || typeof o.amount === 'number')
-  );
+  const hasLabel = typeof o.label === 'string' || typeof o.name === 'string';
+  const hasValue =
+    typeof o.value === 'number' ||
+    typeof o.amount === 'number' ||
+    (typeof o.value === 'string' && o.value.trim() !== '') ||
+    (typeof o.amount === 'string' && o.amount.trim() !== '');
+  return hasLabel && hasValue;
 }
 
 const FALLBACK_SUGGESTIONS: { label: string; intent: string }[] = [
